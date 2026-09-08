@@ -98,16 +98,25 @@ fn render_list(
                 (false, _) => "  ",
             };
 
-            let name_style = if selected {
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text)
+            let name_style = match (selected, session.state) {
+                // A session wanting you outranks the one you are looking at.
+                (_, State::AwaitingInput) => {
+                    Style::default().fg(theme.attention).add_modifier(Modifier::BOLD)
+                }
+                (true, _) => Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                (false, State::Exited(_)) => Style::default().fg(theme.dim),
+                (false, _) => Style::default().fg(theme.text),
             };
 
+            // The badge is the whole point of the sidebar at a glance, so it
+            // uses the state colours rather than the selection one.
             let badge = match session.state {
-                State::Running => Span::styled(" ●", Style::default().fg(theme.dim)),
-                State::AwaitingInput => Span::styled(" ◆", Style::default().fg(theme.accent)),
-                State::Exited(_) => Span::styled(" ×", Style::default().fg(theme.dim)),
+                State::Running => Span::styled(" ●", Style::default().fg(theme.running)),
+                State::AwaitingInput => Span::styled(
+                    " ◆",
+                    Style::default().fg(theme.attention).add_modifier(Modifier::BOLD),
+                ),
+                State::Exited(_) => Span::styled(" ×", Style::default().fg(theme.danger)),
             };
 
             let kind = match session.kind {
@@ -153,8 +162,9 @@ fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme)
         |session| format!(" {} · {} ", session.display_name(), session.state.label()),
     );
 
+    // Green border while attached: keystrokes are going to the child.
     let border_style =
-        if attached { Style::default().fg(theme.accent) } else { Style::default().fg(theme.dim) };
+        if attached { Style::default().fg(theme.running) } else { Style::default().fg(theme.dim) };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -196,7 +206,7 @@ fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme)
         frame.render_widget(
             Paragraph::new(Span::styled(
                 message,
-                Style::default().fg(theme.surface).bg(theme.accent),
+                Style::default().fg(theme.surface).bg(theme.danger).add_modifier(Modifier::BOLD),
             )),
             banner,
         );

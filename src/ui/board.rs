@@ -102,10 +102,19 @@ fn render_column(
 ) {
     let members = members(sessions, column);
 
-    // Only the column that needs attention gets the accent, so "who needs me?"
-    // is answered by colour before anything is read.
+    // Each column carries its own state colour, and an empty one recedes to
+    // dim — so "who needs me?" is answered by colour before anything is read.
     let urgent = column == Column::AwaitingInput && !members.is_empty();
-    let accent = if urgent { theme.accent } else { theme.dim };
+    let accent = if members.is_empty() {
+        theme.dim
+    } else {
+        match column {
+            Column::AwaitingInput => theme.attention,
+            Column::Running => theme.running,
+            Column::Shell => theme.link,
+            Column::Exited => theme.dim,
+        }
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -142,18 +151,21 @@ fn render_card(
     let Some(session) = sessions.iter().nth(index) else { return };
     let selected = index == sessions.selected_index();
 
-    let spine_colour = if urgent {
-        theme.accent
-    } else if selected {
-        theme.text
-    } else {
-        theme.dim
+    let state_colour = match session.state {
+        State::AwaitingInput => theme.attention,
+        State::Running if matches!(session.kind, Kind::Shell) => theme.link,
+        State::Running => theme.running,
+        State::Exited(Some(0) | None) => theme.dim,
+        State::Exited(_) => theme.danger,
     };
 
+    // The spine shows state; the name shows selection. Two questions, two
+    // places, so neither has to lose to the other.
+    let spine_colour = state_colour;
     let name_style = if selected {
         Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
     } else if urgent {
-        Style::default().fg(theme.accent)
+        Style::default().fg(theme.attention)
     } else {
         Style::default().fg(theme.text)
     };

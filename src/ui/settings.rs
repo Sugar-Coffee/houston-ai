@@ -30,7 +30,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let mut lines = vec![heading("Vault", theme), vault_line(app, theme), Line::from("")];
 
     if let Some(error) = &app.vault_error {
-        lines.push(indented(error, theme.accent, theme));
+        lines.push(indented(error, theme.danger, theme));
         lines.push(Line::from(""));
     } else if let Some(browser) = &app.browser {
         lines.push(indented(&format!("{} notes indexed", browser.vault.len()), theme.dim, theme));
@@ -55,9 +55,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     } else {
         for (index, found) in available.iter().enumerate() {
             let note = if index == 0 { "  (default)" } else { "" };
+            let colour = if index == 0 { theme.running } else { theme.text };
             lines.push(indented(
                 &format!("{} — {}{note}", found.label, found.command),
-                theme.text,
+                colour,
                 theme,
             ));
         }

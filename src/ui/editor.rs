@@ -33,11 +33,9 @@ pub fn render(frame: &mut Frame, area: Rect, editor: &Editor, theme: Theme) {
         },
     );
 
-    // The border colour is the mode indicator you see without looking down.
-    let accent = match editor.mode {
-        Mode::Insert => theme.accent,
-        _ => theme.dim,
-    };
+    // The border is the mode indicator you see without looking down, and each
+    // mode keeps its colour in the label below too.
+    let accent = mode_colour(editor, theme);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -91,6 +89,17 @@ pub fn render(frame: &mut Frame, area: Rect, editor: &Editor, theme: Theme) {
     place_cursor(frame, inner, editor, width, cursor_row);
 }
 
+/// One colour per mode, consistent with the rest of the app: green means live
+/// input is going somewhere, orange means something wants a keystroke from you.
+const fn mode_colour(editor: &Editor, theme: Theme) -> ratatui::style::Color {
+    match editor.mode {
+        Mode::Insert => theme.running,
+        Mode::Jump { .. } => theme.attention,
+        Mode::Search { .. } => theme.code,
+        Mode::Normal => theme.accent,
+    }
+}
+
 fn mode_label(editor: &Editor) -> String {
     match &editor.mode {
         Mode::Search { query } => format!("SEARCH {query}▏"),
@@ -110,7 +119,7 @@ fn render_row<'a>(
 ) -> Line<'a> {
     let on_cursor_line = line == editor.buffer.cursor.line;
     let number_style = if on_cursor_line {
-        Style::default().fg(theme.accent)
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.dim)
     };
@@ -140,10 +149,10 @@ fn render_row<'a>(
         .collect();
 
     if tags.is_empty() {
-        spans.push(Span::styled(
-            characters[start..end].iter().collect::<String>(),
-            Style::default().fg(theme.text),
-        ));
+        let slice: String = characters[start..end].iter().collect();
+        // Markdown structure is worth seeing while editing, but only the two
+        // cues that aid navigation: headings and links. Not highlighting.
+        spans.push(Span::styled(slice, editor_line_style(&characters, start, theme)));
         return Line::from(spans);
     }
 
@@ -168,6 +177,20 @@ fn render_row<'a>(
 ///
 /// `row` comes from the render pass, which already knows which visual row the
 /// cursor landed on — recomputing it here could disagree with what was drawn.
+/// Heading and link lines get their colour; everything else is plain text.
+///
+/// This is *not* syntax highlighting (ADR-0003 rules that out) — it is the two
+/// structural cues that help you find your place in a long note.
+fn editor_line_style(characters: &[char], start: usize, theme: Theme) -> Style {
+    if start == 0 {
+        let line: String = characters.iter().collect();
+        if crate::editor::markdown::heading_level(&line).is_some() {
+            return Style::default().fg(theme.heading).add_modifier(Modifier::BOLD);
+        }
+    }
+    Style::default().fg(theme.text)
+}
+
 fn place_cursor(frame: &mut Frame, inner: Rect, editor: &Editor, width: usize, row: Option<u16>) {
     if matches!(editor.mode, Mode::Jump { .. }) {
         return;

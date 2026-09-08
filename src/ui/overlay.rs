@@ -36,7 +36,7 @@ pub fn picker(frame: &mut Frame, area: Rect, picker: &Picker, sessions: &Session
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
-        .style(Style::default().bg(theme.surface))
+        .style(Style::default().bg(theme.raised))
         .title(Span::styled(
             format!(" {} ", picker.prompt),
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),

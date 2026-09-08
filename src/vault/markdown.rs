@@ -78,6 +78,8 @@ struct Renderer {
     /// Nesting depth and per-level counters for lists.
     list_stack: Vec<Option<u64>>,
     quote_depth: usize,
+    /// Inside a markdown link, so its text can take the link colour.
+    link_depth: usize,
     table: Option<Table>,
 }
 
@@ -138,6 +140,7 @@ pub fn parse(source: &str, theme: Theme) -> Document {
         code_inline: false,
         list_stack: Vec::new(),
         quote_depth: 0,
+        link_depth: 0,
         table: None,
     };
 
@@ -231,7 +234,10 @@ impl Renderer {
             // A table header row is bold for the same reason `**text**` is.
             Tag::Strong | Tag::TableHead => self.inline |= Modifier::BOLD,
             Tag::Strikethrough => self.inline |= Modifier::CROSSED_OUT,
-            Tag::Link { .. } => self.inline |= Modifier::UNDERLINED,
+            Tag::Link { .. } => {
+                self.link_depth += 1;
+                self.inline |= Modifier::UNDERLINED;
+            }
             Tag::Image { dest_url, .. } => {
                 // Terminal image protocols are out of scope (ADR-0004).
                 self.push_span(&format!("🖼 {dest_url}"));
@@ -306,7 +312,10 @@ impl Renderer {
             TagEnd::Emphasis => self.inline.remove(Modifier::ITALIC),
             TagEnd::Strong => self.inline.remove(Modifier::BOLD),
             TagEnd::Strikethrough => self.inline.remove(Modifier::CROSSED_OUT),
-            TagEnd::Link => self.inline.remove(Modifier::UNDERLINED),
+            TagEnd::Link => {
+                self.link_depth = self.link_depth.saturating_sub(1);
+                self.inline.remove(Modifier::UNDERLINED);
+            }
             _ => {}
         }
     }
@@ -359,9 +368,7 @@ impl Renderer {
                 let shown = target.split_once('|').map_or(target.as_str(), |(_, alias)| alias);
                 self.pending.push(Span::styled(
                     format!("[[{shown}]]"),
-                    Style::default()
-                        .fg(self.theme.accent)
-                        .add_modifier(Modifier::BOLD | self.inline),
+                    Style::default().fg(self.theme.link).add_modifier(Modifier::BOLD | self.inline),
                 ));
                 self.document.links.push(target);
             }
@@ -414,22 +421,28 @@ impl Renderer {
     }
 
     fn style(&self) -> Style {
+        // Pink for headings, yellow for anything literal, cyan for links.
+        // Each hue means one thing everywhere — see `ui::theme`.
         let base = match self.block {
             Block::Heading(1) => Style::default()
-                .fg(self.theme.accent)
+                .fg(self.theme.heading)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            Block::Heading(2) => {
-                Style::default().fg(self.theme.accent).add_modifier(Modifier::BOLD)
+            // H2 and below share a weight; only H1 gets the underline, so a
+            // note's title stands apart from its sections.
+            Block::Heading(_) => {
+                Style::default().fg(self.theme.heading).add_modifier(Modifier::BOLD)
             }
-            Block::Heading(_) => Style::default().fg(self.theme.text).add_modifier(Modifier::BOLD),
-            Block::Code => Style::default().fg(self.theme.text).bg(self.theme.surface),
+            Block::Code => Style::default().fg(self.theme.code).bg(self.theme.raised),
             Block::Quote => Style::default().fg(self.theme.dim).add_modifier(Modifier::ITALIC),
             Block::Metadata => Style::default().fg(self.theme.dim),
             Block::Paragraph | Block::Item => Style::default().fg(self.theme.text),
         };
 
         if self.code_inline {
-            return Style::default().fg(self.theme.accent).bg(self.theme.surface);
+            return Style::default().fg(self.theme.code).bg(self.theme.raised);
+        }
+        if self.link_depth > 0 {
+            return Style::default().fg(self.theme.link).add_modifier(self.inline);
         }
         base.add_modifier(self.inline)
     }

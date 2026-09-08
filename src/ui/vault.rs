@@ -57,8 +57,9 @@ fn render_list(frame: &mut Frame, area: Rect, browser: &Browser, theme: Theme) {
         Mode::Browsing => browser.source().label(),
     };
     let typing = browser.mode() != Mode::Browsing;
+    // Yellow while typing a query, matching the editor's search mode.
     let title_style = if typing {
-        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme.code).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.dim)
     };
@@ -158,7 +159,7 @@ fn render_note(frame: &mut Frame, area: Rect, browser: &Browser, theme: Theme) {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "↵ open      / find      f search",
+                "↵ open      / find      f search      e edit",
                 Style::default().fg(theme.dim),
             )),
             Line::from(Span::styled(
