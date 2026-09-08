@@ -10,6 +10,14 @@ use std::{
     time::SystemTime,
 };
 
+/// How many undo steps are kept.
+///
+/// Every keystroke in insert mode is a step. Rope snapshots share structure so
+/// each one is cheap, but an unbounded history still grows for as long as the
+/// editor is open — and this is a long-lived workspace, not a process you quit
+/// after ten minutes.
+pub const UNDO_LIMIT: usize = 1000;
+
 /// A position in the buffer, in grapheme-agnostic character terms.
 ///
 /// `column` is a character offset into the line, not a byte offset and not a
@@ -115,9 +123,21 @@ impl Buffer {
     /// Records the current state so the next change can be undone.
     fn checkpoint(&mut self) {
         self.undo.push(self.snapshot());
+        if self.undo.len() > UNDO_LIMIT {
+            // Drop the oldest step. `remove(0)` is O(n) on a Vec, but n is
+            // capped and this happens once per keystroke past the limit.
+            self.undo.remove(0);
+        }
         // Any new edit invalidates the redo branch, the same as every other
         // editor with a linear redo.
         self.redo.clear();
+    }
+
+    /// How many undo steps are held. Used by the history-bound test.
+    #[cfg(test)]
+    #[must_use]
+    pub const fn undo_depth(&self) -> usize {
+        self.undo.len()
     }
 
     pub fn insert(&mut self, text: &str) {
@@ -204,6 +224,20 @@ impl Buffer {
         self.clamp_column();
     }
 
+    /// Replaces the cursor's line, keeping the cursor within it.
+    pub fn replace_line(&mut self, replacement: &str) {
+        self.checkpoint();
+
+        let line = self.cursor.line.min(self.text.len_lines().saturating_sub(1));
+        let start = self.text.line_to_char(line);
+        let end = start + self.line(line).chars().count();
+
+        self.text.remove(start..end);
+        self.text.insert(start, replacement);
+        self.modified = true;
+        self.clamp_column();
+    }
+
     pub fn undo(&mut self) -> bool {
         let Some(previous) = self.undo.pop() else { return false };
         self.redo.push(self.snapshot());
@@ -251,20 +285,6 @@ impl Buffer {
             self.cursor.column = 0;
         }
         self.goal_column = None;
-    }
-
-    /// Moves vertically, remembering the column you started from.
-    ///
-    /// Without the goal column, moving down through a short line and back up
-    /// would leave the cursor stuck at that line's end — a small thing that
-    /// makes an editor feel broken.
-    pub fn move_vertical(&mut self, delta: isize) {
-        let goal = self.goal_column.unwrap_or(self.cursor.column);
-        let target = self.cursor.line.saturating_add_signed(delta);
-
-        self.cursor.line = target.min(self.line_count().saturating_sub(1));
-        self.cursor.column = goal.min(self.line_length(self.cursor.line));
-        self.goal_column = Some(goal);
     }
 
     pub const fn move_line_start(&mut self) {
@@ -402,6 +422,25 @@ mod tests {
     }
 
     #[test]
+    fn replacing_a_line_leaves_its_neighbours_alone() {
+        let mut buffer = buffer("one\ntwo\nthree");
+        buffer.move_to(Cursor { line: 1, column: 3 });
+
+        buffer.replace_line("TWO CHANGED");
+        assert_eq!(buffer.text(), "one\nTWO CHANGED\nthree");
+        assert_eq!(buffer.cursor.line, 1);
+    }
+
+    #[test]
+    fn replacing_a_line_with_a_shorter_one_clamps_the_cursor() {
+        let mut buffer = buffer("a long line here");
+        buffer.move_line_end();
+
+        buffer.replace_line("short");
+        assert!(buffer.cursor.column <= 5, "the cursor cannot sit past the end");
+    }
+
+    #[test]
     fn undo_and_redo_walk_the_history() {
         let mut buffer = buffer("");
         buffer.insert("one");
@@ -432,18 +471,6 @@ mod tests {
     }
 
     #[test]
-    fn vertical_movement_remembers_the_column() {
-        let mut buffer = buffer("longest line here\nshort\nanother long line");
-        buffer.move_to(Cursor { line: 0, column: 15 });
-
-        buffer.move_vertical(1);
-        assert_eq!(buffer.cursor.column, 5, "clamped to the short line");
-
-        buffer.move_vertical(1);
-        assert_eq!(buffer.cursor.column, 15, "and restored on a long one again");
-    }
-
-    #[test]
     fn horizontal_movement_wraps_between_lines() {
         let mut buffer = buffer("ab\ncd");
 
@@ -463,17 +490,6 @@ mod tests {
         buffer.delete_line();
         assert_eq!(buffer.text(), "one\ntwo\n");
         assert!(buffer.cursor.line < buffer.line_count());
-    }
-
-    #[test]
-    fn moving_beyond_the_ends_is_clamped_not_wrapped() {
-        let mut buffer = buffer("one\ntwo");
-
-        buffer.move_vertical(-10);
-        assert_eq!(buffer.cursor.line, 0);
-
-        buffer.move_vertical(100);
-        assert_eq!(buffer.cursor.line, buffer.line_count() - 1);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Rendering the editor.
 
 use crate::{
-    editor::{Editor, Mode},
+    editor::{Editor, Mode, wrap},
     ui::Theme,
 };
 use ratatui::{
@@ -15,10 +15,12 @@ use ratatui::{
 /// Width of the line-number gutter, including its trailing space.
 const GUTTER: u16 = 6;
 
-/// The rows available for text, so the editor can size its viewport.
+/// The shape of the text area, so the editor can size its viewport and know
+/// where lines wrap.
 #[must_use]
-pub fn text_height(area: Rect) -> usize {
-    Block::default().borders(Borders::ALL).inner(area).height as usize
+pub fn text_shape(area: Rect) -> (usize, usize) {
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    (inner.height as usize, inner.width.saturating_sub(GUTTER) as usize)
 }
 
 pub fn render(frame: &mut Frame, area: Rect, editor: &Editor, theme: Theme) {
@@ -53,13 +55,40 @@ pub fn render(frame: &mut Frame, area: Rect, editor: &Editor, theme: Theme) {
         return;
     }
 
-    let last = (editor.scroll + inner.height as usize).min(editor.buffer.line_count());
-    let lines: Vec<Line> =
-        (editor.scroll..last).map(|index| render_line(editor, index, theme)).collect();
+    let width = (inner.width - GUTTER) as usize;
+    let mut lines = Vec::with_capacity(inner.height as usize);
+    let mut cursor_row: Option<u16> = None;
+
+    let mut line = editor.anchor.line;
+    let mut skip = editor.anchor.row;
+
+    while lines.len() < inner.height as usize && line < editor.buffer.line_count() {
+        let text = editor.buffer.line(line);
+        let rows = wrap::rows(&text, width);
+
+        for (index, row) in rows.iter().enumerate().skip(skip) {
+            if lines.len() >= inner.height as usize {
+                break;
+            }
+
+            if line == editor.buffer.cursor.line {
+                let (target, _) = wrap::locate(&text, width, editor.buffer.cursor.column);
+                if target == index {
+                    cursor_row = u16::try_from(lines.len()).ok();
+                }
+            }
+
+            // Only the first visual row of a line carries its number, so a
+            // wrapped paragraph reads as one paragraph rather than as many.
+            lines.push(render_row(editor, line, index == 0, &text, *row, theme));
+        }
+
+        skip = 0;
+        line += 1;
+    }
 
     frame.render_widget(Paragraph::new(lines), inner);
-
-    place_cursor(frame, inner, editor);
+    place_cursor(frame, inner, editor, width, cursor_row);
 }
 
 fn mode_label(editor: &Editor) -> String {
@@ -70,38 +99,57 @@ fn mode_label(editor: &Editor) -> String {
     }
 }
 
-/// One buffer line, with its number and any jump tags sitting on top of it.
-fn render_line<'a>(editor: &Editor, index: usize, theme: Theme) -> Line<'a> {
-    let on_cursor_line = index == editor.buffer.cursor.line;
-
+/// One visual row: its gutter, its text, and any jump tags on top.
+fn render_row<'a>(
+    editor: &Editor,
+    line: usize,
+    first_row: bool,
+    text: &str,
+    row: wrap::Row,
+    theme: Theme,
+) -> Line<'a> {
+    let on_cursor_line = line == editor.buffer.cursor.line;
     let number_style = if on_cursor_line {
         Style::default().fg(theme.accent)
     } else {
         Style::default().fg(theme.dim)
     };
-    let mut spans = vec![Span::styled(format!("{:>4}  ", index + 1), number_style)];
 
-    let text = editor.buffer.line(index);
+    let gutter = if first_row {
+        format!("{:>4}  ", line + 1)
+    } else {
+        // A continuation marker, so a wrapped row is never mistaken for a new
+        // line that happens to be unnumbered.
+        "   \u{2937}  ".to_string()
+    };
+    let mut spans = vec![Span::styled(gutter, number_style)];
 
-    // Jump tags replace the first characters of the words they mark, which is
-    // what makes them readable — an inserted tag would shift the whole line and
-    // make you re-find the target you were aiming at.
+    let characters: Vec<char> = text.chars().collect();
+    let start = row.start.min(characters.len());
+    let end = row.end.min(characters.len());
+
+    // Jump tags replace the first characters of the words they mark. Inserting
+    // them would shift the line and move the target you were aiming at.
     let tags: Vec<(usize, &str)> = editor
         .tags()
         .iter()
-        .filter(|tag| tag.cursor.line == index)
+        .filter(|tag| {
+            tag.cursor.line == line && tag.cursor.column >= start && tag.cursor.column < end
+        })
         .map(|tag| (tag.cursor.column, tag.label.as_str()))
         .collect();
 
     if tags.is_empty() {
-        spans.push(Span::styled(text, Style::default().fg(theme.text)));
+        spans.push(Span::styled(
+            characters[start..end].iter().collect::<String>(),
+            Style::default().fg(theme.text),
+        ));
         return Line::from(spans);
     }
 
-    let characters: Vec<char> = text.chars().collect();
-    let mut column = 0;
-    while column < characters.len() {
-        if let Some((_, label)) = tags.iter().find(|(start, _)| *start == column) {
+    let mut column = start;
+    while column < end {
+        if let Some((_, label)) = tags.iter().find(|(at, _)| *at == column) {
             spans.push(Span::styled(
                 (*label).to_string(),
                 Style::default().fg(theme.surface).bg(theme.accent).add_modifier(Modifier::BOLD),
@@ -117,18 +165,19 @@ fn render_line<'a>(editor: &Editor, index: usize, theme: Theme) -> Line<'a> {
 }
 
 /// Parks the real terminal cursor on the buffer cursor, so it blinks natively.
-fn place_cursor(frame: &mut Frame, inner: Rect, editor: &Editor) {
+///
+/// `row` comes from the render pass, which already knows which visual row the
+/// cursor landed on — recomputing it here could disagree with what was drawn.
+fn place_cursor(frame: &mut Frame, inner: Rect, editor: &Editor, width: usize, row: Option<u16>) {
     if matches!(editor.mode, Mode::Jump { .. }) {
         return;
     }
+    let Some(row) = row else { return };
 
-    let cursor = editor.buffer.cursor;
-    if cursor.line < editor.scroll {
-        return;
-    }
+    let text = editor.buffer.line(editor.buffer.cursor.line);
+    let (_, column) = wrap::locate(&text, width, editor.buffer.cursor.column);
 
-    let Ok(row) = u16::try_from(cursor.line - editor.scroll) else { return };
-    let Ok(column) = u16::try_from(cursor.column) else { return };
+    let Ok(column) = u16::try_from(column) else { return };
     if row >= inner.height || column + GUTTER >= inner.width {
         return;
     }
@@ -185,7 +234,7 @@ mod tests {
     #[test]
     fn jump_tags_overlay_the_text_without_shifting_it() {
         let mut editor = Editor::with_buffer(Buffer::from_str("alpha beta"));
-        editor.set_viewport(4);
+        editor.set_viewport(4, 40);
         editor.enter_jump();
 
         let rendered = draw(&editor, 40, 6);
@@ -193,6 +242,21 @@ mod tests {
         // line along, so the line keeps its length.
         assert!(rendered.contains("lpha"), "the tail of the word survives");
         assert!(!rendered.contains("alpha beta"), "the heads are covered by tags");
+    }
+
+    /// The normal case for this vault: 91% of notes have a line over 120
+    /// characters, so most editing happens on wrapped text.
+    #[test]
+    fn a_long_line_wraps_across_rows_with_a_continuation_marker() {
+        let mut editor = Editor::with_buffer(Buffer::from_str(&"word ".repeat(40)));
+        editor.set_viewport(10, 30);
+
+        let rendered = draw(&editor, 40, 12);
+        assert!(rendered.contains('⤷'), "wrapped rows are marked as continuations");
+        assert!(rendered.matches("word").count() > 10, "the whole line is visible, not clipped");
+
+        // Only the first row carries the line number.
+        assert_eq!(rendered.matches(" 1  ").count(), 1);
     }
 
     #[test]

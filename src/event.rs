@@ -11,6 +11,7 @@
 use crate::{
     app::{App, InputFocus, Picker, Tab},
     clipboard,
+    editor::Editor,
     hooks::{self, Notification},
     pty::Size,
     terminal::Backend,
@@ -87,7 +88,8 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
 fn sync_editor_viewport(terminal: &Terminal<Backend>, app: &mut App) -> Result<()> {
     let Some(editor) = app.editor.as_mut() else { return Ok(()) };
     let [_, body, _] = ui::layout(terminal.size()?.into());
-    editor.set_viewport(ui::editor::text_height(body));
+    let (rows, width) = ui::editor::text_shape(body);
+    editor.set_viewport(rows, width);
     editor.follow_cursor();
     Ok(())
 }
@@ -188,7 +190,8 @@ fn on_key_editor_insert(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => editor.enter_normal(),
         KeyCode::Char(character) => editor.buffer.insert(&character.to_string()),
-        KeyCode::Enter => editor.buffer.insert("\n"),
+        // List-aware: continues the list, or ends it on an empty item.
+        KeyCode::Enter => editor.insert_newline(),
         // Markdown nests with spaces, and a literal tab in a note is a
         // rendering hazard nobody wants to debug.
         KeyCode::Tab => editor.buffer.insert("  "),
@@ -200,8 +203,8 @@ fn on_key_editor_insert(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Left => editor.buffer.move_left(),
         KeyCode::Right => editor.buffer.move_right(),
-        KeyCode::Up => editor.buffer.move_vertical(-1),
-        KeyCode::Down => editor.buffer.move_vertical(1),
+        KeyCode::Up => editor.move_visual(false),
+        KeyCode::Down => editor.move_visual(true),
         _ => {}
     }
     editor.follow_cursor();
@@ -219,16 +222,18 @@ fn on_key_editor_normal(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('h') | KeyCode::Left => editor.buffer.move_left(),
         KeyCode::Char('l') | KeyCode::Right => editor.buffer.move_right(),
-        KeyCode::Char('j') | KeyCode::Down => editor.buffer.move_vertical(1),
-        KeyCode::Char('k') | KeyCode::Up => editor.buffer.move_vertical(-1),
+        KeyCode::Char('j') | KeyCode::Down => editor.move_visual(true),
+        KeyCode::Char('k') | KeyCode::Up => editor.move_visual(false),
         KeyCode::Char('0') | KeyCode::Home => editor.buffer.move_line_start(),
         KeyCode::Char('$') | KeyCode::End => editor.buffer.move_line_end(),
         KeyCode::Char('g') => editor.buffer.move_buffer_start(),
         KeyCode::Char('G') => editor.buffer.move_buffer_end(),
-        KeyCode::Char('d') if ctrl => editor.scroll_by(10),
-        KeyCode::Char('u') if ctrl => editor.scroll_by(-10),
-        KeyCode::PageDown => editor.scroll_by(10),
-        KeyCode::PageUp => editor.scroll_by(-10),
+        // Paging moves by visual rows, not logical lines: one line in this
+        // vault can be fifty rows tall.
+        KeyCode::Char('d') if ctrl => editor.page(true),
+        KeyCode::Char('u') if ctrl => editor.page(false),
+        KeyCode::PageDown => editor.page(true),
+        KeyCode::PageUp => editor.page(false),
 
         KeyCode::Char('i') => editor.enter_insert(),
         KeyCode::Char('a') => {
@@ -247,6 +252,25 @@ fn on_key_editor_normal(app: &mut App, key: KeyEvent) {
 
         // amp's signature move.
         KeyCode::Char('f') => editor.enter_jump(),
+
+        // Markdown-native navigation and editing. Chosen by counting the real
+        // vault: 325 of 328 notes have headings, 308 have bullet lists.
+        KeyCode::Char(']') => {
+            if !editor.jump_heading(true) {
+                app.notify("no headings in this note");
+            }
+        }
+        KeyCode::Char('[') => {
+            if !editor.jump_heading(false) {
+                app.notify("no headings in this note");
+            }
+        }
+        KeyCode::Char('t') => {
+            if !editor.toggle_task() {
+                app.notify("not a task line");
+            }
+        }
+        KeyCode::Enter => return follow_link(app),
         KeyCode::Char('/') => editor.enter_search(),
         KeyCode::Char('n') => {
             if !editor.search_next() {
@@ -277,6 +301,42 @@ fn on_key_editor_normal(app: &mut App, key: KeyEvent) {
 
     if let Some(editor) = app.editor.as_mut() {
         editor.follow_cursor();
+    }
+}
+
+/// Opens the `[[wikilink]]` under the cursor in the editor.
+///
+/// Following a link should not mean closing the editor first — links are how
+/// this vault is navigated, and 157 of its 328 notes use them.
+fn follow_link(app: &mut App) {
+    let Some(target) = app.editor.as_ref().and_then(Editor::link_under_cursor) else {
+        app.notify("no link under the cursor");
+        return;
+    };
+
+    let unsaved = app.editor.as_ref().is_some_and(|editor| editor.buffer.modified);
+    if unsaved {
+        app.notify("save first — following a link would lose unsaved changes");
+        return;
+    }
+
+    let Some(resolved) = app
+        .browser
+        .as_ref()
+        .and_then(|browser| browser.vault.resolve_link(&target))
+        .and_then(|id| app.browser.as_ref().and_then(|browser| browser.vault.get(id)))
+        .map(|note| note.path.clone())
+    else {
+        app.notify(format!("no note called {target}"));
+        return;
+    };
+
+    match Editor::open(&resolved) {
+        Ok(editor) => {
+            app.editor = Some(editor);
+            app.dirty = true;
+        }
+        Err(error) => app.notify(format!("could not open {target}: {error}")),
     }
 }
 

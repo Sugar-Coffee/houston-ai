@@ -9,11 +9,25 @@
 
 pub mod buffer;
 pub mod jump;
+pub mod markdown;
+pub mod wrap;
 
 use anyhow::Result;
 use buffer::{Buffer, Cursor};
 use jump::Tag;
 use std::path::Path;
+
+/// The top of the viewport, as a visual position.
+///
+/// A plain line number is not enough once lines wrap: one logical line in this
+/// vault can be 50 visual rows tall, so scrolling has to be able to stop part
+/// way down one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Anchor {
+    pub line: usize,
+    /// Visual row within that line.
+    pub row: usize,
+}
 
 /// What the keyboard means right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,14 +56,16 @@ impl Mode {
 pub struct Editor {
     pub buffer: Buffer,
     pub mode: Mode,
-    /// First buffer line shown, kept in step with the cursor.
-    pub scroll: usize,
+    /// Top of the viewport, kept in step with the cursor.
+    pub anchor: Anchor,
     /// Live jump targets, rebuilt each time jump mode is entered.
     tags: Vec<Tag>,
     /// The last search, so `n` can repeat it.
     last_search: String,
     /// Rows the viewport can show, set from the render loop each frame.
     viewport: usize,
+    /// Characters that fit across, which decides where lines wrap.
+    width: usize,
     /// A close has been attempted with unsaved changes and is awaiting
     /// confirmation. Never faked by clearing `modified` — the unsaved marker
     /// must keep telling the truth while this is pending.
@@ -66,10 +82,11 @@ impl Editor {
         Self {
             buffer,
             mode: Mode::Normal,
-            scroll: 0,
+            anchor: Anchor { line: 0, row: 0 },
             tags: Vec::new(),
             last_search: String::new(),
             viewport: 24,
+            width: 80,
             close_armed: false,
         }
     }
@@ -78,10 +95,48 @@ impl Editor {
         &self.tags
     }
 
-    /// Tells the editor how tall its viewport is. Called from the renderer,
-    /// because only it knows.
-    pub const fn set_viewport(&mut self, rows: usize) {
+    /// Tells the editor the shape of its viewport. Called from the render
+    /// loop, because only it knows.
+    pub const fn set_viewport(&mut self, rows: usize, width: usize) {
         self.viewport = if rows == 0 { 1 } else { rows };
+        self.width = if width == 0 { 1 } else { width };
+    }
+
+    /// Visual rows a logical line occupies.
+    fn line_height(&self, line: usize) -> usize {
+        wrap::height(&self.buffer.line(line), self.width)
+    }
+
+    /// The cursor's position in visual terms: its line, and the row within it.
+    fn cursor_visual_row(&self) -> usize {
+        let line = self.buffer.line(self.buffer.cursor.line);
+        wrap::locate(&line, self.width, self.buffer.cursor.column).0
+    }
+
+    /// The visual rows from the anchor down to the cursor.
+    ///
+    /// `None` when the cursor is above the anchor or further than a screenful
+    /// below it — in both cases the answer is "re-anchor", and counting the
+    /// exact distance across a 1,000-line file would be pointless work.
+    fn rows_from_anchor(&self) -> Option<usize> {
+        let cursor = self.buffer.cursor.line;
+        if cursor < self.anchor.line {
+            return None;
+        }
+        // Every line is at least one row, so this bounds the loop below.
+        if cursor - self.anchor.line > self.viewport {
+            return None;
+        }
+
+        let mut rows = 0;
+        for line in self.anchor.line..cursor {
+            rows += self.line_height(line);
+            if rows > self.viewport {
+                return None;
+            }
+        }
+        rows += self.cursor_visual_row();
+        rows.checked_sub(self.anchor.row)
     }
 
     /// Whether a close is waiting on confirmation.
@@ -102,28 +157,208 @@ impl Editor {
     }
 
     /// Keeps the cursor on screen after any movement.
-    pub const fn follow_cursor(&mut self) {
-        let line = self.buffer.cursor.line;
-
-        if line < self.scroll {
-            self.scroll = line;
-        } else if line >= self.scroll + self.viewport {
-            self.scroll = line + 1 - self.viewport;
+    pub fn follow_cursor(&mut self) {
+        match self.rows_from_anchor() {
+            // Already visible.
+            Some(rows) if rows < self.viewport => {}
+            // Below the fold: anchor so the cursor sits on the last row.
+            Some(_) => self.anchor_above_cursor(self.viewport.saturating_sub(1)),
+            // Above, or far away: put the cursor a little in from the top so
+            // there is context above it rather than it hugging the edge.
+            None => self.anchor_above_cursor(self.viewport / 4),
         }
     }
 
-    pub fn scroll_by(&mut self, delta: isize) {
-        let target = self.scroll.saturating_add_signed(delta);
-        self.scroll = target.min(self.buffer.line_count().saturating_sub(1));
+    /// Anchors so the cursor sits `margin` visual rows below the top.
+    fn anchor_above_cursor(&mut self, margin: usize) {
+        let mut line = self.buffer.cursor.line;
+        let mut row = self.cursor_visual_row();
+        let mut remaining = margin;
 
-        // Drag the cursor along rather than leaving it off screen, which is
-        // what makes scrolled-then-typed text land somewhere surprising.
-        let cursor = self.buffer.cursor.line;
-        if cursor < self.scroll {
-            self.buffer.move_to(Cursor { line: self.scroll, column: 0 });
-        } else if cursor >= self.scroll + self.viewport {
-            self.buffer.move_to(Cursor { line: self.scroll + self.viewport - 1, column: 0 });
+        while remaining > 0 {
+            if row > 0 {
+                let step = remaining.min(row);
+                row -= step;
+                remaining -= step;
+            } else if line > 0 {
+                line -= 1;
+                row = self.line_height(line).saturating_sub(1);
+                remaining -= 1;
+            } else {
+                break;
+            }
         }
+
+        self.anchor = Anchor { line, row };
+    }
+
+    /// Scrolls by whole visual rows, dragging the cursor to stay on screen.
+    ///
+    /// Paging by *logical* line would be useless here: the vault has a
+    /// 153-line note averaging 840 characters a line, where one page-down
+    /// could otherwise skip past a screenful of text.
+    pub fn scroll_rows(&mut self, delta: isize) {
+        if delta >= 0 {
+            self.advance_anchor(delta.unsigned_abs());
+        } else {
+            self.retreat_anchor(delta.unsigned_abs());
+        }
+
+        // Drag the cursor along, or scrolled-then-typed text lands somewhere
+        // surprising.
+        if self.rows_from_anchor().is_none_or(|rows| rows >= self.viewport) {
+            let target = self.anchor;
+            let column = wrap::offset(&self.buffer.line(target.line), self.width, target.row, 0);
+            self.buffer.move_to(Cursor { line: target.line, column });
+        }
+    }
+
+    fn advance_anchor(&mut self, mut rows: usize) {
+        let last = self.buffer.line_count().saturating_sub(1);
+
+        while rows > 0 {
+            let height = self.line_height(self.anchor.line);
+            let room = height.saturating_sub(self.anchor.row + 1);
+
+            if rows <= room {
+                self.anchor.row += rows;
+                return;
+            }
+            if self.anchor.line >= last {
+                self.anchor.row = height.saturating_sub(1);
+                return;
+            }
+            rows -= room + 1;
+            self.anchor.line += 1;
+            self.anchor.row = 0;
+        }
+    }
+
+    fn retreat_anchor(&mut self, mut rows: usize) {
+        while rows > 0 {
+            if self.anchor.row > 0 {
+                let step = rows.min(self.anchor.row);
+                self.anchor.row -= step;
+                rows -= step;
+            } else if self.anchor.line > 0 {
+                self.anchor.line -= 1;
+                self.anchor.row = self.line_height(self.anchor.line).saturating_sub(1);
+                rows -= 1;
+            } else {
+                return;
+            }
+        }
+    }
+
+    // --- markdown editing ---
+
+    /// Return in insert mode, with list awareness.
+    ///
+    /// Continues the list you are in, and ends it when you press Return on an
+    /// empty item. 308 of the vault's 328 notes contain a bullet list, so this
+    /// is the single most-used editing convenience there is.
+    pub fn insert_newline(&mut self) {
+        let line = self.buffer.line(self.buffer.cursor.line);
+
+        // Return on an empty item removes the marker instead of making another.
+        if markdown::is_empty_item(&line) && self.buffer.cursor.column >= line.chars().count() {
+            self.buffer.replace_line("");
+            self.buffer.insert("\n");
+            return;
+        }
+
+        let continuation = markdown::marker(&line)
+            .filter(|marker| self.buffer.cursor.column >= marker.content_at)
+            .map(|marker| marker.continuation());
+
+        self.buffer.insert("\n");
+        if let Some(prefix) = continuation {
+            self.buffer.insert(&prefix);
+        }
+    }
+
+    /// Ticks or unticks the task on the cursor's line.
+    pub fn toggle_task(&mut self) -> bool {
+        let line = self.buffer.line(self.buffer.cursor.line);
+        let Some(updated) = markdown::toggle_task(&line) else { return false };
+        self.buffer.replace_line(&updated);
+        true
+    }
+
+    /// Moves to the next or previous heading.
+    ///
+    /// 325 of 328 notes have headings, which makes this the natural way to move
+    /// through a long note — far more useful than paging through a build log.
+    pub fn jump_heading(&mut self, forward: bool) -> bool {
+        let count = self.buffer.line_count();
+        let start = self.buffer.cursor.line;
+
+        for offset in 1..=count {
+            let line = if forward {
+                (start + offset) % count
+            } else {
+                (start + count - offset % count) % count
+            };
+            if markdown::heading_level(&self.buffer.line(line)).is_some() {
+                self.buffer.move_to(Cursor { line, column: 0 });
+                self.follow_cursor();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The `[[wikilink]]` under the cursor, if there is one.
+    #[must_use]
+    pub fn link_under_cursor(&self) -> Option<String> {
+        let line = self.buffer.line(self.buffer.cursor.line);
+        markdown::link_at(&line, self.buffer.cursor.column)
+    }
+
+    /// Scrolls a screenful, keeping one row of overlap so you do not lose your
+    /// place across the jump.
+    pub fn page(&mut self, down: bool) {
+        let step = isize::try_from(self.viewport.saturating_sub(1).max(1)).unwrap_or(1);
+        self.scroll_rows(if down { step } else { -step });
+    }
+
+    /// Moves the cursor one visual row, which is not the same as one logical
+    /// line once text wraps.
+    pub fn move_visual(&mut self, down: bool) {
+        let line = self.buffer.line(self.buffer.cursor.line);
+        let (row, column) = wrap::locate(&line, self.width, self.buffer.cursor.column);
+        let height = wrap::height(&line, self.width);
+
+        if down && row + 1 < height {
+            let offset = wrap::offset(&line, self.width, row + 1, column);
+            self.buffer.move_to(Cursor { line: self.buffer.cursor.line, column: offset });
+            return;
+        }
+        if !down && row > 0 {
+            let offset = wrap::offset(&line, self.width, row - 1, column);
+            self.buffer.move_to(Cursor { line: self.buffer.cursor.line, column: offset });
+            return;
+        }
+
+        // Off the end of this line, so step to the neighbouring one and land
+        // on its nearest row.
+        let target_line = if down {
+            let next = self.buffer.cursor.line + 1;
+            if next >= self.buffer.line_count() {
+                return;
+            }
+            next
+        } else {
+            if self.buffer.cursor.line == 0 {
+                return;
+            }
+            self.buffer.cursor.line - 1
+        };
+
+        let target = self.buffer.line(target_line);
+        let target_row = if down { 0 } else { wrap::height(&target, self.width) - 1 };
+        let offset = wrap::offset(&target, self.width, target_row, column);
+        self.buffer.move_to(Cursor { line: target_line, column: offset });
     }
 
     // --- modes ---
@@ -138,11 +373,23 @@ impl Editor {
     }
 
     /// Enters jump mode, tagging every word start on screen.
+    ///
+    /// Only what is actually visible gets tagged. With wrapping, that is far
+    /// fewer logical lines than the viewport is tall.
     pub fn enter_jump(&mut self) {
-        let last = (self.scroll + self.viewport).min(self.buffer.line_count());
-        let lines: Vec<String> = (self.scroll..last).map(|index| self.buffer.line(index)).collect();
+        let mut lines = Vec::new();
+        let mut rows = 0;
+        let mut line = self.anchor.line;
 
-        self.tags = jump::tags(&lines, self.scroll);
+        while rows < self.viewport && line < self.buffer.line_count() {
+            let height = self.line_height(line);
+            let skipped = if line == self.anchor.line { self.anchor.row } else { 0 };
+            lines.push(self.buffer.line(line));
+            rows += height.saturating_sub(skipped);
+            line += 1;
+        }
+
+        self.tags = jump::tags(&lines, self.anchor.line);
         self.mode = Mode::Jump { typed: String::new() };
     }
 
@@ -228,8 +475,104 @@ mod tests {
 
     fn editor(text: &str) -> Editor {
         let mut editor = Editor::with_buffer(Buffer::from_str(text));
-        editor.set_viewport(10);
+        editor.set_viewport(10, 80);
         editor
+    }
+
+    /// Many short lines, so visual rows and logical lines line up.
+    fn many_lines(count: usize) -> Editor {
+        let text: String =
+            (0..count).map(|index| format!("line{index}\n")).collect::<Vec<_>>().concat();
+        editor(&text)
+    }
+
+    /// Performance guard against the real vault's largest note.
+    ///
+    /// `log.md` is 179 KB over 749 lines with a longest line of 1,597
+    /// characters. The bounds are generous — this exists to catch a
+    /// pathological regression (an accidental O(n) per keystroke), not to
+    /// measure precisely, so it must not be flaky on a loaded machine.
+    #[test]
+    fn a_179_kilobyte_note_stays_responsive() {
+        use std::time::Instant;
+
+        // Same shape as the real file: long prose lines, headings throughout.
+        let text: String = (0..750)
+            .map(|index| {
+                if index % 12 == 0 {
+                    format!("## Section {index}\n")
+                } else {
+                    format!("{} entry {index}\n", "some prose text ".repeat(15))
+                }
+            })
+            .collect::<Vec<_>>()
+            .concat();
+        assert!(text.len() > 150_000, "the fixture should match the real file's scale");
+
+        let mut editor = Editor::with_buffer(Buffer::from_str(&text));
+        editor.set_viewport(40, 110);
+
+        let start = Instant::now();
+        for _ in 0..200 {
+            editor.move_visual(true);
+        }
+        let movement = start.elapsed();
+
+        let start = Instant::now();
+        for _ in 0..100 {
+            editor.page(true);
+        }
+        for _ in 0..100 {
+            editor.page(false);
+        }
+        let paging = start.elapsed();
+
+        let start = Instant::now();
+        editor.buffer.move_buffer_end();
+        editor.follow_cursor();
+        for _ in 0..50 {
+            editor.jump_heading(true);
+        }
+        let headings = start.elapsed();
+
+        let start = Instant::now();
+        editor.enter_jump();
+        let tagging = start.elapsed();
+
+        // Each of these is hundreds of operations; a keystroke must be far
+        // under a frame, so hundreds must be well under a second.
+        assert!(movement.as_millis() < 500, "200 cursor moves took {movement:?}");
+        assert!(paging.as_millis() < 500, "200 pages took {paging:?}");
+        assert!(headings.as_millis() < 500, "50 heading jumps took {headings:?}");
+        assert!(tagging.as_millis() < 100, "tagging one screen took {tagging:?}");
+    }
+
+    #[test]
+    fn undo_history_is_bounded_so_a_long_session_cannot_grow_without_limit() {
+        let mut editor = editor("");
+        for index in 0..(buffer::UNDO_LIMIT + 200) {
+            editor.buffer.insert(&format!("{index} "));
+        }
+        assert!(
+            editor.buffer.undo_depth() <= buffer::UNDO_LIMIT,
+            "history grew to {}",
+            editor.buffer.undo_depth()
+        );
+
+        // And the recent history still works.
+        assert!(editor.buffer.undo());
+    }
+
+    #[test]
+    fn entering_and_leaving_insert_mode_round_trips() {
+        let mut editor = editor("x");
+        assert_eq!(editor.mode, Mode::Normal);
+
+        editor.enter_insert();
+        assert_eq!(editor.mode, Mode::Insert);
+
+        editor.enter_normal();
+        assert_eq!(editor.mode, Mode::Normal);
     }
 
     #[test]
@@ -245,18 +588,6 @@ mod tests {
 
         editor.disarm_close();
         assert!(!editor.arm_close(), "disarming resets the confirmation");
-    }
-
-    #[test]
-    fn entering_and_leaving_insert_mode_round_trips() {
-        let mut editor = editor("x");
-        assert_eq!(editor.mode, Mode::Normal);
-
-        editor.enter_insert();
-        assert_eq!(editor.mode, Mode::Insert);
-
-        editor.enter_normal();
-        assert_eq!(editor.mode, Mode::Normal);
     }
 
     #[test]
@@ -279,7 +610,6 @@ mod tests {
         let mut editor = editor("one two");
         editor.enter_jump();
 
-        // '1' cannot start any label.
         editor.jump_input('1');
         assert_eq!(editor.mode, Mode::Normal);
         assert!(editor.tags().is_empty(), "the overlay is cleared");
@@ -287,10 +617,8 @@ mod tests {
 
     #[test]
     fn jump_only_tags_what_is_on_screen() {
-        let text: String =
-            (0..100).map(|index| format!("line{index}\n")).collect::<Vec<_>>().concat();
-        let mut editor = editor(&text);
-        editor.scroll = 40;
+        let mut editor = many_lines(100);
+        editor.anchor = Anchor { line: 40, row: 0 };
         editor.enter_jump();
 
         assert_eq!(editor.tags().len(), 10, "one per visible line");
@@ -299,31 +627,112 @@ mod tests {
 
     #[test]
     fn the_viewport_follows_the_cursor_in_both_directions() {
-        let text: String =
-            (0..100).map(|index| format!("line{index}\n")).collect::<Vec<_>>().concat();
-        let mut editor = editor(&text);
+        let mut editor = many_lines(100);
 
         editor.buffer.move_to(Cursor { line: 50, column: 0 });
         editor.follow_cursor();
-        assert!(editor.scroll <= 50 && 50 < editor.scroll + 10, "cursor is on screen");
+        assert!(editor.anchor.line <= 50 && 50 < editor.anchor.line + 10);
 
         editor.buffer.move_to(Cursor { line: 2, column: 0 });
         editor.follow_cursor();
-        assert!(editor.scroll <= 2, "scrolling back up works too");
+        assert!(editor.anchor.line <= 2, "scrolling back up works too");
     }
 
     #[test]
-    fn scrolling_drags_the_cursor_with_it() {
-        let text: String =
-            (0..100).map(|index| format!("line{index}\n")).collect::<Vec<_>>().concat();
-        let mut editor = editor(&text);
+    fn paging_drags_the_cursor_with_it() {
+        let mut editor = many_lines(100);
 
-        editor.scroll_by(50);
+        editor.page(true);
         assert!(
-            editor.buffer.cursor.line >= editor.scroll,
+            editor.buffer.cursor.line >= editor.anchor.line,
             "the cursor must not be left off screen"
         );
+        assert!(editor.anchor.line > 0, "the view actually moved");
     }
+
+    #[test]
+    fn paging_back_from_the_top_stays_at_the_top() {
+        let mut editor = many_lines(100);
+        editor.page(false);
+        assert_eq!(editor.anchor, Anchor { line: 0, row: 0 });
+    }
+
+    // --- wrapping ---
+
+    /// 91% of the real vault's notes have a line over 120 characters, so this
+    /// is the normal case, not an edge case.
+    #[test]
+    fn a_long_line_occupies_several_visual_rows() {
+        let mut editor = Editor::with_buffer(Buffer::from_str(&"word ".repeat(60)));
+        editor.set_viewport(10, 40);
+
+        assert!(editor.line_height(0) > 5, "a 300-character line must wrap");
+    }
+
+    #[test]
+    fn vertical_movement_walks_visual_rows_not_logical_lines() {
+        let mut editor = Editor::with_buffer(Buffer::from_str(&"word ".repeat(40)));
+        editor.set_viewport(10, 40);
+
+        // One logical line, several visual rows: moving down must stay on it.
+        editor.move_visual(true);
+        assert_eq!(editor.buffer.cursor.line, 0, "still the same logical line");
+        assert!(editor.buffer.cursor.column > 0, "but further along it");
+
+        editor.move_visual(false);
+        assert_eq!(editor.buffer.cursor.column, 0, "and back again");
+    }
+
+    #[test]
+    fn vertical_movement_crosses_into_the_next_logical_line_at_the_end() {
+        let mut editor = editor("short\nalso short");
+
+        editor.move_visual(true);
+        assert_eq!(editor.buffer.cursor.line, 1);
+
+        editor.move_visual(false);
+        assert_eq!(editor.buffer.cursor.line, 0);
+    }
+
+    #[test]
+    fn paging_through_one_enormous_line_makes_progress() {
+        // The real vault has a 5,139-character line. Paging by logical line
+        // would move nowhere at all here.
+        let mut editor = Editor::with_buffer(Buffer::from_str(&"word ".repeat(1200)));
+        editor.set_viewport(10, 80);
+
+        editor.page(true);
+        assert_eq!(editor.anchor.line, 0, "still inside the same line");
+        assert!(editor.anchor.row > 0, "but scrolled down within it");
+
+        let after_one = editor.anchor.row;
+        editor.page(true);
+        assert!(editor.anchor.row > after_one, "paging keeps making progress");
+    }
+
+    #[test]
+    fn scrolling_never_runs_past_the_end() {
+        let mut editor = many_lines(20);
+        for _ in 0..50 {
+            editor.page(true);
+        }
+        assert!(editor.anchor.line < editor.buffer.line_count());
+    }
+
+    #[test]
+    fn a_narrow_viewport_does_not_hang_or_panic() {
+        let mut editor = Editor::with_buffer(Buffer::from_str("some reasonably long text here"));
+        for width in [0, 1, 2, 5] {
+            editor.set_viewport(3, width);
+            editor.follow_cursor();
+            editor.page(true);
+            editor.move_visual(true);
+            editor.enter_jump();
+            editor.enter_normal();
+        }
+    }
+
+    // --- search ---
 
     #[test]
     fn search_finds_the_next_hit_and_wraps() {
