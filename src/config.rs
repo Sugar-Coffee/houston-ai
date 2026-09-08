@@ -46,6 +46,12 @@ reads the folder where it sits.
 pub struct Config {
     /// Where the vault lives. `None` means the default under `~/.houston`.
     pub vault: Option<PathBuf>,
+    /// Where new agent sessions start. `None` means the home directory.
+    ///
+    /// Not the directory Houston was launched from: you start Houston once and
+    /// leave it running for days, so where it happened to be launched says
+    /// nothing about where the next agent should work.
+    pub agent_directory: Option<PathBuf>,
 }
 
 impl Config {
@@ -81,6 +87,15 @@ impl Config {
         std::fs::write(path, text)
             .with_context(|| format!("could not write {}", path.display()))?;
         Ok(())
+    }
+
+    /// Where a new agent session should start.
+    #[must_use]
+    pub fn agent_root(&self) -> PathBuf {
+        self.agent_directory.as_deref().map_or_else(
+            || std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from),
+            crate::paths::expand_home,
+        )
     }
 
     /// Where the vault should be, without creating anything.
@@ -136,18 +151,11 @@ fn resolve_vault(
     configured: Option<&Path>,
     default: PathBuf,
 ) -> PathBuf {
-    environment.or(configured).map_or(default, expand_home)
+    environment.or(configured).map_or(default, crate::paths::expand_home)
 }
 
 pub fn config_path() -> Result<PathBuf> {
     Ok(crate::hooks::state_dir()?.join("config.toml"))
-}
-
-/// Expands a leading `~`, which people type and `PathBuf` does not understand.
-fn expand_home(path: &Path) -> PathBuf {
-    let Ok(rest) = path.strip_prefix("~") else { return path.to_path_buf() };
-    std::env::var_os("HOME")
-        .map_or_else(|| path.to_path_buf(), |home| PathBuf::from(home).join(rest))
 }
 
 #[cfg(test)]
@@ -195,12 +203,13 @@ mod tests {
     }
 
     #[test]
-    fn a_tilde_in_a_configured_path_is_expanded() {
+    fn the_agent_directory_defaults_to_home() {
         let home = PathBuf::from(std::env::var("HOME").unwrap());
-        assert_eq!(expand_home(Path::new("~/notes")), home.join("notes"));
-        assert_eq!(expand_home(Path::new("/absolute")), PathBuf::from("/absolute"));
-        // A path that merely starts with the letters is left alone.
-        assert_eq!(expand_home(Path::new("~notes")), PathBuf::from("~notes"));
+        assert_eq!(Config::default().agent_root(), home);
+
+        let configured =
+            Config { agent_directory: Some(PathBuf::from("~/Projects")), ..Config::default() };
+        assert_eq!(configured.agent_root(), home.join("Projects"), "and expands a tilde");
     }
 
     #[test]
@@ -208,7 +217,9 @@ mod tests {
         let path = std::env::temp_dir().join("houston-config-save-test.toml");
         let _ = std::fs::remove_file(&path);
 
-        Config { vault: Some(PathBuf::from("/tmp/x")) }.save_to(&path).unwrap();
+        Config { vault: Some(PathBuf::from("/tmp/x")), ..Config::default() }
+            .save_to(&path)
+            .unwrap();
 
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(written.contains("/tmp/x"));
@@ -219,7 +230,7 @@ mod tests {
 
     #[test]
     fn config_round_trips_through_toml() {
-        let config = Config { vault: Some(PathBuf::from("/tmp/x")) };
+        let config = Config { vault: Some(PathBuf::from("/tmp/x")), ..Config::default() };
         let text = toml::to_string_pretty(&config).unwrap();
         let decoded: Config = toml::from_str(&text).unwrap();
         assert_eq!(decoded.vault, config.vault);
@@ -251,7 +262,10 @@ mod tests {
 
     #[test]
     fn a_configured_path_that_does_not_exist_is_an_error_not_a_new_folder() {
-        let config = Config { vault: Some(PathBuf::from("/tmp/houston-does-not-exist-xyz")) };
+        let config = Config {
+            vault: Some(PathBuf::from("/tmp/houston-does-not-exist-xyz")),
+            ..Config::default()
+        };
         let result = config.ensure_vault();
 
         assert!(result.is_err(), "a mistyped path must surface, not be created");

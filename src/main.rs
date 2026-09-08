@@ -10,15 +10,18 @@ mod clipboard;
 mod config;
 mod editor;
 mod event;
+mod form;
 mod hooks;
 mod input;
 mod palette;
+mod paths;
 mod provider;
 mod pty;
 mod session;
 mod terminal;
 mod ui;
 mod vault;
+mod worktree;
 
 use anyhow::Result;
 use app::App;

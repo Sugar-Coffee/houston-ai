@@ -61,6 +61,11 @@ pub struct Session {
     /// Phase 2's `~/.houston/state.json`.
     #[expect(dead_code, reason = "Phase 2 persists and restarts sessions from this")]
     pub spec: LaunchSpec,
+    /// The worktree this session runs in, by name, if it was given one.
+    ///
+    /// Lets the worktree manager say which checkouts are still in use, so
+    /// cleaning up does not mean guessing.
+    pub worktree: Option<String>,
     pty: PtySession,
 }
 
@@ -222,6 +227,13 @@ impl Sessions {
         self.items.get_mut(self.selected)
     }
 
+    /// Whether any live session is using a worktree.
+    pub fn uses_worktree(&self, name: &str) -> bool {
+        self.items.iter().any(|session| {
+            session.worktree.as_deref() == Some(name) && !matches!(session.state, State::Exited(_))
+        })
+    }
+
     /// Routes a hook notification to the session that raised it.
     ///
     /// Returns `true` if it matched a live session.
@@ -298,6 +310,7 @@ impl Sessions {
             kind,
             state: State::Running,
             spec,
+            worktree: None,
             pty,
         });
         self.selected = self.items.len() - 1;

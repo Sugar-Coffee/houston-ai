@@ -9,10 +9,12 @@
 //!    emitting thousands of lines a second must not cost thousands of repaints.
 
 use crate::{
-    app::{App, InputFocus, Picker, Tab},
+    app::{App, InputFocus, Picker, Tab, fields},
     clipboard,
     editor::Editor,
+    form::Activation,
     hooks::{self, Notification},
+    paths,
     pty::Size,
     terminal::Backend,
     ui,
@@ -23,6 +25,7 @@ use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use ratatui::Terminal;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// ~60fps. The upper bound on how often we draw, not how often we poll.
@@ -147,6 +150,7 @@ fn on_key(app: &mut App, key: KeyEvent) {
     }
 
     match app.focus() {
+        InputFocus::Form => on_key_form(app, key),
         InputFocus::Editor => on_key_editor(app, key),
         InputFocus::Session => on_key_attached(app, key),
         InputFocus::Overlay => on_key_picker(app, key),
@@ -368,8 +372,212 @@ fn close_editor(app: &mut App) {
     app.dirty = true;
 }
 
+/// Forms: the new-session dialog and the Settings menu.
+///
+/// Two levels. Not editing, keys move between fields and Return activates one.
+/// Editing, keys are text and Return commits — so `q` in a path is a `q`,
+/// not a quit.
+fn on_key_form(app: &mut App, key: KeyEvent) {
+    let modal = app.form.is_some();
+    app.dirty = true;
+
+    let Some(form) = app.form.as_mut().or(Some(&mut app.settings)) else { return };
+
+    if form.is_editing() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                form.commit_field();
+                apply_form_field(app, modal);
+            }
+            KeyCode::Tab => form.complete(),
+            KeyCode::Backspace => form.pop(),
+            KeyCode::Char(character) => form.push(character),
+            _ => {}
+        }
+        return;
+    }
+
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => form.move_focus(true),
+        KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => form.move_focus(false),
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            let activation = form.activate();
+            sync_form_visibility(app, modal);
+
+            if activation == Activation::Submitted {
+                accept_form(app);
+            } else {
+                apply_form_field(app, modal);
+            }
+        }
+        KeyCode::Esc if modal => app.close_form(),
+        KeyCode::Char('q') if !modal => app.request_quit(),
+        _ if !modal => on_key_browsing(app, key),
+        _ => {}
+    }
+}
+
+/// Shows the worktree name field only when a worktree was asked for.
+fn sync_form_visibility(app: &mut App, modal: bool) {
+    if !modal {
+        return;
+    }
+    let wanted = app.form.as_ref().is_some_and(|form| form.is_on(fields::WORKTREE));
+    if let Some(form) = app.form.as_mut() {
+        form.set_visible(fields::WORKTREE_NAME, wanted);
+    }
+}
+
+/// Settings apply as soon as a field is committed — there is no save button,
+/// because a settings menu with one is a settings menu you can leave in a
+/// state that does not match what the app is doing.
+fn apply_form_field(app: &mut App, modal: bool) {
+    if modal {
+        return;
+    }
+
+    let vault = app.settings.value(fields::VAULT);
+    let agent = app.settings.value(fields::AGENT_DIRECTORY);
+
+    let previous = app.config.vault.clone();
+    app.config.vault = (!vault.trim().is_empty()).then(|| PathBuf::from(vault.trim()));
+    app.config.agent_directory = (!agent.trim().is_empty()).then(|| PathBuf::from(agent.trim()));
+
+    app.load_vault();
+    if let Some(error) = app.vault_error.clone() {
+        app.config.vault = previous;
+        app.load_vault();
+        app.notify(error);
+        app.rebuild_settings();
+        return;
+    }
+
+    if let Err(error) = app.config.save_to(&app.config_path) {
+        app.notify(format!("could not save settings: {error}"));
+    }
+}
+
+/// Creates the session the new-session form describes.
+fn accept_form(app: &mut App) {
+    let Some(form) = app.form.as_ref() else { return };
+
+    let name = form.field(fields::NAME).map(|field| field.value.trim().to_string());
+    let name = name.filter(|name| !name.is_empty());
+    let directory = form.field(fields::DIRECTORY).map_or_else(
+        || app.config.agent_root(),
+        |field| paths::expand_home(Path::new(&field.value)),
+    );
+    let wants_worktree = form.is_on(fields::WORKTREE);
+    let worktree_name = form
+        .field(fields::WORKTREE_NAME)
+        .map(|field| field.value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    if !directory.is_dir() {
+        app.notify(format!("{} is not a directory", directory.display()));
+        return;
+    }
+
+    // A worktree replaces the working directory, so it has to succeed before
+    // anything is spawned — starting an agent in the wrong place is worse than
+    // not starting it.
+    let (working_directory, worktree) = if wants_worktree {
+        let label = worktree_name.or_else(|| name.clone()).unwrap_or_else(|| "session".to_string());
+
+        match crate::worktree::create(&directory, &label) {
+            Ok(worktree) => (worktree.path.clone(), Some(worktree)),
+            Err(error) => {
+                app.notify(error.to_string());
+                return;
+            }
+        }
+    } else {
+        (directory, None)
+    };
+
+    app.close_form();
+
+    let size = Size::new(24, 80);
+    match app.sessions.spawn_agent(&working_directory, size) {
+        Ok(_) => {
+            if let Some(session) = app.sessions.selected_mut() {
+                if let Some(name) = name {
+                    session.rename(Some(name));
+                }
+                session.worktree = worktree.map(|worktree| worktree.name);
+            }
+            app.sessions.attach();
+            app.select_tab(Tab::Sessions);
+            if let Some(warning) = app.sessions.take_hook_warning() {
+                app.notify(format!("agent status unavailable: {warning}"));
+            }
+        }
+        Err(error) => app.notify(format!("could not start a session: {error}")),
+    }
+}
+
+/// Loads the worktree manager.
+fn open_worktrees(app: &mut App) {
+    match crate::worktree::list() {
+        Ok(worktrees) => {
+            app.worktree_selected = 0;
+            app.worktrees = Some(worktrees);
+            app.dirty = true;
+        }
+        Err(error) => app.notify(format!("could not read worktrees: {error}")),
+    }
+}
+
+/// The worktree manager.
+fn on_key_worktrees(app: &mut App, key: KeyEvent) {
+    app.dirty = true;
+    let count = app.worktrees.as_ref().map_or(0, Vec::len);
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q' | 'W') => app.worktrees = None,
+        KeyCode::Char('j') | KeyCode::Down if count > 0 => {
+            app.worktree_selected = (app.worktree_selected + 1) % count;
+        }
+        KeyCode::Char('k') | KeyCode::Up if count > 0 => {
+            app.worktree_selected = (app.worktree_selected + count - 1) % count;
+        }
+        KeyCode::Char('r') => open_worktrees(app),
+        KeyCode::Char(force @ ('d' | 'D')) => remove_worktree(app, force == 'D'),
+        _ => {}
+    }
+}
+
+/// Removes the selected worktree.
+///
+/// Refuses while a live session is using it, however forceful you are — the
+/// agent would lose its working directory out from under it.
+fn remove_worktree(app: &mut App, force: bool) {
+    let Some(worktree) =
+        app.worktrees.as_ref().and_then(|list| list.get(app.worktree_selected)).cloned()
+    else {
+        return;
+    };
+
+    if app.sessions.uses_worktree(&worktree.name) {
+        app.notify(format!("{} is in use — close its session first", worktree.name));
+        return;
+    }
+
+    match crate::worktree::remove(&worktree, force) {
+        Ok(()) => {
+            app.notify(format!("removed {}", worktree.name));
+            open_worktrees(app);
+        }
+        Err(error) => app.notify(error.to_string()),
+    }
+}
+
 /// The modal session chooser.
 fn on_key_picker(app: &mut App, key: KeyEvent) {
+    if app.worktrees.is_some() {
+        return on_key_worktrees(app, key);
+    }
+
     app.dirty = true;
     let count = app.sessions.len();
 
@@ -429,10 +637,6 @@ fn deliver_picked(app: &mut App) {
 fn on_key_typing(app: &mut App, key: KeyEvent) {
     if app.renaming.is_some() {
         on_key_renaming(app, key);
-        return;
-    }
-    if app.is_editing_settings() {
-        on_key_editing_vault(app, key);
         return;
     }
 
@@ -503,7 +707,6 @@ fn on_key_browsing(app: &mut App, key: KeyEvent) {
         }
         _ if app.tab == Tab::Sessions => on_key_sessions(app, key),
         _ if app.tab == Tab::Vault => on_key_vault(app, key),
-        _ if app.tab == Tab::Settings => on_key_settings(app, key),
         _ if app.tab == Tab::Board => on_key_board(app, key),
         _ => {}
     }
@@ -593,19 +796,6 @@ fn move_within_column(app: &mut App, forward: bool) {
     app.sessions.select(candidate[next]);
 }
 
-fn on_key_settings(app: &mut App, key: KeyEvent) {
-    if key.code == KeyCode::Char('e') {
-        // Seed the field with what is in use, so editing is a tweak rather
-        // than a retype.
-        app.editing_vault = Some(
-            app.config
-                .vault_root()
-                .map_or_else(|_| String::new(), |root| root.display().to_string()),
-        );
-        app.dirty = true;
-    }
-}
-
 /// Renaming the selected session.
 fn on_key_renaming(app: &mut App, key: KeyEvent) {
     app.dirty = true;
@@ -632,61 +822,6 @@ fn on_key_renaming(app: &mut App, key: KeyEvent) {
             }
         }
         _ => {}
-    }
-}
-
-/// Editing the vault path in Settings.
-fn on_key_editing_vault(app: &mut App, key: KeyEvent) {
-    app.dirty = true;
-
-    match key.code {
-        KeyCode::Esc => app.editing_vault = None,
-        KeyCode::Backspace => {
-            if let Some(draft) = app.editing_vault.as_mut() {
-                draft.pop();
-            }
-        }
-        KeyCode::Char(character) => {
-            if let Some(draft) = app.editing_vault.as_mut() {
-                draft.push(character);
-            }
-        }
-        KeyCode::Enter => commit_vault_path(app),
-        _ => {}
-    }
-}
-
-/// Saves the typed vault path and reopens the vault.
-///
-/// The old vault is kept if the new path does not work, so a typo cannot leave
-/// you with no vault at all.
-fn commit_vault_path(app: &mut App) {
-    let Some(draft) = app.editing_vault.take() else { return };
-    let draft = draft.trim().to_string();
-
-    let previous = app.config.vault.clone();
-    // An empty field means "go back to the default", which is the only way to
-    // undo a bad path without editing the config file by hand.
-    app.config.vault = (!draft.is_empty()).then(|| std::path::PathBuf::from(&draft));
-
-    app.load_vault();
-
-    if let Some(error) = app.vault_error.clone() {
-        app.config.vault = previous;
-        app.load_vault();
-        app.notify(error);
-        return;
-    }
-
-    match app.config.save_to(&app.config_path) {
-        Ok(()) => {
-            let count = app.browser.as_ref().map_or(0, |browser| browser.vault.len());
-            app.notify(format!(
-                "vault set — {count} notes indexed, saved to {}",
-                app.config_path.display()
-            ));
-        }
-        Err(error) => app.notify(format!("vault opened but could not save config: {error}")),
     }
 }
 
@@ -828,8 +963,10 @@ fn on_key_sessions(app: &mut App, key: KeyEvent) {
             app.sessions.select_previous();
             app.dirty = true;
         }
-        KeyCode::Char('n') => spawn(app, false),
+        // `n` asks where and how; `s` is the quick shell you want immediately.
+        KeyCode::Char('n') => app.open_new_session_form(),
         KeyCode::Char('s') => spawn(app, true),
+        KeyCode::Char('W') => open_worktrees(app),
         KeyCode::Char('r') => {
             if let Some(session) = app.sessions.selected() {
                 app.renaming = Some(session.name.clone());
@@ -940,68 +1077,135 @@ mod tests {
     }
 
     #[test]
-    fn editing_the_vault_path_captures_every_key() {
+    fn settings_is_a_menu_you_move_through() {
         let mut app = App::new();
         app.select_tab(Tab::Settings);
-        on_key(&mut app, press(KeyCode::Char('e')));
+        assert_eq!(app.focus(), InputFocus::Form);
+        assert!(!app.settings.is_editing(), "it opens as a menu, not a text box");
 
-        assert!(app.is_editing_settings());
-        assert!(!app.editing_vault.as_ref().unwrap().is_empty(), "seeded with the current path");
+        let first = app.settings.focused().unwrap().label;
+        on_key(&mut app, press(KeyCode::Char('j')));
+        assert_ne!(app.settings.focused().unwrap().label, first, "j moves the selection");
 
-        // `q` and `1` are commands everywhere else.
+        on_key(&mut app, press(KeyCode::Enter));
+        assert!(app.settings.is_editing(), "Return edits the selected row");
+    }
+
+    #[test]
+    fn editing_a_settings_row_captures_every_key() {
+        let mut app = App::new();
+        app.config_path = std::env::temp_dir().join("houston-settings-menu-test.toml");
+        app.select_tab(Tab::Settings);
+        on_key(&mut app, press(KeyCode::Enter));
+
         for character in "q1".chars() {
             on_key(&mut app, press(KeyCode::Char(character)));
         }
-        assert!(!app.should_quit);
-        assert_eq!(app.tab, Tab::Settings);
-        assert!(app.editing_vault.as_ref().unwrap().ends_with("q1"));
+        assert!(!app.should_quit, "q inside a path is a q");
+        assert_eq!(app.tab, Tab::Settings, "1 must not switch view");
 
-        on_key(&mut app, press(KeyCode::Esc));
-        assert!(!app.is_editing_settings(), "escape abandons the edit");
+        std::fs::remove_file(&app.config_path).ok();
     }
 
     #[test]
     fn a_bad_vault_path_is_rejected_and_the_old_one_kept() {
         let mut app = App::new();
         app.config_path = std::env::temp_dir().join("houston-bad-path-config.toml");
-        let before = app.config.vault.clone();
         let indexed_before = app.browser.as_ref().map(|browser| browser.vault.len());
 
         app.select_tab(Tab::Settings);
-        app.editing_vault = Some("/tmp/houston-nope-not-here".to_string());
-        commit_vault_path(&mut app);
+        on_key(&mut app, press(KeyCode::Enter));
+        for _ in 0..80 {
+            on_key(&mut app, press(KeyCode::Backspace));
+        }
+        for character in "/tmp/houston-nope-not-here".chars() {
+            on_key(&mut app, press(KeyCode::Char(character)));
+        }
+        on_key(&mut app, press(KeyCode::Enter));
 
         assert!(app.notice.is_some(), "the failure is reported");
-        assert_eq!(app.config.vault, before, "the config is rolled back");
         assert_eq!(
             app.browser.as_ref().map(|browser| browser.vault.len()),
             indexed_before,
             "a typo must not leave you with no vault"
         );
+
+        std::fs::remove_file(&app.config_path).ok();
     }
 
     #[test]
-    fn pointing_at_a_real_folder_switches_the_vault() {
-        let root = std::env::temp_dir().join("houston-settings-switch");
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("only-note.md"), "# Only note").unwrap();
-
+    fn the_new_session_form_opens_instead_of_spawning_immediately() {
         let mut app = App::new();
-        // Never the real config: an earlier version of this test repointed a
-        // live install at a temp folder that it then deleted.
-        app.config_path = std::env::temp_dir().join("houston-settings-switch-config.toml");
+        on_key(&mut app, press(KeyCode::Char('n')));
 
-        app.select_tab(Tab::Settings);
-        app.editing_vault = Some(root.display().to_string());
-        commit_vault_path(&mut app);
+        assert!(app.form.is_some(), "n asks where and how");
+        assert_eq!(app.focus(), InputFocus::Form);
+        assert_eq!(app.sessions.len(), 0, "nothing has been started yet");
 
-        assert_eq!(app.browser.as_ref().unwrap().vault.len(), 1);
-        assert!(app.vault_error.is_none());
-        assert!(app.config_path.exists(), "the setting is persisted");
+        on_key(&mut app, press(KeyCode::Esc));
+        assert!(app.form.is_none());
+        assert_eq!(app.sessions.len(), 0, "cancelling starts nothing");
+    }
 
-        std::fs::remove_file(&app.config_path).ok();
-        std::fs::remove_dir_all(&root).ok();
+    #[test]
+    fn the_worktree_name_field_appears_only_when_asked_for() {
+        let mut app = App::new();
+        app.open_new_session_form();
+
+        let hidden = app.form.as_ref().unwrap().field(fields::WORKTREE_NAME).unwrap();
+        assert!(!hidden.visible, "pointless until a worktree is wanted");
+
+        // Move to the toggle and turn it on.
+        for _ in 0..2 {
+            on_key(&mut app, press(KeyCode::Down));
+        }
+        on_key(&mut app, press(KeyCode::Char(' ')));
+
+        assert!(app.form.as_ref().unwrap().is_on(fields::WORKTREE));
+        assert!(app.form.as_ref().unwrap().field(fields::WORKTREE_NAME).unwrap().visible);
+    }
+
+    #[test]
+    fn a_shell_still_starts_immediately_without_a_form() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+
+        assert!(app.form.is_none(), "the quick shell asks nothing");
+        assert_eq!(app.sessions.len(), 1);
+    }
+
+    #[test]
+    fn the_worktree_manager_opens_and_closes() {
+        let mut app = App::new();
+        on_key(&mut app, KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
+
+        assert!(app.worktrees.is_some(), "W opens the manager");
+        assert_eq!(app.focus(), InputFocus::Overlay);
+
+        on_key(&mut app, press(KeyCode::Esc));
+        assert!(app.worktrees.is_none());
+    }
+
+    #[test]
+    fn a_worktree_in_use_is_not_removed() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        app.sessions.detach();
+        app.sessions.selected_mut().unwrap().worktree = Some("busy".to_string());
+
+        app.worktrees = Some(vec![crate::worktree::Worktree {
+            name: "busy".to_string(),
+            path: std::env::temp_dir().join("houston-never-removed"),
+            repository: std::path::PathBuf::new(),
+            branch: None,
+            dirty: false,
+            commits: 0,
+        }]);
+        app.worktree_selected = 0;
+
+        on_key(&mut app, press(KeyCode::Char('d')));
+        assert!(app.notice.as_deref().is_some_and(|n| n.contains("in use")));
+        assert_eq!(app.worktrees.as_ref().unwrap().len(), 1, "nothing was removed");
     }
 
     #[test]

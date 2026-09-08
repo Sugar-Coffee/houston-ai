@@ -3,9 +3,11 @@
 use crate::{
     config::Config,
     editor::Editor,
+    form::{Field, Form},
     pty::Size,
     session::{Focus, Sessions},
     vault::{Browser, Vault, browser::Mode as VaultMode},
+    worktree::Worktree,
 };
 use std::path::PathBuf;
 
@@ -52,6 +54,8 @@ pub enum InputFocus {
     Overlay,
     /// Keys belong to the editor, which owns its own modality.
     Editor,
+    /// Keys drive a form: move between fields, edit one, accept or cancel.
+    Form,
 }
 
 /// A modal chooser: pick one of the running sessions.
@@ -77,8 +81,6 @@ pub struct App {
     pub config_path: PathBuf,
     /// Why the vault could not be opened, if it could not.
     pub vault_error: Option<String>,
-    /// The path being typed in Settings. `None` when not editing.
-    pub editing_vault: Option<String>,
     /// Where new sessions start. The directory Houston was launched from.
     pub cwd: PathBuf,
     pub should_quit: bool,
@@ -95,6 +97,35 @@ pub struct App {
     pub picker: Option<Picker>,
     /// The open editor, if any. Replaces the reader on the Vault view.
     pub editor: Option<Editor>,
+    /// The open modal form, if any.
+    pub form: Option<Form>,
+    /// What the open form will do when accepted.
+    pub form_purpose: FormPurpose,
+    /// The Settings view, which *is* a form — a menu of fields you move
+    /// through and press Return to edit.
+    pub settings: Form,
+    /// The worktree manager's contents, loaded when it opens.
+    pub worktrees: Option<Vec<Worktree>>,
+    pub worktree_selected: usize,
+}
+
+/// What accepting the open form does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormPurpose {
+    None,
+    /// Start a session with the form's settings.
+    NewSession,
+}
+
+/// Field labels, so the form and the code that reads it cannot drift apart.
+pub mod fields {
+    pub const NAME: &str = "Name";
+    pub const DIRECTORY: &str = "Directory";
+    pub const WORKTREE: &str = "Worktree";
+    pub const WORKTREE_NAME: &str = "Worktree name";
+    pub const VAULT: &str = "Vault folder";
+    pub const AGENT_DIRECTORY: &str = "New sessions start in";
+    pub const CREATE: &str = "Create";
 }
 
 impl App {
@@ -103,7 +134,48 @@ impl App {
         let mut app = Self::with_config(config);
         app.notice = config_error;
         app.load_vault();
+        app.rebuild_settings();
         app
+    }
+
+    /// Rebuilds the Settings form from the current config.
+    ///
+    /// Called after anything changes a setting, so the menu always shows what
+    /// is actually in force rather than what was typed.
+    pub fn rebuild_settings(&mut self) {
+        let vault = self
+            .config
+            .vault_root()
+            .map_or_else(|_| String::new(), |root| crate::paths::contract_home(&root));
+        let agent = crate::paths::contract_home(&self.config.agent_root());
+
+        self.settings = Form::new(vec![
+            Field::directory(fields::VAULT, "~/.houston/vault", vault),
+            Field::directory(fields::AGENT_DIRECTORY, "~/", agent),
+        ]);
+    }
+
+    /// Opens the new-session form, seeded from config.
+    pub fn open_new_session_form(&mut self) {
+        let directory = crate::paths::contract_home(&self.config.agent_root());
+        let mut form = Form::new(vec![
+            Field::text(fields::NAME, "the agent's name", ""),
+            Field::directory(fields::DIRECTORY, "~/", directory),
+            Field::toggle(fields::WORKTREE, "an isolated git checkout", false),
+            Field::text(fields::WORKTREE_NAME, "from the session name", ""),
+            Field::action(fields::CREATE, "start the session"),
+        ]);
+        form.set_visible(fields::WORKTREE_NAME, false);
+
+        self.form = Some(form);
+        self.form_purpose = FormPurpose::NewSession;
+        self.dirty = true;
+    }
+
+    pub fn close_form(&mut self) {
+        self.form = None;
+        self.form_purpose = FormPurpose::None;
+        self.dirty = true;
     }
 
     fn with_config(config: Config) -> Self {
@@ -115,7 +187,6 @@ impl App {
             config_path: crate::config::config_path()
                 .unwrap_or_else(|_| PathBuf::from("houston-config.toml")),
             vault_error: None,
-            editing_vault: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             should_quit: false,
             dirty: true,
@@ -124,6 +195,11 @@ impl App {
             renaming: None,
             picker: None,
             editor: None,
+            form: None,
+            form_purpose: FormPurpose::None,
+            settings: Form::new(Vec::new()),
+            worktrees: None,
+            worktree_selected: 0,
         }
     }
 
@@ -144,11 +220,6 @@ impl App {
         self.dirty = true;
     }
 
-    /// Whether keystrokes are filling in the Settings path field.
-    pub const fn is_editing_settings(&self) -> bool {
-        self.editing_vault.is_some()
-    }
-
     /// Where the next keystroke goes.
     ///
     /// Order matters: an overlay sits above everything, then Houston's own
@@ -157,7 +228,18 @@ impl App {
         if self.picker.is_some() {
             return InputFocus::Overlay;
         }
-        if self.renaming.is_some() || self.editing_vault.is_some() || self.is_vault_query() {
+        if self.form.is_some() {
+            return InputFocus::Form;
+        }
+        // Settings is a form too, so editing a row there takes the keyboard
+        // the same way — otherwise `q` in a path would quit the app.
+        if self.tab == Tab::Settings {
+            return InputFocus::Form;
+        }
+        if self.worktrees.is_some() {
+            return InputFocus::Overlay;
+        }
+        if self.renaming.is_some() || self.is_vault_query() {
             return InputFocus::Text;
         }
         // The editor owns both its command and its text modes, so it takes the
@@ -269,8 +351,37 @@ impl App {
                 return vec![("ctrl+\\", "detach"), ("", "all other keys go to the session")];
             }
             InputFocus::Text => return vec![("↵", "accept"), ("esc", "cancel")],
+            InputFocus::Overlay if self.worktrees.is_some() => {
+                return vec![
+                    ("j/k", "select"),
+                    ("d", "remove"),
+                    ("D", "force remove"),
+                    ("r", "refresh"),
+                    ("esc", "close"),
+                ];
+            }
             InputFocus::Overlay => {
                 return vec![("j/k", "choose"), ("1-9", "jump"), ("↵", "send"), ("esc", "cancel")];
+            }
+            InputFocus::Form => {
+                let form = self.form.as_ref().unwrap_or(&self.settings);
+                if form.is_editing() {
+                    let completes =
+                        form.focused().is_some_and(|f| f.kind == crate::form::FieldKind::Directory);
+                    let mut binds = vec![("↵", "done"), ("esc", "cancel")];
+                    if completes {
+                        binds.insert(0, ("tab", "complete"));
+                    }
+                    return binds;
+                }
+                let mut binds = vec![("j/k", "select"), ("↵", "edit")];
+                if self.form.is_some() {
+                    binds.push(("esc", "cancel"));
+                } else {
+                    binds.push(("tab", "view"));
+                    binds.push(("q", "quit"));
+                }
+                return binds;
             }
             InputFocus::Commands | InputFocus::Editor => {}
         }
@@ -288,11 +399,12 @@ impl App {
                         ("x", "close"),
                     ]);
                 }
+                binds.push(("W", "worktrees"));
             }
             Tab::Board if !self.sessions.is_empty() => {
                 binds.extend([("hjkl", "move"), ("↵", "open session")]);
             }
-            Tab::Settings => binds.push(("e", "change vault")),
+
             Tab::Vault if self.browser.is_some() => {
                 binds.extend([
                     ("j/k", "select"),

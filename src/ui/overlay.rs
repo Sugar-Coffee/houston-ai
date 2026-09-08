@@ -4,7 +4,13 @@
 //! to. It is deliberately small and centred rather than a full-screen mode —
 //! you are answering one question, and the context behind it stays visible.
 
-use crate::{app::Picker, session::Sessions, ui::Theme};
+use crate::{
+    app::Picker,
+    form::Form,
+    session::Sessions,
+    ui::{Theme, form as form_ui},
+    worktree::Worktree,
+};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -72,4 +78,123 @@ pub fn picker(frame: &mut Frame, area: Rect, picker: &Picker, sessions: &Session
         .collect();
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The new-session dialog.
+///
+/// Sized to its content so it reads as a dialog rather than a second screen —
+/// you are answering a handful of questions, and what is behind stays visible.
+pub fn form(frame: &mut Frame, area: Rect, form: &Form, theme: Theme) {
+    let completions =
+        form.focused().map_or(0, |field| u16::try_from(field.completions.len()).unwrap_or(0));
+    let visible =
+        u16::try_from(form.fields.iter().filter(|field| field.visible).count()).unwrap_or(4);
+
+    let height = (visible + completions.min(7) + 2).min(area.height);
+    let width = 64.min(area.width);
+
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, popup);
+    form_ui::render(frame, popup, form, theme, " new session ");
+}
+
+/// The worktree manager.
+pub fn worktrees(
+    frame: &mut Frame,
+    area: Rect,
+    worktrees: &[Worktree],
+    selected: usize,
+    sessions: &Sessions,
+    theme: Theme,
+) {
+    let rows = u16::try_from(worktrees.len().max(1)).unwrap_or(1);
+    let height = (rows + 2).min(area.height);
+    let width = 78.min(area.width);
+
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .style(Style::default().bg(theme.raised))
+        .title(Span::styled(
+            format!(" worktrees {} ", worktrees.len()),
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if worktrees.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "  none yet — tick Worktree when starting a session",
+                Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = worktrees
+        .iter()
+        .enumerate()
+        .map(|(index, worktree)| {
+            let chosen = index == selected;
+            let in_use = sessions.uses_worktree(&worktree.name);
+
+            // State first: in-use and dirty are the two facts that decide
+            // whether this is safe to remove.
+            let (badge, badge_colour) = if in_use {
+                ("● in use", theme.running)
+            } else if worktree.dirty {
+                ("◆ uncommitted", theme.attention)
+            } else {
+                ("· clean", theme.dim)
+            };
+
+            let name_style = if chosen {
+                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text)
+            };
+
+            let repository = worktree
+                .repository
+                .file_name()
+                .map_or_else(|| "—".to_string(), |name| name.to_string_lossy().into_owned());
+
+            Line::from(vec![
+                Span::styled(if chosen { "▸ " } else { "  " }, Style::default().fg(theme.accent)),
+                Span::styled(format!("{:<26}", truncate(&worktree.name, 25)), name_style),
+                Span::styled(
+                    format!("{:<18}", truncate(&repository, 17)),
+                    Style::default().fg(theme.link),
+                ),
+                Span::styled(format!("{badge:<15}"), Style::default().fg(badge_colour)),
+            ])
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn truncate(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    text.chars().take(limit.saturating_sub(1)).chain(std::iter::once('…')).collect()
 }

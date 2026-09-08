@@ -7,6 +7,7 @@
 pub mod board;
 mod chrome;
 pub mod editor;
+pub mod form;
 pub mod overlay;
 pub mod sessions;
 pub mod settings;
@@ -51,7 +52,13 @@ pub fn render(frame: &mut Frame, app: &App) {
         Tab::Settings => settings::render(frame, body, app, theme),
     }
 
-    // Above everything, including the chrome it dims.
+    // Above everything, in the order they stack.
+    if let Some(open) = &app.form {
+        overlay::form(frame, body, open, theme);
+    }
+    if let Some(list) = &app.worktrees {
+        overlay::worktrees(frame, body, list, app.worktree_selected, &app.sessions, theme);
+    }
     if let Some(picker) = &app.picker {
         overlay::picker(frame, body, picker, &app.sessions, theme);
     }
@@ -96,33 +103,40 @@ mod tests {
         let mut app = App::new();
         app.select_tab(Tab::Settings);
         let rendered = draw(&app, 100, 24);
-        assert!(rendered.contains("Agents detected"));
+        assert!(rendered.contains("detected"));
     }
 
     #[test]
-    fn settings_shows_where_the_vault_is_and_how_to_change_it() {
+    fn settings_renders_as_a_menu_of_rows() {
         let mut app = App::new();
         app.select_tab(Tab::Settings);
 
         let rendered = draw(&app, 110, 30);
-        assert!(rendered.contains("Vault"));
-        assert!(rendered.contains("change the vault folder"));
-        assert!(rendered.contains("HOUSTON_VAULT"), "the override is discoverable");
+        assert!(rendered.contains("Vault folder"));
+        assert!(rendered.contains("New sessions start in"));
+        assert!(rendered.contains('▸'), "one row is selected");
     }
 
     #[test]
-    fn settings_turns_into_an_edit_field_while_typing() {
+    fn the_new_session_form_shows_its_fields() {
         let mut app = App::new();
-        app.select_tab(Tab::Settings);
-        app.editing_vault = Some("/tmp/somewhere-else".to_string());
+        app.open_new_session_form();
 
         let rendered = draw(&app, 110, 30);
-        assert!(rendered.contains("/tmp/somewhere-else"));
-        assert_eq!(
-            app.focus(),
-            crate::app::InputFocus::Text,
-            "keys must go to the field, not act as commands"
-        );
+        assert!(rendered.contains("new session"));
+        assert!(rendered.contains("Name"));
+        assert!(rendered.contains("Directory"));
+        assert!(rendered.contains("Worktree"));
+    }
+
+    #[test]
+    fn the_worktree_manager_says_what_to_do_when_empty() {
+        let mut app = App::new();
+        app.worktrees = Some(Vec::new());
+
+        let rendered = draw(&app, 110, 30);
+        assert!(rendered.contains("worktrees"));
+        assert!(rendered.contains("none yet"), "an empty state says how to get one");
     }
 
     #[test]
