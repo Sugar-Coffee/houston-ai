@@ -33,6 +33,36 @@ impl Tab {
     }
 }
 
+/// Where keystrokes are going right now.
+///
+/// An explicit enum rather than a chain of booleans: every new text field —
+/// rename, the session picker, the editor — otherwise has to be remembered in
+/// three separate predicates, and forgetting one means `q` quits the app while
+/// someone is typing a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputFocus {
+    /// Keys are Houston's commands.
+    Commands,
+    /// Keys belong to an attached child process.
+    Session,
+    /// Keys fill a text field Houston owns.
+    Text,
+    /// Keys drive a modal overlay: move the selection, accept, cancel.
+    Overlay,
+}
+
+/// A modal chooser: pick one of the running sessions.
+///
+/// Used to send a note into a session when more than one is running. Ordered
+/// exactly as the Sessions sidebar, so the list you see is the list you know.
+#[derive(Debug, Clone)]
+pub struct Picker {
+    pub prompt: String,
+    /// Sent to the chosen session, as a paste rather than keystrokes.
+    pub payload: String,
+    pub selected: usize,
+}
+
 pub struct App {
     pub tab: Tab,
     pub sessions: Sessions,
@@ -54,6 +84,12 @@ pub struct App {
     pub dirty: bool,
     /// Shown in the footer when an action cannot be carried out.
     pub notice: Option<String>,
+    /// `q` has been pressed once and is waiting for confirmation.
+    pub quit_armed: bool,
+    /// The name being typed for the selected session. `None` when not renaming.
+    pub renaming: Option<String>,
+    /// The open modal chooser, if any.
+    pub picker: Option<Picker>,
 }
 
 impl App {
@@ -79,6 +115,9 @@ impl App {
             should_quit: false,
             dirty: true,
             notice: None,
+            quit_armed: false,
+            renaming: None,
+            picker: None,
         }
     }
 
@@ -104,19 +143,50 @@ impl App {
         self.editing_vault.is_some()
     }
 
-    /// Whether keystrokes belong to a child rather than to Houston.
-    pub fn is_attached(&self) -> bool {
-        self.tab == Tab::Sessions && self.sessions.focus() == Focus::Attached
+    /// Where the next keystroke goes.
+    ///
+    /// Order matters: an overlay sits above everything, then Houston's own
+    /// text fields, then an attached child, then commands.
+    pub fn focus(&self) -> InputFocus {
+        if self.picker.is_some() {
+            return InputFocus::Overlay;
+        }
+        if self.renaming.is_some() || self.editing_vault.is_some() || self.is_vault_query() {
+            return InputFocus::Text;
+        }
+        if self.tab == Tab::Sessions && self.sessions.focus() == Focus::Attached {
+            return InputFocus::Session;
+        }
+        InputFocus::Commands
     }
 
-    /// Whether keystrokes are filling in a vault query rather than acting as
-    /// commands. Typing `q` into a search box must not quit the app.
-    pub fn is_typing(&self) -> bool {
-        if self.is_editing_settings() {
-            return true;
-        }
+    fn is_vault_query(&self) -> bool {
         self.tab == Tab::Vault
             && self.browser.as_ref().is_some_and(|browser| browser.mode() != VaultMode::Browsing)
+    }
+
+    /// Cancels any pending confirmation. Called on every key that is not the
+    /// confirmation itself, so an armed quit never survives a stray keystroke.
+    pub const fn disarm_quit(&mut self) {
+        self.quit_armed = false;
+    }
+
+    /// First press arms, second press quits.
+    ///
+    /// A single keystroke should not destroy a workspace full of running
+    /// agents, and `q` is far too easy to hit by accident when detaching.
+    pub const fn request_quit(&mut self) {
+        if self.quit_armed {
+            self.should_quit = true;
+        } else {
+            self.quit_armed = true;
+            self.dirty = true;
+        }
+    }
+
+    /// Whether keystrokes belong to a child rather than to Houston.
+    pub fn is_attached(&self) -> bool {
+        self.focus() == InputFocus::Session
     }
 
     pub fn select_tab(&mut self, tab: Tab) {
@@ -133,6 +203,8 @@ impl App {
         self.select_tab(Tab::ALL[next]);
     }
 
+    /// Quits without confirmation. For internal use; the `q` key goes through
+    /// [`Self::request_quit`].
     pub const fn quit(&mut self) {
         self.should_quit = true;
     }
@@ -155,12 +227,19 @@ impl App {
 
     /// The keybinds the footer should show, given the current view and mode.
     pub fn keybinds(&self) -> Vec<(&'static str, &'static str)> {
-        if self.is_attached() {
-            return vec![("ctrl+\\", "detach"), ("", "all other keys go to the session")];
+        if self.quit_armed {
+            return vec![("q", "press again to quit"), ("esc", "stay")];
         }
 
-        if self.is_typing() {
-            return vec![("↵", "accept"), ("esc", "cancel")];
+        match self.focus() {
+            InputFocus::Session => {
+                return vec![("ctrl+\\", "detach"), ("", "all other keys go to the session")];
+            }
+            InputFocus::Text => return vec![("↵", "accept"), ("esc", "cancel")],
+            InputFocus::Overlay => {
+                return vec![("j/k", "choose"), ("1-9", "jump"), ("↵", "send"), ("esc", "cancel")];
+            }
+            InputFocus::Commands => {}
         }
 
         let mut binds: Vec<(&'static str, &'static str)> = vec![("tab", "view"), ("1-4", "jump")];
@@ -169,8 +248,16 @@ impl App {
             Tab::Sessions => {
                 binds.extend([("n", "agent"), ("s", "shell")]);
                 if !self.sessions.is_empty() {
-                    binds.extend([("j/k", "select"), ("↵", "attach"), ("x", "close")]);
+                    binds.extend([
+                        ("j/k", "select"),
+                        ("↵", "attach"),
+                        ("r", "rename"),
+                        ("x", "close"),
+                    ]);
                 }
+            }
+            Tab::Board if !self.sessions.is_empty() => {
+                binds.extend([("hjkl", "move"), ("↵", "open session")]);
             }
             Tab::Settings => binds.push(("e", "change vault")),
             Tab::Vault if self.browser.is_some() => {

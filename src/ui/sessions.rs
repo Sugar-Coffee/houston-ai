@@ -13,8 +13,12 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 
-/// Width of the session list. Wide enough for a name plus a state badge.
-const LIST_WIDTH: u16 = 26;
+/// Width of the session list.
+///
+/// Sessions are renameable, so this is the column where you tell one agent's
+/// job from another's. Wide enough for a real name — "payments auth refactor",
+/// not "payments au…" — plus its kind and state.
+const LIST_WIDTH: u16 = 34;
 
 /// Splits the view into (list, terminal).
 ///
@@ -35,13 +39,25 @@ pub fn terminal_area(area: Rect) -> Rect {
     Block::default().borders(Borders::ALL).inner(pane)
 }
 
-pub fn render(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    sessions: &Sessions,
+    renaming: Option<&str>,
+    theme: Theme,
+) {
     let (list_area, pane_area) = split(area);
-    render_list(frame, list_area, sessions, theme);
+    render_list(frame, list_area, sessions, renaming, theme);
     render_pane(frame, pane_area, sessions, theme);
 }
 
-fn render_list(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme) {
+fn render_list(
+    frame: &mut Frame,
+    area: Rect,
+    sessions: &Sessions,
+    renaming: Option<&str>,
+    theme: Theme,
+) {
     let heading = match sessions.len() {
         0 => " sessions ".to_string(),
         1 => " 1 session ".to_string(),
@@ -99,9 +115,27 @@ fn render_list(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme)
                 Kind::Shell => " $",
             };
 
+            // A number, so the send-to-session chooser's shortcuts match what
+            // you already see in the sidebar.
+            let ordinal = if index < 9 { format!("{} ", index + 1) } else { "  ".to_string() };
+
+            // While renaming, the row itself becomes the field. No popup, and
+            // no guessing which session you are renaming.
+            if selected && let Some(draft) = renaming {
+                return Line::from(vec![
+                    Span::styled(marker, Style::default().fg(theme.accent)),
+                    Span::styled(ordinal, Style::default().fg(theme.dim)),
+                    Span::styled(
+                        format!("{draft}▏"),
+                        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                    ),
+                ]);
+            }
+
             Line::from(vec![
                 Span::styled(marker, Style::default().fg(theme.accent)),
-                Span::styled(truncate(&session.display_name(), 16), name_style),
+                Span::styled(ordinal, Style::default().fg(theme.dim)),
+                Span::styled(truncate(&session.display_name(), 22), name_style),
                 Span::styled(kind, Style::default().fg(theme.dim)),
                 badge,
             ])

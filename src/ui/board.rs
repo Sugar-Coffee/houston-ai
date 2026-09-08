@@ -1,6 +1,7 @@
 //! The Board: which agents are working, and which are waiting on you.
 //!
-//! One glance should answer "who needs me?". Everything else is secondary.
+//! One glance should answer "who needs me?". Everything else is secondary,
+//! which is why exactly one column ever takes the accent colour.
 //!
 //! Shell sessions are shown, but never given an agent's states. Houston has no
 //! way to know whether a shell is waiting for input, and a board that guesses
@@ -19,15 +20,18 @@ use ratatui::{
 };
 
 /// The columns, in the order they are read.
-const COLUMNS: [(&str, Column); 4] = [
+pub const COLUMNS: [(&str, Column); 4] = [
     ("Needs you", Column::AwaitingInput),
     ("Working", Column::Running),
     ("Shells", Column::Shell),
     ("Finished", Column::Exited),
 ];
 
+/// Rows a card occupies: name, detail, and a blank between cards.
+const CARD_HEIGHT: u16 = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Column {
+pub enum Column {
     AwaitingInput,
     Running,
     Shell,
@@ -36,7 +40,7 @@ enum Column {
 
 impl Column {
     /// Which column a session belongs in.
-    const fn of(kind: &Kind, state: State) -> Self {
+    pub const fn of(kind: &Kind, state: State) -> Self {
         match (kind, state) {
             (_, State::Exited(_)) => Self::Exited,
             (Kind::Shell, _) => Self::Shell,
@@ -44,6 +48,19 @@ impl Column {
             (Kind::Agent { .. }, State::Running) => Self::Running,
         }
     }
+}
+
+/// The session indices in a column, in sidebar order.
+///
+/// Shared with the event loop so keyboard navigation and rendering can never
+/// disagree about what is where.
+pub fn members(sessions: &Sessions, column: Column) -> Vec<usize> {
+    sessions
+        .iter()
+        .enumerate()
+        .filter(|(_, session)| Column::of(&session.kind, session.state) == column)
+        .map(|(index, _)| index)
+        .collect()
 }
 
 pub fn render(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme) {
@@ -83,13 +100,10 @@ fn render_column(
     column: Column,
     theme: Theme,
 ) {
-    let members: Vec<_> = sessions
-        .iter()
-        .enumerate()
-        .filter(|(_, session)| Column::of(&session.kind, session.state) == column)
-        .collect();
+    let members = members(sessions, column);
 
-    // The column that needs attention is the only one that gets the accent.
+    // Only the column that needs attention gets the accent, so "who needs me?"
+    // is answered by colour before anything is read.
     let urgent = column == Column::AwaitingInput && !members.is_empty();
     let accent = if urgent { theme.accent } else { theme.dim };
 
@@ -104,34 +118,85 @@ fn render_column(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let lines: Vec<Line> = members
-        .iter()
-        .map(|(index, session)| {
-            let selected = *index == sessions.selected_index();
-            let style = if urgent {
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-            } else if selected {
-                Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text)
-            };
+    for (slot, index) in members.iter().enumerate() {
+        let Ok(offset) = u16::try_from(slot) else { break };
+        let top = offset * CARD_HEIGHT;
+        if top + 2 > inner.height {
+            break;
+        }
 
-            let mut spans = vec![
-                Span::styled(if selected { "▸ " } else { "  " }, Style::default().fg(theme.accent)),
-                Span::styled(session.display_name(), style),
-            ];
+        let card = Rect { y: inner.y + top, height: 2, ..inner };
+        render_card(frame, card, sessions, *index, urgent, theme);
+    }
+}
 
-            if let State::Exited(Some(code)) = session.state
-                && code != 0
-            {
-                spans.push(Span::styled(format!(" ({code})"), Style::default().fg(theme.dim)));
-            }
+/// One session, drawn as a two-line card with a coloured spine.
+fn render_card(
+    frame: &mut Frame,
+    area: Rect,
+    sessions: &Sessions,
+    index: usize,
+    urgent: bool,
+    theme: Theme,
+) {
+    let Some(session) = sessions.iter().nth(index) else { return };
+    let selected = index == sessions.selected_index();
 
-            Line::from(spans)
-        })
-        .collect();
+    let spine_colour = if urgent {
+        theme.accent
+    } else if selected {
+        theme.text
+    } else {
+        theme.dim
+    };
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    let name_style = if selected {
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+    } else if urgent {
+        Style::default().fg(theme.accent)
+    } else {
+        Style::default().fg(theme.text)
+    };
+
+    // A spine rather than a full border: four columns of boxed cards inside a
+    // boxed column is more lines than information.
+    let spine = Span::styled("▌", Style::default().fg(spine_colour));
+
+    let detail = match session.kind {
+        Kind::Agent { provider } => provider.to_string(),
+        Kind::Shell => "shell".to_string(),
+    };
+    let detail = match session.state {
+        State::Exited(Some(code)) if code != 0 => format!("{detail} · exit {code}"),
+        State::Exited(_) => format!("{detail} · exited"),
+        _ => detail,
+    };
+
+    let width = area.width.saturating_sub(3) as usize;
+    let lines = vec![
+        Line::from(vec![
+            spine.clone(),
+            Span::raw(" "),
+            Span::styled(truncate(&session.display_name(), width), name_style),
+        ]),
+        Line::from(vec![
+            spine,
+            Span::raw(" "),
+            Span::styled(truncate(&detail, width), Style::default().fg(theme.dim)),
+        ]),
+    ];
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn truncate(text: &str, limit: usize) -> String {
+    if limit == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    text.chars().take(limit.saturating_sub(1)).chain(std::iter::once('…')).collect()
 }
 
 #[cfg(test)]
@@ -158,5 +223,12 @@ mod tests {
         let agent = Kind::Agent { provider: "Claude Code" };
         assert_eq!(Column::of(&agent, State::AwaitingInput), Column::AwaitingInput);
         assert_eq!(Column::of(&agent, State::Running), Column::Running);
+    }
+
+    #[test]
+    fn truncation_never_exceeds_its_budget() {
+        assert_eq!(truncate("abc", 10), "abc");
+        assert_eq!(truncate("abcdefghij", 5).chars().count(), 5);
+        assert_eq!(truncate("anything", 0), "", "a zero-width card renders nothing");
     }
 }

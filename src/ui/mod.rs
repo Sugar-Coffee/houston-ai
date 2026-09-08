@@ -6,6 +6,7 @@
 
 pub mod board;
 mod chrome;
+pub mod overlay;
 pub mod sessions;
 pub mod settings;
 pub mod terminal;
@@ -38,10 +39,17 @@ pub fn render(frame: &mut Frame, app: &App) {
     chrome::tab_strip(frame, tabs, app, theme);
 
     match app.tab {
-        Tab::Sessions => sessions::render(frame, body, &app.sessions, theme),
+        Tab::Sessions => {
+            sessions::render(frame, body, &app.sessions, app.renaming.as_deref(), theme);
+        }
         Tab::Vault => vault::render(frame, body, app.browser.as_ref(), theme),
         Tab::Board => board::render(frame, body, &app.sessions, theme),
         Tab::Settings => settings::render(frame, body, app, theme),
+    }
+
+    // Above everything, including the chrome it dims.
+    if let Some(picker) = &app.picker {
+        overlay::picker(frame, body, picker, &app.sessions, theme);
     }
 
     chrome::keybind_bar(frame, footer, app, theme);
@@ -106,7 +114,47 @@ mod tests {
 
         let rendered = draw(&app, 110, 30);
         assert!(rendered.contains("/tmp/somewhere-else"));
-        assert!(app.is_typing(), "keys must go to the field, not act as commands");
+        assert_eq!(
+            app.focus(),
+            crate::app::InputFocus::Text,
+            "keys must go to the field, not act as commands"
+        );
+    }
+
+    #[test]
+    fn the_session_chooser_lists_every_session_with_its_number() {
+        let mut app = App::new();
+        for _ in 0..2 {
+            app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+        }
+        app.picker = Some(crate::app::Picker {
+            prompt: "Send notes to which session?".to_string(),
+            payload: "@/tmp/notes.md ".to_string(),
+            selected: 1,
+        });
+
+        let rendered = draw(&app, 110, 26);
+        assert!(rendered.contains("Send notes to which session?"));
+        assert!(rendered.contains('1') && rendered.contains('2'), "numbered like the sidebar");
+    }
+
+    #[test]
+    fn the_footer_asks_for_confirmation_once_quit_is_armed() {
+        let mut app = App::new();
+        app.quit_armed = true;
+
+        let rendered = draw(&app, 100, 24);
+        assert!(rendered.contains("press again to quit"));
+    }
+
+    #[test]
+    fn renaming_turns_the_sidebar_row_into_a_field() {
+        let mut app = App::new();
+        app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+        app.renaming = Some("auth refactor".to_string());
+
+        let rendered = draw(&app, 110, 24);
+        assert!(rendered.contains("auth refactor"), "the draft is edited in place");
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //!    emitting thousands of lines a second must not cost thousands of repaints.
 
 use crate::{
-    app::{App, Tab},
+    app::{App, InputFocus, Picker, Tab},
     clipboard,
     hooks::{self, Notification},
     pty::Size,
@@ -118,12 +118,78 @@ fn on_paste(app: &mut App, text: &str) {
 }
 
 fn on_key(app: &mut App, key: KeyEvent) {
-    if app.is_attached() {
-        on_key_attached(app, key);
-    } else if app.is_typing() {
-        on_key_typing(app, key);
-    } else {
-        on_key_browsing(app, key);
+    // An armed quit is cancelled by anything that is not a second `q`. This
+    // has to run before the key is dispatched, or the confirmation would
+    // survive whatever the key did.
+    if app.quit_armed && !matches!(key.code, KeyCode::Char('q')) {
+        app.disarm_quit();
+        app.dirty = true;
+        // Escape is "never mind" and should do nothing else.
+        if key.code == KeyCode::Esc {
+            return;
+        }
+    }
+
+    match app.focus() {
+        InputFocus::Session => on_key_attached(app, key),
+        InputFocus::Overlay => on_key_picker(app, key),
+        InputFocus::Text => on_key_typing(app, key),
+        InputFocus::Commands => on_key_browsing(app, key),
+    }
+}
+
+/// The modal session chooser.
+fn on_key_picker(app: &mut App, key: KeyEvent) {
+    app.dirty = true;
+    let count = app.sessions.len();
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.picker = None,
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let Some(picker) = app.picker.as_mut()
+                && count > 0
+            {
+                picker.selected = (picker.selected + 1) % count;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let Some(picker) = app.picker.as_mut()
+                && count > 0
+            {
+                picker.selected = (picker.selected + count - 1) % count;
+            }
+        }
+        // The list is ordered exactly as the Sessions sidebar, so the number
+        // beside a session is the number you press.
+        KeyCode::Char(digit @ '1'..='9') => {
+            let index = digit as usize - '1' as usize;
+            if index < count {
+                if let Some(picker) = app.picker.as_mut() {
+                    picker.selected = index;
+                }
+                deliver_picked(app);
+            }
+        }
+        KeyCode::Enter => deliver_picked(app),
+        _ => {}
+    }
+}
+
+/// Sends the picker's payload to the chosen session and jumps to it.
+fn deliver_picked(app: &mut App) {
+    let Some(picker) = app.picker.take() else { return };
+
+    app.sessions.select(picker.selected);
+    let Some(session) = app.sessions.selected_mut() else { return };
+    let name = session.display_name();
+
+    match session.send_paste(&picker.payload) {
+        Ok(()) => {
+            app.select_tab(Tab::Sessions);
+            app.sessions.attach();
+            app.notify(format!("sent to {name}"));
+        }
+        Err(error) => app.notify(format!("could not send: {error}")),
     }
 }
 
@@ -131,6 +197,10 @@ fn on_key(app: &mut App, key: KeyEvent) {
 /// ordinary letters are content. `q` must not quit and `1` must not switch
 /// view.
 fn on_key_typing(app: &mut App, key: KeyEvent) {
+    if app.renaming.is_some() {
+        on_key_renaming(app, key);
+        return;
+    }
     if app.is_editing_settings() {
         on_key_editing_vault(app, key);
         return;
@@ -191,7 +261,9 @@ fn on_key_browsing(app: &mut App, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     match key.code {
-        KeyCode::Char('q') => app.quit(),
+        // Two presses to quit: one keystroke should not take down a
+        // workspace full of running agents.
+        KeyCode::Char('q') => app.request_quit(),
         KeyCode::Char('c') if ctrl => app.quit(),
         KeyCode::Tab => app.cycle_tab(true),
         KeyCode::BackTab => app.cycle_tab(false),
@@ -202,8 +274,93 @@ fn on_key_browsing(app: &mut App, key: KeyEvent) {
         _ if app.tab == Tab::Sessions => on_key_sessions(app, key),
         _ if app.tab == Tab::Vault => on_key_vault(app, key),
         _ if app.tab == Tab::Settings => on_key_settings(app, key),
+        _ if app.tab == Tab::Board => on_key_board(app, key),
         _ => {}
     }
+}
+
+/// Moving around the board.
+///
+/// Left and right change column; up and down move within one. The selection is
+/// the *session* selection, shared with the sidebar, so opening a card and
+/// opening its sidebar row are the same act.
+fn on_key_board(app: &mut App, key: KeyEvent) {
+    if app.sessions.is_empty() {
+        return;
+    }
+    app.dirty = true;
+
+    match key.code {
+        KeyCode::Char('h') | KeyCode::Left => move_column(app, false),
+        KeyCode::Char('l') | KeyCode::Right => move_column(app, true),
+        KeyCode::Char('j') | KeyCode::Down => move_within_column(app, true),
+        KeyCode::Char('k') | KeyCode::Up => move_within_column(app, false),
+        KeyCode::Enter => {
+            // Jump to the selected session and attach, which is what "open" is
+            // going to mean to anyone pressing Enter on a card.
+            app.select_tab(Tab::Sessions);
+            if !app.sessions.attach() {
+                app.notify("that session has exited — press x on the Sessions view to close it");
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Which board column the selected session is in, and where in it.
+fn board_position(app: &App) -> Option<(usize, usize)> {
+    use crate::ui::board::{COLUMNS, Column, members};
+
+    let selected = app.sessions.selected_index();
+    let session = app.sessions.iter().nth(selected)?;
+    let column = Column::of(&session.kind, session.state);
+
+    let column_index = COLUMNS.iter().position(|(_, candidate)| *candidate == column)?;
+    let row = members(&app.sessions, column).iter().position(|index| *index == selected)?;
+    Some((column_index, row))
+}
+
+/// Moves to the next column that has anything in it.
+///
+/// Empty columns are skipped rather than swallowing the keypress — landing on
+/// nothing and having to press again would be worse than jumping over it.
+fn move_column(app: &mut App, forward: bool) {
+    use crate::ui::board::{COLUMNS, members};
+
+    let Some((column_index, row)) = board_position(app) else { return };
+    let count = COLUMNS.len();
+
+    for offset in 1..=count {
+        let next = if forward {
+            (column_index + offset) % count
+        } else {
+            (column_index + count - offset % count) % count
+        };
+
+        let candidate = members(&app.sessions, COLUMNS[next].1);
+        if candidate.is_empty() {
+            continue;
+        }
+        // Keep the same depth where possible, so crossing a board of equal
+        // columns does not reset you to the top every time.
+        let target = candidate[row.min(candidate.len() - 1)];
+        app.sessions.select(target);
+        return;
+    }
+}
+
+fn move_within_column(app: &mut App, forward: bool) {
+    use crate::ui::board::{COLUMNS, members};
+
+    let Some((column_index, row)) = board_position(app) else { return };
+    let candidate = members(&app.sessions, COLUMNS[column_index].1);
+    if candidate.is_empty() {
+        return;
+    }
+
+    let length = candidate.len();
+    let next = if forward { (row + 1) % length } else { (row + length - 1) % length };
+    app.sessions.select(candidate[next]);
 }
 
 fn on_key_settings(app: &mut App, key: KeyEvent) {
@@ -216,6 +373,35 @@ fn on_key_settings(app: &mut App, key: KeyEvent) {
                 .map_or_else(|_| String::new(), |root| root.display().to_string()),
         );
         app.dirty = true;
+    }
+}
+
+/// Renaming the selected session.
+fn on_key_renaming(app: &mut App, key: KeyEvent) {
+    app.dirty = true;
+
+    match key.code {
+        KeyCode::Esc => app.renaming = None,
+        KeyCode::Backspace => {
+            if let Some(draft) = app.renaming.as_mut() {
+                draft.pop();
+            }
+        }
+        KeyCode::Char(character) => {
+            if let Some(draft) = app.renaming.as_mut() {
+                draft.push(character);
+            }
+        }
+        KeyCode::Enter => {
+            let Some(draft) = app.renaming.take() else { return };
+            let name = draft.trim().to_string();
+            if let Some(session) = app.sessions.selected_mut() {
+                // An empty name would leave an unlabelled row, so it means
+                // "put it back to the default" rather than "clear it".
+                session.rename(if name.is_empty() { None } else { Some(name) });
+            }
+        }
+        _ => {}
     }
 }
 
@@ -341,11 +527,14 @@ fn yank_selected_path(app: &mut App) {
     }
 }
 
-/// Pushes `@<path>` into the selected session's prompt and jumps to it.
+/// Pushes `@<path>` into a session's prompt and jumps to it.
 ///
 /// This is ADR-0004's north star: getting a note into an agent's context
 /// without a clipboard round-trip or leaving the app. Deliberately does *not*
 /// press Return — you almost always want to type a question after the path.
+///
+/// With one session there is nothing to decide, so it goes straight there.
+/// With several, a chooser opens rather than guessing at the selected one.
 fn send_selected_to_session(app: &mut App) {
     let Some(path) = selected_path(app) else {
         app.notify("no note selected");
@@ -357,17 +546,25 @@ fn send_selected_to_session(app: &mut App) {
     }
 
     let payload = format!("@{path} ");
-    let Some(session) = app.sessions.selected_mut() else { return };
-    let name = session.display_name();
 
-    match session.send_paste(&payload) {
-        Ok(()) => {
-            app.select_tab(Tab::Sessions);
-            app.sessions.attach();
-            app.notify(format!("sent to {name}"));
-        }
-        Err(error) => app.notify(format!("could not send: {error}")),
+    if app.sessions.len() == 1 {
+        app.picker = Some(Picker { prompt: String::new(), payload, selected: 0 });
+        deliver_picked(app);
+        return;
     }
+
+    let name = app
+        .browser
+        .as_ref()
+        .and_then(|browser| browser.selected_note())
+        .map_or_else(String::new, |note| note.stem.clone());
+
+    app.picker = Some(Picker {
+        prompt: format!("Send {name} to which session?"),
+        payload,
+        selected: app.sessions.selected_index(),
+    });
+    app.dirty = true;
 }
 
 fn selected_path(app: &App) -> Option<String> {
@@ -386,6 +583,14 @@ fn on_key_sessions(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('n') => spawn(app, false),
         KeyCode::Char('s') => spawn(app, true),
+        KeyCode::Char('r') => {
+            if let Some(session) = app.sessions.selected() {
+                app.renaming = Some(session.name.clone());
+                app.dirty = true;
+            } else {
+                app.notify("no session to rename");
+            }
+        }
         KeyCode::Char('x') => {
             app.sessions.close_selected();
             app.dirty = true;
@@ -448,7 +653,7 @@ mod tests {
 
         app.select_tab(Tab::Vault);
         on_key(&mut app, press(KeyCode::Char('/')));
-        assert!(app.is_typing());
+        assert_eq!(app.focus(), InputFocus::Text);
 
         // Every one of these is a command while browsing.
         for character in "q1f".chars() {
@@ -470,7 +675,7 @@ mod tests {
         on_key(&mut app, press(KeyCode::Char('/')));
         on_key(&mut app, press(KeyCode::Esc));
 
-        assert!(!app.is_typing());
+        assert_ne!(app.focus(), InputFocus::Text);
         assert!(!app.should_quit);
     }
 
@@ -553,10 +758,120 @@ mod tests {
     }
 
     #[test]
-    fn q_quits_while_browsing() {
+    fn quitting_takes_two_presses() {
         let mut app = App::new();
+
+        on_key(&mut app, press(KeyCode::Char('q')));
+        assert!(!app.should_quit, "one press only arms it");
+        assert!(app.quit_armed);
+
         on_key(&mut app, press(KeyCode::Char('q')));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn any_other_key_disarms_a_pending_quit() {
+        for interrupting in [KeyCode::Esc, KeyCode::Char('2'), KeyCode::Char('j')] {
+            let mut app = App::new();
+            on_key(&mut app, press(KeyCode::Char('q')));
+            assert!(app.quit_armed);
+
+            on_key(&mut app, press(interrupting));
+            assert!(!app.quit_armed, "{interrupting:?} should cancel the pending quit");
+
+            // And a later `q` starts over rather than completing the old one.
+            on_key(&mut app, press(KeyCode::Char('q')));
+            assert!(!app.should_quit, "the confirmation must not survive an interruption");
+        }
+    }
+
+    #[test]
+    fn escape_only_cancels_the_quit_and_does_nothing_else() {
+        let mut app = App::new();
+        app.select_tab(Tab::Vault);
+        on_key(&mut app, press(KeyCode::Char('q')));
+
+        on_key(&mut app, press(KeyCode::Esc));
+        assert!(!app.quit_armed);
+        assert_eq!(app.tab, Tab::Vault, "escape should not have side effects");
+    }
+
+    #[test]
+    fn renaming_a_session_sticks_and_beats_the_terminal_title() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        app.sessions.detach();
+
+        on_key(&mut app, press(KeyCode::Char('r')));
+        assert_eq!(app.focus(), InputFocus::Text, "renaming captures keys");
+
+        // Clear the seeded name, then type a new one including a `q`.
+        for _ in 0..40 {
+            on_key(&mut app, press(KeyCode::Backspace));
+        }
+        for character in "queue runner".chars() {
+            on_key(&mut app, press(KeyCode::Char(character)));
+        }
+        assert!(!app.should_quit, "q inside a name is text");
+
+        on_key(&mut app, press(KeyCode::Enter));
+        assert_eq!(app.sessions.selected().unwrap().display_name(), "queue runner");
+    }
+
+    #[test]
+    fn an_empty_rename_restores_the_default_name() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        app.sessions.detach();
+        let original = app.sessions.selected().unwrap().name.clone();
+
+        app.renaming = Some("temporary".to_string());
+        on_key(&mut app, press(KeyCode::Enter));
+        assert_eq!(app.sessions.selected().unwrap().display_name(), "temporary");
+
+        app.renaming = Some("   ".to_string());
+        on_key(&mut app, press(KeyCode::Enter));
+        assert_eq!(app.sessions.selected().unwrap().name, original);
+    }
+
+    #[test]
+    fn sending_a_note_with_several_sessions_opens_a_chooser() {
+        let mut app = App::new();
+        if app.browser.is_none() {
+            return;
+        }
+        for _ in 0..2 {
+            on_key(&mut app, press(KeyCode::Char('s')));
+            app.sessions.detach();
+        }
+        assert_eq!(app.sessions.len(), 2);
+
+        app.select_tab(Tab::Vault);
+        on_key(&mut app, press(KeyCode::Char('i')));
+
+        assert!(app.picker.is_some(), "with a choice to make, ask");
+        assert_eq!(app.focus(), InputFocus::Overlay);
+        assert!(app.picker.as_ref().unwrap().payload.starts_with('@'));
+
+        on_key(&mut app, press(KeyCode::Esc));
+        assert!(app.picker.is_none(), "escape closes the chooser");
+        assert_eq!(app.tab, Tab::Vault, "cancelling does not move you");
+    }
+
+    #[test]
+    fn sending_with_one_session_skips_the_chooser() {
+        let mut app = App::new();
+        if app.browser.is_none() {
+            return;
+        }
+        on_key(&mut app, press(KeyCode::Char('s')));
+        app.sessions.detach();
+
+        app.select_tab(Tab::Vault);
+        on_key(&mut app, press(KeyCode::Char('i')));
+
+        assert!(app.picker.is_none(), "no choice to make, so no question asked");
+        assert_eq!(app.tab, Tab::Sessions, "it jumps straight to the session");
     }
 
     #[test]

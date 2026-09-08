@@ -51,6 +51,10 @@ impl State {
 pub struct Session {
     pub id: SessionId,
     pub name: String,
+    /// What the name reverts to when a user-chosen one is cleared.
+    default_name: String,
+    /// Whether `name` was chosen by the user rather than derived.
+    named_by_user: bool,
     pub kind: Kind,
     pub state: State,
     /// Kept so a session can be restarted, and persisted across restarts in
@@ -65,11 +69,29 @@ impl Session {
         &self.pty
     }
 
+    /// Sets a name the user chose, or clears it back to the default.
+    ///
+    /// A user-chosen name wins over the child's own terminal title: if you
+    /// took the trouble to name a session, a stray OSC sequence from a shell
+    /// should not rename it back.
+    pub fn rename(&mut self, name: Option<String>) {
+        if let Some(name) = name {
+            self.name = name;
+            self.named_by_user = true;
+        } else {
+            self.named_by_user = false;
+            self.name = self.default_name.clone();
+        }
+    }
+
     /// The child's own title (OSC 0/2), falling back to the session name.
     ///
     /// Shells set this to the running command, so an attached session labels
     /// itself with whatever it is doing.
     pub fn display_name(&self) -> String {
+        if self.named_by_user {
+            return self.name.clone();
+        }
         self.pty.title().unwrap_or_else(|| self.name.clone())
     }
 
@@ -268,7 +290,16 @@ impl Sessions {
         let id = SessionId(self.next_id);
         self.next_id += 1;
 
-        self.items.push(Session { id, name, kind, state: State::Running, spec, pty });
+        self.items.push(Session {
+            id,
+            default_name: name.clone(),
+            name,
+            named_by_user: false,
+            kind,
+            state: State::Running,
+            spec,
+            pty,
+        });
         self.selected = self.items.len() - 1;
         Ok(id)
     }
@@ -286,6 +317,12 @@ impl Sessions {
         self.selected = self.selected.min(self.items.len().saturating_sub(1));
         if self.items.is_empty() {
             self.focus = Focus::Browsing;
+        }
+    }
+
+    pub const fn select(&mut self, index: usize) {
+        if index < self.items.len() {
+            self.selected = index;
         }
     }
 
