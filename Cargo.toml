@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "A terminal workspace where a knowledge vault and coding agents share one surface"
 license = "MIT"
-repository = "https://github.com/sugarandcoffee/houston-ai"
+repository = "https://github.com/Sugar-Coffee/houston-ai"
 
 [[bin]]
 name = "houston"
