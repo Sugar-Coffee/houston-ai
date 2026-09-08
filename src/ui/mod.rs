@@ -275,6 +275,40 @@ mod tests {
         assert!(filled_before > 0, "the one card is selected, so it is filled");
     }
 
+    /// The whole point of marking a displaced session: the board must stop
+    /// presenting a value that is no longer being updated as though it were
+    /// current.
+    #[test]
+    fn a_session_whose_hooks_were_taken_over_says_its_status_is_frozen() {
+        let mut app = App::new();
+        app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+
+        let session = app.sessions.selected_mut().unwrap();
+        session.kind = crate::session::Kind::Agent { provider: "Claude Code" };
+        session.hooks_live = false;
+
+        app.select_tab(Tab::Board);
+        let board = draw(&app, 150, 24);
+        assert!(board.contains("status frozen"), "the board must admit it does not know");
+
+        app.select_tab(Tab::Sessions);
+        let sidebar = draw(&app, 120, 24);
+        assert!(sidebar.contains('?'), "and the sidebar badge stops claiming a state");
+    }
+
+    /// The advice lives at the end of the sentence, so a notice that runs off
+    /// an 80-column terminal loses exactly the useful half.
+    #[test]
+    fn a_notice_fits_on_a_narrow_terminal() {
+        let mut app = App::new();
+        app.notify("Claude Code's status will freeze — two agents here. Use a worktree.");
+
+        let rendered = draw(&app, 80, 20);
+        let footer = rendered.lines().last().unwrap();
+
+        assert!(footer.contains("Use a worktree"), "the advice must survive: {footer:?}");
+    }
+
     #[test]
     fn the_board_shows_its_columns_once_something_is_running() {
         let mut app = App::new();

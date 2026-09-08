@@ -655,7 +655,7 @@ fn accept_form(app: &mut App) {
             app.sessions.attach();
             app.select_tab(Tab::Sessions);
             if let Some(warning) = app.sessions.take_hook_warning() {
-                app.notify(format!("agent status unavailable: {warning}"));
+                app.notify(warning);
             }
         }
         Err(error) => app.notify(format!("could not start a session: {error}")),
@@ -1198,7 +1198,7 @@ fn spawn(app: &mut App, shell: bool) {
             // Hook installation is best-effort, but a silent failure would
             // leave the board quietly wrong for the rest of the session.
             if let Some(warning) = app.sessions.take_hook_warning() {
-                app.notify(format!("agent status unavailable: {warning}"));
+                app.notify(warning);
             }
         }
         Err(error) => app.notify(format!("could not start a session: {error}")),

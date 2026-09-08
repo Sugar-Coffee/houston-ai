@@ -76,6 +76,15 @@ pub struct Session {
     /// Lets the worktree manager say which checkouts are still in use, so
     /// cleaning up does not mean guessing.
     pub worktree: Option<String>,
+    /// Whether this session's hooks are still the ones installed in its
+    /// project.
+    ///
+    /// Claude Code's hooks live in the project's settings file and carry a
+    /// fixed session id, so a second agent started in the same directory
+    /// replaces them. The first then reports nothing and its state freezes on
+    /// whatever it last said. Recording that lets the board admit the status is
+    /// stale rather than showing a stale value as though it were current.
+    pub hooks_live: bool,
     /// The branch its directory is on, refreshed periodically.
     ///
     /// Cached rather than read per frame: it is a file read, but sixty of them
@@ -87,6 +96,13 @@ pub struct Session {
 impl Session {
     pub const fn pty(&self) -> &PtySession {
         &self.pty
+    }
+
+    /// Whether this session's board status can still be trusted.
+    ///
+    /// Only agents have hook-driven status, so a shell is never stale.
+    pub const fn status_is_stale(&self) -> bool {
+        matches!(self.kind, Kind::Agent { .. }) && !self.hooks_live
     }
 
     /// The directory this session runs in.
@@ -386,25 +402,52 @@ impl Sessions {
 
         // Checked before spawning, because afterwards the new session is
         // itself "an agent in this directory".
-        let collision = agent.then(|| self.agent_in(cwd).map(Session::display_name)).flatten();
+        let displaced = agent
+            .then(|| {
+                self.agent_in(cwd).map(|session| {
+                    // Bounded: an agent's display name is whatever terminal
+                    // title it set, which can be a whole path. An unbounded
+                    // name pushes the advice off the end of the footer.
+                    let name: String = session.display_name().chars().take(18).collect();
+                    (session.id, name)
+                })
+            })
+            .flatten();
 
         let id = self.spawn(name, kind, spec, size)?;
 
         if agent {
-            self.hook_warning = install_hooks(cwd, id).err().map(|error| error.to_string());
+            self.hook_warning = install_hooks(cwd, id)
+                .err()
+                .map(|error| format!("agent status unavailable: {error}"));
 
-            if let Some(other) = collision {
-                self.hook_warning = Some(format!(
-                    "{other} is already running here — only this session will report status. \
-                     Use a worktree to run both."
-                ));
+            if let Some((displaced_id, name)) = displaced {
+                // Its hooks have just been overwritten by ours. Mark it, so the
+                // board shows "status stale" rather than a frozen value that
+                // looks current.
+                if let Some(session) =
+                    self.items.iter_mut().find(|session| session.id == displaced_id)
+                {
+                    session.hooks_live = false;
+                }
+
+                // Sized for an 80-column terminal. The footer is one row and
+                // does not wrap, so a longer sentence quietly loses its own
+                // ending — and the ending is where the advice lives.
+                self.hook_warning =
+                    Some(format!("{name}'s status will freeze — two agents here. Use a worktree."));
             }
         }
         Ok(id)
     }
 
-    /// Why hook installation failed for the most recent agent session, if it
-    /// did. Surfaced in the UI rather than swallowed.
+    /// A complete, ready-to-show message about the most recent agent session's
+    /// status reporting, if there is one.
+    ///
+    /// Complete on purpose: callers used to prefix it with "agent status
+    /// unavailable:", which was wrong for a collision and ate twenty-six cells
+    /// of a footer that does not wrap — pushing the actual advice off the end
+    /// on an 80-column terminal.
     pub const fn take_hook_warning(&mut self) -> Option<String> {
         self.hook_warning.take()
     }
@@ -437,6 +480,7 @@ impl Sessions {
             named_by_user: false,
             kind,
             state,
+            hooks_live: true,
             branch: crate::worktree::branch_of(&spec.cwd),
             spec,
             worktree: None,
@@ -714,6 +758,7 @@ mod collision_tests {
             named_by_user: false,
             kind: Kind::Agent { provider: "Claude Code" },
             state: State::Idle,
+            hooks_live: true,
             branch: None,
             spec: LaunchSpec::command("claude", Vec::new(), directory.clone()),
             worktree: None,
@@ -729,6 +774,54 @@ mod collision_tests {
         // An exited one does not count: its hooks are nobody's concern.
         sessions.items[0].state = State::Exited(Some(0));
         assert!(sessions.agent_in(&directory).is_none());
+    }
+
+    #[test]
+    fn the_displaced_session_is_marked_stale_rather_than_left_looking_current() {
+        let mut sessions = Sessions::new();
+        let directory = std::env::temp_dir();
+
+        sessions.items.push(Session {
+            id: SessionId(1),
+            name: "first".to_string(),
+            default_name: "first".to_string(),
+            named_by_user: false,
+            kind: Kind::Agent { provider: "Claude Code" },
+            state: State::Running,
+            hooks_live: true,
+            branch: None,
+            spec: LaunchSpec::command("claude", Vec::new(), directory.clone()),
+            worktree: None,
+            pty: PtySession::spawn(
+                &LaunchSpec::command(provider::login_shell(), Vec::new(), directory.clone()),
+                Size::new(24, 80),
+            )
+            .unwrap(),
+        });
+        sessions.next_id = 2;
+
+        assert!(!sessions.items[0].status_is_stale(), "it owns its hooks for now");
+
+        // A second agent in the same directory overwrites its hooks.
+        sessions.spawn_agent(&directory, Size::new(24, 80)).unwrap();
+
+        assert!(
+            sessions.items[0].status_is_stale(),
+            "the displaced session must admit its status has stopped updating"
+        );
+
+        let warning = sessions.take_hook_warning().expect("the user is told");
+        assert!(warning.contains("worktree"), "and pointed at the fix: {warning}");
+        assert!(warning.contains("freeze"), "and told what goes wrong: {warning}");
+        assert!(warning.len() < 80, "must fit a narrow footer: {} chars", warning.len());
+    }
+
+    #[test]
+    fn a_shell_is_never_reported_as_stale() {
+        let mut sessions = Sessions::new();
+        sessions.spawn_shell(&std::env::temp_dir(), Size::new(24, 80)).unwrap();
+
+        assert!(!sessions.selected().unwrap().status_is_stale(), "shells have no hook status");
     }
 
     #[test]

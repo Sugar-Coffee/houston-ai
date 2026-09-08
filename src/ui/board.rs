@@ -155,13 +155,18 @@ fn render_card(
     let Some(session) = sessions.iter().nth(index) else { return };
     let selected = index == sessions.selected_index();
 
-    let state_colour = match session.state {
-        State::AwaitingInput => theme.attention,
-        State::Running if matches!(session.kind, Kind::Shell) => theme.link,
-        State::Running => theme.running,
-        State::Idle => theme.accent,
-        State::Exited(Some(0) | None) => theme.dim,
-        State::Exited(_) => theme.danger,
+    let state_colour = if session.status_is_stale() {
+        // Dim the spine: whatever it says, it stopped being true a while ago.
+        theme.dim
+    } else {
+        match session.state {
+            State::AwaitingInput => theme.attention,
+            State::Running if matches!(session.kind, Kind::Shell) => theme.link,
+            State::Running => theme.running,
+            State::Idle => theme.accent,
+            State::Exited(Some(0) | None) => theme.dim,
+            State::Exited(_) => theme.danger,
+        }
     };
 
     // The spine shows state, the fill shows selection. Two questions on two
@@ -190,6 +195,14 @@ fn render_card(
         _ => detail,
     };
 
+    // A session whose hooks were taken over shows a value that is no longer
+    // being updated. Saying so beats presenting it as current — and it
+    // *replaces* the provider name rather than being appended to it, because
+    // a column is about twenty-five cells wide and appending the important
+    // half to a line that truncates hides exactly the thing worth reading.
+    let stale = session.status_is_stale();
+    let detail = if stale { "status frozen".to_string() } else { detail };
+
     let width = area.width.saturating_sub(3) as usize;
     let lines = vec![
         Line::from(vec![
@@ -200,7 +213,10 @@ fn render_card(
         Line::from(vec![
             spine,
             Span::raw(" "),
-            Span::styled(truncate(&detail, width), Style::default().fg(theme.dim)),
+            Span::styled(
+                truncate(&detail, width),
+                Style::default().fg(if stale { theme.attention } else { theme.dim }),
+            ),
         ]),
     ];
 

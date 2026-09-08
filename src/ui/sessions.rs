@@ -143,13 +143,20 @@ fn render_card<'a>(
         (false, _) => Style::default().fg(theme.text),
     };
 
-    let badge = match session.state {
-        State::Idle => Span::styled(" ○", Style::default().fg(theme.accent)),
-        State::Running => Span::styled(" ●", Style::default().fg(theme.running)),
-        State::AwaitingInput => {
-            Span::styled(" ◆", Style::default().fg(theme.attention).add_modifier(Modifier::BOLD))
+    // A frozen status outranks whatever it froze on: showing `●` for a session
+    // that stopped reporting hours ago is worse than admitting we do not know.
+    let badge = if session.status_is_stale() {
+        Span::styled(" ?", Style::default().fg(theme.dim))
+    } else {
+        match session.state {
+            State::Idle => Span::styled(" ○", Style::default().fg(theme.accent)),
+            State::Running => Span::styled(" ●", Style::default().fg(theme.running)),
+            State::AwaitingInput => Span::styled(
+                " ◆",
+                Style::default().fg(theme.attention).add_modifier(Modifier::BOLD),
+            ),
+            State::Exited(_) => Span::styled(" ×", Style::default().fg(theme.danger)),
         }
-        State::Exited(_) => Span::styled(" ×", Style::default().fg(theme.danger)),
     };
 
     let kind = match session.kind {
