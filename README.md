@@ -2,10 +2,10 @@
 
 # Houston
 
-**A terminal workspace where your notes and your coding agents share one surface.**
+**A workspace for developing with AI agents — in your terminal.**
 
-Run several Claude Code sessions, see at a glance which are blocked on you, and
-send a note straight into an agent's context without leaving the keyboard.
+Run several coding agents at once, see at a glance which one is waiting on you,
+and keep the knowledge base they build in the same window.
 
 </div>
 
@@ -13,26 +13,35 @@ send a note straight into an agent's context without leaving the keyboard.
 
 ---
 
-## Why
+## What this is
 
-If you work with coding agents, you probably have two windows open. One holds
-the agents. The other holds the notes that give them context — the project
-docs, the decisions, the running log of what happened and why.
+If you already run Claude Code in a pile of terminal tabs, with an Obsidian
+vault open beside it holding your project docs, build logs and decisions —
+Houston is that workflow, purpose-built.
 
-They cannot see each other. So every time an agent needs something from your
-notes you alt-tab, find the file, copy a path, tab back, paste. It is a small
-tax, and you pay it constantly.
+It is closer to an IDE than to a terminal multiplexer. Not because it edits
+code, but because it is the place you sit while agents do: your sessions, their
+status, and the knowledge base they read from and write back to, all on one
+keyboard-driven surface.
 
-Houston puts both in one place and makes that seam free.
+**Terminal tabs do not scale for this.** A tab is a rectangle. It cannot tell
+you that one agent has been blocked on a permission prompt for ten minutes
+while another finished and is waiting for a reply. You find out by clicking
+through them.
+
+And the notes half — the vault that makes agents useful across sessions instead
+of starting cold every time — lives in an entirely different application.
+
+Houston is one surface for both.
 
 ## What it does
 
-### Sessions
+### Run several agents, and know where they are
 
 Spawn Claude Code, Codex, Gemini, opencode or a plain shell. Name them, jump
 between them, attach and detach. Each card shows where it is running and what
-branch it is on — because with several agents going, *which one is this?* is
-answered by the path far more often than by the name.
+branch it is on, because with several going, *which one is this?* is answered
+by the path far more often than by the name.
 
 ```
 ▶ 1 auth refactor          ●
@@ -42,27 +51,44 @@ answered by the path far more often than by the name.
 
 Start a session in a **git worktree** and several agents can work the same
 repository without treading on each other. Houston keeps every worktree it
-makes in one place and gives you a manager to clean them up.
+creates in one place and gives you a manager to clean them up.
 
 ### A board that tells the truth
 
 Which agents are working, which are blocked on you, which have finished their
-turn and are waiting for a reply. Driven by real agent hooks — not by guessing
-from what is on screen.
+turn. Driven by real agent hooks — not by guessing from what is on screen.
 
-That distinction matters. A hook is a fact; a screen-scrape is a guess. Shell
-sessions get no agent states at all rather than invented ones, and if Houston
-loses its hooks it says **status frozen** rather than showing a value that
-stopped being true an hour ago.
+That distinction is the whole point. A hook is a fact; a screen-scrape is a
+guess. Shell sessions get no agent states at all rather than invented ones, and
+if Houston loses its hooks it says **status frozen** rather than showing you a
+value that stopped being true an hour ago.
+
+### The knowledge base, as a first-class pane
+
+Fuzzy-find across your notes, search inside them, follow `[[wikilinks]]` and
+their backlinks, read them rendered. Press `y` to copy a note's path, or `i` to
+drop `@path` straight into a running agent's prompt.
+
+The point is not that agents can otherwise not read your notes — of course they
+can. It is that the notes stop being a second application you tab away to, and
+become a pane you work in while the agents run.
 
 ### An editor
 
 Modal, markdown-first, with amp-style jump mode — press `f`, every word gets a
 two-character tag, type one to teleport there.
 
-Not a code editor. It soft-wraps prose, continues your lists, follows
-wikilinks, and ticks task boxes. It deliberately has **no syntax highlighting**,
-because colouring markdown while you write it decorates without helping.
+Not a code editor. It soft-wraps prose, continues your lists, follows wikilinks
+and ticks task boxes. It deliberately has **no syntax highlighting**, because
+colouring markdown while you write it decorates without helping.
+
+## Who it is not for
+
+If you run one agent at a time and do not keep notes between sessions, this is
+more machinery than you need. A terminal tab is fine.
+
+Houston earns its keep when you have several agents going at once, and when you
+have decided that what they learn is worth keeping.
 
 ## The vault
 
@@ -70,19 +96,15 @@ The vault is a folder of plain markdown. Nothing proprietary, no database —
 open it in Obsidian, edit it in vim, put it under git. Houston indexes it,
 searches it, renders it, and gets it into your agents.
 
-Fuzzy-find across it, search inside it, follow `[[wikilinks]]` and their
-backlinks. Press `y` to copy a note's path, or `i` to drop `@path` straight
-into a running agent's prompt.
-
-On first launch Houston creates one at `~/.houston/vault/` and touches nothing
-else. Already have an Obsidian vault? Press `4` for Settings and point it there
-— nothing is copied or moved.
+On first launch it creates one at `~/.houston/vault/` and touches nothing else.
+Already have an Obsidian vault? Press `4` for Settings and point it there —
+nothing is copied or moved.
 
 ### Laying it out
 
-The vault earns its keep when it is both a **knowledge base** and a **work
-log** — when an agent can read what was decided six weeks ago and append what
-it just learned. A layout that supports that:
+A vault earns its keep when it is both a **knowledge base** and a **work log**:
+when an agent can read what was decided six weeks ago and append what it just
+learned. A layout that supports that:
 
 ```
 vault/
@@ -110,7 +132,7 @@ vault/
 └── Archive/               finished, kept because search does not care
 ```
 
-The shape that matters is **project folders that each carry their own log,
+The shape that matters is **project folders each carrying their own log,
 decisions and research**, plus a global log across all of them. An agent
 starting work reads `index.md` and `decisions/`; an agent finishing work
 appends to `build-log.md`. Everything else is preference.
@@ -121,16 +143,14 @@ Two habits make it worth having at all:
   only when it says something the diff cannot — what you tried that failed, a
   measurement that decided something, a library that behaved unexpectedly.
 - **Record the losing argument** in a decision, not just the winning one.
-  Someone will re-derive it otherwise, and should be able to see it was
+  Someone will re-derive it otherwise, and should be able to see it was already
   considered.
 
 ### Telling your projects about it
 
-Houston gets a note *into* an agent. For agents to use the vault on their own —
-reading context before they start, writing back what they learned — each
-project needs to know it exists.
-
-Add something like this to your project's `CLAUDE.md`:
+For agents to use the vault on their own — reading context before they start,
+writing back what they learned — each project needs to know it exists. Add
+something like this to your project's `CLAUDE.md`:
 
 ```markdown
 ## Knowledge base
@@ -152,8 +172,8 @@ argument that lost as well as the one that won.
 "This is slow" needs a benchmark. "Nobody uses this" needs a count.
 ```
 
-Adjust the path and the rules to taste. The point is that the vault stops being
-somewhere *you* put things and becomes somewhere your agents work.
+Adjust the paths and the rules to taste. The point is that the vault stops
+being somewhere *you* file things and becomes somewhere your agents work.
 
 ## Getting started
 
