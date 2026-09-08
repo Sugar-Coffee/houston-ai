@@ -1,7 +1,10 @@
 //! Application state.
-//!
-//! Deliberately thin for now. The domain model that matters is described in
-//! ADR-0006 (a session is a PTY plus a launch spec) and arrives in Phase 2.
+
+use crate::{
+    pty::Size,
+    session::{Focus, Sessions},
+};
+use std::path::PathBuf;
 
 /// The top-level views, rendered as the tab strip.
 ///
@@ -27,11 +30,11 @@ impl Tab {
         }
     }
 
-    /// Placeholder copy until each view lands. Names the roadmap phase so the
-    /// app itself says what is not built yet.
+    /// Placeholder copy for views that are not built yet. Names the roadmap
+    /// phase, so the app itself says what is missing.
     pub const fn placeholder(self) -> (&'static str, &'static str) {
         match self {
-            Self::Sessions => ("Sessions", "Phase 2 — agent and shell sessions on one PTY path"),
+            Self::Sessions => ("Sessions", ""),
             Self::Vault => ("Vault", "Phase 4 — browse, search and follow wikilinks"),
             Self::Board => ("Board", "Phase 6 — which agents are blocked on you"),
             Self::Settings => ("Settings", "Phase 8 — providers, vault path, theme"),
@@ -39,19 +42,34 @@ impl Tab {
     }
 }
 
-#[derive(Debug)]
 pub struct App {
     pub tab: Tab,
+    pub sessions: Sessions,
+    /// Where new sessions start. The directory Houston was launched from.
+    pub cwd: PathBuf,
     pub should_quit: bool,
-    /// Set to `true` whenever state changes in a way that needs a redraw.
-    /// The render loop is frame-budgeted, so this coalesces bursts of events
-    /// into a single draw rather than one draw per event.
+    /// Set whenever state changes in a way that needs a redraw. The render loop
+    /// is frame-budgeted, so this coalesces bursts of events into one draw.
     pub dirty: bool,
+    /// Shown in the footer when an action cannot be carried out.
+    pub notice: Option<String>,
 }
 
 impl App {
-    pub const fn new() -> Self {
-        Self { tab: Tab::Sessions, should_quit: false, dirty: true }
+    pub fn new() -> Self {
+        Self {
+            tab: Tab::Sessions,
+            sessions: Sessions::new(),
+            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            should_quit: false,
+            dirty: true,
+            notice: None,
+        }
+    }
+
+    /// Whether keystrokes belong to a child rather than to Houston.
+    pub fn is_attached(&self) -> bool {
+        self.tab == Tab::Sessions && self.sessions.focus() == Focus::Attached
     }
 
     pub fn select_tab(&mut self, tab: Tab) {
@@ -63,13 +81,48 @@ impl App {
 
     pub fn cycle_tab(&mut self, forward: bool) {
         let count = Tab::ALL.len();
-        let current = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
+        let current = Tab::ALL.iter().position(|tab| *tab == self.tab).unwrap_or(0);
         let next = if forward { (current + 1) % count } else { (current + count - 1) % count };
         self.select_tab(Tab::ALL[next]);
     }
 
     pub const fn quit(&mut self) {
         self.should_quit = true;
+    }
+
+    pub fn notify(&mut self, message: impl Into<String>) {
+        self.notice = Some(message.into());
+        self.dirty = true;
+    }
+
+    pub fn clear_notice(&mut self) {
+        if self.notice.take().is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// Keeps every child's grid matched to the area it is drawn into.
+    pub fn resize_sessions(&mut self, size: Size) {
+        self.sessions.resize_all(size);
+    }
+
+    /// The keybinds the footer should show, given the current view and mode.
+    pub fn keybinds(&self) -> Vec<(&'static str, &'static str)> {
+        if self.is_attached() {
+            return vec![("ctrl+\\", "detach"), ("", "all other keys go to the session")];
+        }
+
+        let mut binds: Vec<(&'static str, &'static str)> = vec![("tab", "view"), ("1-4", "jump")];
+
+        if self.tab == Tab::Sessions {
+            binds.extend([("n", "agent"), ("s", "shell")]);
+            if !self.sessions.is_empty() {
+                binds.extend([("j/k", "select"), ("↵", "attach"), ("x", "close")]);
+            }
+        }
+
+        binds.push(("q", "quit"));
+        binds
     }
 }
 
@@ -108,11 +161,22 @@ mod tests {
     }
 
     #[test]
-    fn every_tab_has_placeholder_copy() {
-        for tab in Tab::ALL {
-            let (title, detail) = tab.placeholder();
-            assert!(!title.is_empty());
-            assert!(!detail.is_empty());
-        }
+    fn keybinds_follow_the_view() {
+        let mut app = App::new();
+
+        let sessions: Vec<_> = app.keybinds().iter().map(|(key, _)| *key).collect();
+        assert!(sessions.contains(&"n"), "the sessions view offers a new agent");
+        assert!(!sessions.contains(&"x"), "with no sessions there is nothing to close");
+
+        app.select_tab(Tab::Vault);
+        let vault: Vec<_> = app.keybinds().iter().map(|(key, _)| *key).collect();
+        assert!(!vault.contains(&"n"), "session keys must not leak into other views");
+        assert!(vault.contains(&"q"));
+    }
+
+    #[test]
+    fn an_unattached_app_is_never_treated_as_attached() {
+        let app = App::new();
+        assert!(!app.is_attached(), "with no sessions there is nothing to be attached to");
     }
 }

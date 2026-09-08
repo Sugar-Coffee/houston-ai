@@ -6,6 +6,11 @@
 
 mod app;
 mod event;
+mod input;
+mod palette;
+mod provider;
+mod pty;
+mod session;
 mod terminal;
 mod ui;
 

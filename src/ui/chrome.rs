@@ -26,6 +26,13 @@ pub fn tab_strip(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         spans.push(Span::styled(format!("  {}·{}", index + 1, tab.title()), style));
     }
 
+    if app.is_attached() {
+        spans.push(Span::styled(
+            "   attached",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.surface)),
         area,
@@ -52,20 +59,32 @@ pub fn placeholder(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     );
 }
 
-pub fn keybind_bar(frame: &mut Frame, area: Rect, theme: Theme) {
-    let keys = [("tab", "next view"), ("1-4", "jump to view"), ("q", "quit")];
-
-    let mut spans = Vec::new();
-    for (key, label) in keys {
-        spans.push(Span::styled(
-            format!(" {key} "),
-            Style::default().fg(theme.surface).bg(theme.dim).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(format!(" {label}   "), Style::default().fg(theme.dim)));
-    }
-
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.surface)),
-        area,
+/// The bottom bar: either the current view's keys, or a transient notice.
+pub fn keybind_bar(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+    let line = app.notice.as_ref().map_or_else(
+        || {
+            let mut spans = Vec::new();
+            for (key, label) in app.keybinds() {
+                if !key.is_empty() {
+                    spans.push(Span::styled(
+                        format!(" {key} "),
+                        Style::default()
+                            .fg(theme.surface)
+                            .bg(theme.dim)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                spans.push(Span::styled(format!(" {label}   "), Style::default().fg(theme.dim)));
+            }
+            Line::from(spans)
+        },
+        |notice| {
+            Line::from(Span::styled(
+                format!(" {notice} "),
+                Style::default().fg(theme.surface).bg(theme.accent).add_modifier(Modifier::BOLD),
+            ))
+        },
     );
+
+    frame.render_widget(Paragraph::new(line).style(Style::default().bg(theme.surface)), area);
 }
