@@ -245,6 +245,25 @@ impl PtySession {
         self.dirty.store(true, Ordering::Release);
     }
 
+    /// Scrolls by a whole screen.
+    ///
+    /// Uses the grid's own idea of a page, so the caller does not have to know
+    /// how tall the pane is.
+    pub fn page(&self, up: bool) {
+        if let Ok(mut term) = self.term.lock() {
+            term.scroll_display(if up { Scroll::PageUp } else { Scroll::PageDown });
+        }
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    /// Jumps to the oldest line still in history.
+    pub fn scroll_to_top(&self) {
+        if let Ok(mut term) = self.term.lock() {
+            term.scroll_display(Scroll::Top);
+        }
+        self.dirty.store(true, Ordering::Release);
+    }
+
     /// Jumps back to the live output.
     ///
     /// Called whenever you type: writing into a scrolled-back view and not

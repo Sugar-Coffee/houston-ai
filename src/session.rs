@@ -130,6 +130,20 @@ impl Session {
         self.pty.scrollback_offset()
     }
 
+    /// Scrolls a whole screen of history.
+    pub fn page(&self, up: bool) {
+        self.pty.page(up);
+    }
+
+    /// Jumps to the start or the end of the history.
+    pub fn scroll_to_edge(&self, top: bool) {
+        if top {
+            self.pty.scroll_to_top();
+        } else {
+            self.pty.scroll_to_bottom();
+        }
+    }
+
     /// Handles a wheel or click while this session is attached.
     ///
     /// Three cases, in order. A child that asked for mouse reporting gets the

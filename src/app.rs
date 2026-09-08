@@ -329,70 +329,93 @@ impl App {
         if self.quit_armed {
             return vec![("q", "press again to quit"), ("esc", "stay")];
         }
+        if let Some(binds) = self.focus_keybinds() {
+            return binds;
+        }
 
+        let mut binds: Vec<(&'static str, &'static str)> = vec![("tab", "view"), ("1-4", "jump")];
+        binds.extend(self.view_keybinds());
+        binds.push(("q", "quit"));
+        binds
+    }
+
+    /// Keys for whatever owns the keyboard, when that is not one of the views.
+    fn focus_keybinds(&self) -> Option<Vec<(&'static str, &'static str)>> {
         if let Some(editor) = &self.editor
             && self.tab == Tab::Vault
         {
-            return match editor.mode {
+            return Some(match editor.mode {
                 crate::editor::Mode::Insert => vec![("esc", "normal mode")],
                 crate::editor::Mode::Jump { .. } => vec![("", "type a tag to jump")],
-                crate::editor::Mode::Search { .. } => vec![("↵", "find"), ("esc", "cancel")],
+                crate::editor::Mode::Search { .. } => vec![("\u{21b5}", "find"), ("esc", "cancel")],
                 crate::editor::Mode::Normal => vec![
                     ("hjkl", "move"),
                     ("i/a/o", "insert"),
                     ("f", "jump"),
                     ("[ ]", "heading"),
-                    ("↵", "follow link"),
+                    ("\u{21b5}", "follow link"),
                     ("t", "task"),
                     ("/", "search"),
                     ("u", "undo"),
                     ("s", "save"),
                     ("esc", "close"),
                 ],
-            };
+            });
         }
 
         match self.focus() {
-            InputFocus::Session => {
-                return vec![("ctrl+\\", "detach"), ("", "all other keys go to the session")];
+            InputFocus::Session => Some(vec![
+                ("ctrl+\\", "detach"),
+                ("shift+pgup", "scroll back"),
+                ("", "all other keys go to the session"),
+            ]),
+            InputFocus::Text => Some(vec![("\u{21b5}", "accept"), ("esc", "cancel")]),
+            InputFocus::Overlay if self.worktrees.is_some() => Some(vec![
+                ("j/k", "select"),
+                ("d", "remove"),
+                ("D", "force remove"),
+                ("r", "refresh"),
+                ("esc", "close"),
+            ]),
+            InputFocus::Overlay => Some(vec![
+                ("j/k", "choose"),
+                ("1-9", "jump"),
+                ("\u{21b5}", "send"),
+                ("esc", "cancel"),
+            ]),
+            InputFocus::Form => Some(self.form_keybinds()),
+            InputFocus::Commands | InputFocus::Editor => None,
+        }
+    }
+
+    /// Keys for a form, which behaves the same whether it is Settings or the
+    /// new-session dialog.
+    fn form_keybinds(&self) -> Vec<(&'static str, &'static str)> {
+        let form = self.form.as_ref().unwrap_or(&self.settings);
+
+        if form.is_editing() {
+            let completes =
+                form.focused().is_some_and(|f| f.kind == crate::form::FieldKind::Directory);
+            let mut binds = vec![("\u{21b5}", "done"), ("esc", "cancel")];
+            if completes {
+                binds.insert(0, ("tab", "complete"));
             }
-            InputFocus::Text => return vec![("↵", "accept"), ("esc", "cancel")],
-            InputFocus::Overlay if self.worktrees.is_some() => {
-                return vec![
-                    ("j/k", "select"),
-                    ("d", "remove"),
-                    ("D", "force remove"),
-                    ("r", "refresh"),
-                    ("esc", "close"),
-                ];
-            }
-            InputFocus::Overlay => {
-                return vec![("j/k", "choose"), ("1-9", "jump"), ("↵", "send"), ("esc", "cancel")];
-            }
-            InputFocus::Form => {
-                let form = self.form.as_ref().unwrap_or(&self.settings);
-                if form.is_editing() {
-                    let completes =
-                        form.focused().is_some_and(|f| f.kind == crate::form::FieldKind::Directory);
-                    let mut binds = vec![("↵", "done"), ("esc", "cancel")];
-                    if completes {
-                        binds.insert(0, ("tab", "complete"));
-                    }
-                    return binds;
-                }
-                let mut binds = vec![("j/k", "select"), ("↵", "edit")];
-                if self.form.is_some() {
-                    binds.push(("esc", "cancel"));
-                } else {
-                    binds.push(("tab", "view"));
-                    binds.push(("q", "quit"));
-                }
-                return binds;
-            }
-            InputFocus::Commands | InputFocus::Editor => {}
+            return binds;
         }
 
-        let mut binds: Vec<(&'static str, &'static str)> = vec![("tab", "view"), ("1-4", "jump")];
+        let mut binds = vec![("j/k", "select"), ("\u{21b5}", "edit")];
+        if self.form.is_some() {
+            binds.push(("esc", "cancel"));
+        } else {
+            binds.push(("tab", "view"));
+            binds.push(("q", "quit"));
+        }
+        binds
+    }
+
+    /// Keys for the current view.
+    fn view_keybinds(&self) -> Vec<(&'static str, &'static str)> {
+        let mut binds: Vec<(&'static str, &'static str)> = Vec::new();
 
         match self.tab {
             Tab::Sessions => {
@@ -401,6 +424,7 @@ impl App {
                     binds.extend([
                         ("j/k", "select"),
                         ("↵", "attach"),
+                        ("u/d", "scroll"),
                         ("r", "rename"),
                         ("x", "close"),
                     ]);
@@ -426,7 +450,6 @@ impl App {
             _ => {}
         }
 
-        binds.push(("q", "quit"));
         binds
     }
 }

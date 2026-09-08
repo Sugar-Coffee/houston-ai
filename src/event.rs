@@ -777,6 +777,19 @@ fn on_key_attached(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Scrollback without detaching. Shift+Page is the long-standing terminal
+    // binding for exactly this, and no TUI uses it, so it is safe to take.
+    // Whether it survives depends on the outer terminal — the keys on the
+    // Sessions view work regardless, which is why both exist.
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    if shift && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+        if let Some(session) = app.sessions.selected() {
+            session.page(key.code == KeyCode::PageUp);
+        }
+        app.dirty = true;
+        return;
+    }
+
     if let Some(session) = app.sessions.selected_mut()
         && let Err(error) = session.send_key(key)
     {
@@ -1060,6 +1073,17 @@ fn on_key_sessions(app: &mut App, key: KeyEvent) {
         KeyCode::Char('n') => app.open_new_session_form(),
         KeyCode::Char('s') => spawn(app, true),
         KeyCode::Char('W') => open_worktrees(app),
+        // Reading back through an agent's output is a normal thing to want,
+        // and it must not depend on the terminal reporting the mouse.
+        KeyCode::PageUp
+        | KeyCode::PageDown
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::Char('u' | 'd' | 'g' | 'G')
+            if !app.sessions.is_empty() =>
+        {
+            scroll_selected_session(app, key.code);
+        }
         KeyCode::Char('r') => {
             if let Some(session) = app.sessions.selected() {
                 app.renaming = Some(session.name.clone());
@@ -1081,6 +1105,23 @@ fn on_key_sessions(app: &mut App, key: KeyEvent) {
                 app.notify("that session has exited — press x to close it");
             }
         }
+        _ => {}
+    }
+}
+
+/// Scrollback keys on the Sessions view.
+///
+/// Deliberately plain keys rather than a modifier chord: the mouse path can be
+/// silently disabled by the outer terminal, so this one has to be reachable
+/// with no configuration at all.
+fn scroll_selected_session(app: &App, code: KeyCode) {
+    let Some(session) = app.sessions.selected() else { return };
+
+    match code {
+        KeyCode::PageUp | KeyCode::Char('u') => session.page(true),
+        KeyCode::PageDown | KeyCode::Char('d') => session.page(false),
+        KeyCode::Home | KeyCode::Char('g') => session.scroll_to_edge(true),
+        KeyCode::End | KeyCode::Char('G') => session.scroll_to_edge(false),
         _ => {}
     }
 }
@@ -1303,6 +1344,40 @@ mod tests {
 
     fn wheel(kind: MouseEventKind) -> MouseEvent {
         MouseEvent { kind, column: 0, row: 0, modifiers: KeyModifiers::NONE }
+    }
+
+    /// The keyboard path must work whatever the terminal decides to do with
+    /// the wheel — that is the whole reason it exists.
+    #[test]
+    fn the_sessions_view_scrolls_a_session_without_any_mouse() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        app.sessions.detach();
+
+        // Nothing has been printed, so there is no history to move through;
+        // what matters is that the keys reach the session rather than being
+        // swallowed or treated as commands.
+        for code in [KeyCode::PageUp, KeyCode::Char('u'), KeyCode::Home] {
+            on_key(&mut app, press(code));
+            assert!(!app.should_quit, "{code:?} must not be a command here");
+        }
+
+        on_key(&mut app, press(KeyCode::End));
+        assert_eq!(app.sessions.selected().unwrap().scrollback_offset(), 0);
+    }
+
+    #[test]
+    fn shift_page_scrolls_without_leaving_the_child() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        assert!(app.is_attached());
+
+        on_key(&mut app, KeyEvent::new(KeyCode::PageUp, KeyModifiers::SHIFT));
+        assert!(app.is_attached(), "scrolling must not detach you");
+
+        // An unshifted page key still belongs to the child.
+        on_key(&mut app, press(KeyCode::PageUp));
+        assert!(app.is_attached());
     }
 
     #[test]
