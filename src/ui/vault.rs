@@ -1,7 +1,7 @@
 //! The Vault view: notes on the left, the open note on the right.
 
 use crate::{
-    ui::Theme,
+    ui::{Theme, keycap},
     vault::{Browser, browser::Mode},
 };
 use ratatui::{
@@ -38,13 +38,15 @@ fn render_missing(frame: &mut Frame, area: Rect, theme: Theme) {
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
+        keycap::row(&[("4", "open Settings and point Houston at a folder")], theme),
+        Line::from(""),
         Line::from(Span::styled(
-            "Set HOUSTON_VAULT to your notes folder, or put one at ~/Projects/houston",
-            Style::default().fg(theme.dim),
+            "or set HOUSTON_VAULT",
+            Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
         )),
     ];
-    let padding = area.height.saturating_sub(3) / 2;
-    let centred = Rect { y: area.y + padding, height: 3.min(area.height), ..area };
+    let padding = area.height.saturating_sub(5) / 2;
+    let centred = Rect { y: area.y + padding, height: 5.min(area.height), ..area };
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), centred);
 }
 
@@ -130,7 +132,12 @@ fn render_list(frame: &mut Frame, area: Rect, browser: &Browser, theme: Theme) {
                 }
             }
 
-            Some(Line::from(spans))
+            let line = Line::from(spans);
+            Some(if selected {
+                keycap::fill(line, inner.width).style(keycap::selected_row(theme))
+            } else {
+                line
+            })
         })
         .collect();
 
@@ -158,17 +165,12 @@ fn render_note(frame: &mut Frame, area: Rect, browser: &Browser, theme: Theme) {
                 Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from(Span::styled(
-                "↵ open      / find      f search      e edit",
-                Style::default().fg(theme.dim),
-            )),
-            Line::from(Span::styled(
-                "y yank path      i send to session      w wrap",
-                Style::default().fg(theme.dim),
-            )),
+            keycap::row(&[("↵", "open"), ("/", "find"), ("f", "search"), ("e", "edit")], theme),
+            Line::from(""),
+            keycap::row(&[("y", "yank path"), ("i", "send to session"), ("w", "wrap")], theme),
         ];
-        let padding = inner.height.saturating_sub(4) / 2;
-        let centred = Rect { y: inner.y + padding, height: 4.min(inner.height), ..inner };
+        let padding = inner.height.saturating_sub(5) / 2;
+        let centred = Rect { y: inner.y + padding, height: 5.min(inner.height), ..inner };
         frame.render_widget(Paragraph::new(hint).alignment(Alignment::Center), centred);
         return;
     };

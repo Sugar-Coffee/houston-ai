@@ -3,7 +3,7 @@
 
 use crate::{
     session::{Focus, Kind, Sessions, State},
-    ui::{Theme, terminal},
+    ui::{Theme, keycap, terminal},
 };
 use ratatui::{
     Frame,
@@ -141,13 +141,19 @@ fn render_list(
                 ]);
             }
 
-            Line::from(vec![
+            let line = Line::from(vec![
                 Span::styled(marker, Style::default().fg(theme.accent)),
                 Span::styled(ordinal, Style::default().fg(theme.dim)),
                 Span::styled(truncate(&session.display_name(), 22), name_style),
                 Span::styled(kind, Style::default().fg(theme.dim)),
                 badge,
-            ])
+            ]);
+
+            if selected {
+                keycap::fill(line, inner.width).style(keycap::selected_row(theme))
+            } else {
+                line
+            }
         })
         .collect();
 
@@ -181,13 +187,12 @@ fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme)
                 Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from(Span::styled(
-                "n  start an agent          s  start a shell",
-                Style::default().fg(theme.dim),
-            )),
+            keycap::row(&[("n", "start an agent"), ("s", "start a shell")], theme),
+            Line::from(""),
+            keycap::row(&[("W", "worktrees")], theme),
         ];
-        let padding = inner.height.saturating_sub(3) / 2;
-        let centred = Rect { y: inner.y + padding, height: 3.min(inner.height), ..inner };
+        let padding = inner.height.saturating_sub(5) / 2;
+        let centred = Rect { y: inner.y + padding, height: 5.min(inner.height), ..inner };
         frame.render_widget(Paragraph::new(hint).alignment(Alignment::Center), centred);
         return;
     };

@@ -2,7 +2,7 @@
 
 use crate::{
     form::{FieldKind, Form},
-    ui::Theme,
+    ui::{Theme, keycap},
 };
 use ratatui::{
     Frame,
@@ -62,11 +62,16 @@ pub fn render(frame: &mut Frame, area: Rect, form: &Form, theme: Theme, title: &
             (field.display(), Style::default().fg(theme.text))
         };
 
-        lines.push(Line::from(vec![
+        let line = Line::from(vec![
             Span::styled(marker, Style::default().fg(theme.accent)),
             Span::styled(format!("{:<LABEL_WIDTH$}", field.label), label_style),
             Span::styled(value, value_style),
-        ]));
+        ]);
+        lines.push(if focused {
+            keycap::fill(line, inner.width).style(keycap::selected_row(theme))
+        } else {
+            line
+        });
 
         // Candidates from the last Tab, indented under the field they belong to.
         if focused && !field.completions.is_empty() {

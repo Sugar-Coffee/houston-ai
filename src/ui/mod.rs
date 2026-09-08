@@ -8,6 +8,7 @@ pub mod board;
 mod chrome;
 pub mod editor;
 pub mod form;
+pub mod keycap;
 pub mod overlay;
 pub mod sessions;
 pub mod settings;
@@ -96,6 +97,8 @@ mod tests {
         let rendered = draw(&App::new(), 100, 24);
         assert!(rendered.contains("No sessions yet"));
         assert!(rendered.contains("start an agent"));
+        // The key is drawn as a key, not as a letter in a sentence.
+        assert!(rendered.contains(" n "), "the shortcut is capped");
     }
 
     #[test]
@@ -136,7 +139,8 @@ mod tests {
 
         let rendered = draw(&app, 110, 30);
         assert!(rendered.contains("worktrees"));
-        assert!(rendered.contains("none yet"), "an empty state says how to get one");
+        assert!(rendered.contains("None yet"));
+        assert!(rendered.contains("tick Worktree"), "an empty state says how to get one");
     }
 
     #[test]

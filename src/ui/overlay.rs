@@ -8,7 +8,7 @@ use crate::{
     app::Picker,
     form::Form,
     session::Sessions,
-    ui::{Theme, form as form_ui},
+    ui::{Theme, form as form_ui, keycap},
     worktree::Worktree,
 };
 use ratatui::{
@@ -113,7 +113,9 @@ pub fn worktrees(
     sessions: &Sessions,
     theme: Theme,
 ) {
-    let rows = u16::try_from(worktrees.len().max(1)).unwrap_or(1);
+    // The empty state is three lines tall, so sizing to the list alone would
+    // clip the very message that says how to get out of it.
+    let rows = u16::try_from(worktrees.len()).unwrap_or(1).max(3);
     let height = (rows + 2).min(area.height);
     let width = 78.min(area.width);
 
@@ -139,13 +141,19 @@ pub fn worktrees(
     frame.render_widget(block, popup);
 
     if worktrees.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "  none yet — tick Worktree when starting a session",
-                Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
+        let lines = vec![
+            Line::from(Span::styled(
+                "  None yet",
+                Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
             )),
-            inner,
-        );
+            Line::from(""),
+            {
+                let mut row = keycap::row(&[("n", "start a session and tick Worktree")], theme);
+                row.spans.insert(0, Span::raw("  "));
+                row
+            },
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
         return;
     }
 

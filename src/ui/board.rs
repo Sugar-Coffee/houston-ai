@@ -9,7 +9,7 @@
 
 use crate::{
     session::{Kind, Sessions, State},
-    ui::Theme,
+    ui::{Theme, keycap},
 };
 use ratatui::{
     Frame,
@@ -71,10 +71,7 @@ pub fn render(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme) 
                 Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from(Span::styled(
-                "Start a session on the Sessions view and it will appear here",
-                Style::default().fg(theme.dim),
-            )),
+            keycap::row(&[("1", "go to Sessions and start one")], theme),
         ];
         let padding = area.height.saturating_sub(3) / 2;
         let centred = Rect { y: area.y + padding, height: 3.min(area.height), ..area };
