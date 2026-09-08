@@ -142,6 +142,42 @@ fn on_hook(app: &mut App, notification: &Notification) {
     }
 }
 
+/// A one-line description of an input event, for the inspector.
+///
+/// Deliberately says what *arrived*, not what Houston did with it — the
+/// question this answers is whether the terminal is sending anything at all.
+fn describe(event: &Event) -> String {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            let mods = modifier_names(key.modifiers);
+            format!("key    {mods}{:?}", key.code)
+        }
+        Event::Key(_) => "key    (release)".to_string(),
+        Event::Mouse(mouse) => {
+            let mods = modifier_names(mouse.modifiers);
+            format!("mouse  {mods}{:?} at {},{}", mouse.kind, mouse.column, mouse.row)
+        }
+        Event::Paste(text) => format!("paste  {} chars", text.chars().count()),
+        Event::Resize(columns, rows) => format!("resize {columns}x{rows}"),
+        Event::FocusGained => "focus  gained".to_string(),
+        Event::FocusLost => "focus  lost".to_string(),
+    }
+}
+
+fn modifier_names(modifiers: KeyModifiers) -> String {
+    let mut names = String::new();
+    for (flag, name) in [
+        (KeyModifiers::CONTROL, "ctrl+"),
+        (KeyModifiers::ALT, "alt+"),
+        (KeyModifiers::SHIFT, "shift+"),
+    ] {
+        if modifiers.contains(flag) {
+            names.push_str(name);
+        }
+    }
+    names
+}
+
 /// The wheel, and clicks.
 ///
 /// Everything except an attached session treats the wheel as "scroll what I am
@@ -196,6 +232,8 @@ fn on_mouse(app: &mut App, mouse: MouseEvent, area: Option<Rect>) {
 }
 
 fn handle(app: &mut App, event: &Event, terminal_area: Option<Rect>) {
+    app.log_input(describe(event));
+
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             app.clear_notice();
@@ -232,6 +270,14 @@ fn on_key(app: &mut App, key: KeyEvent) {
         if key.code == KeyCode::Esc {
             return;
         }
+    }
+
+    // Intercepted everywhere, including while attached: the inspector exists
+    // for the case where something is swallowing input, so it cannot itself
+    // depend on input reaching the usual place.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
+        app.toggle_inspector();
+        return;
     }
 
     match app.focus() {
@@ -1348,6 +1394,43 @@ mod tests {
 
     /// The keyboard path must work whatever the terminal decides to do with
     /// the wheel — that is the whole reason it exists.
+    #[test]
+    fn the_inspector_records_what_arrived_not_what_was_done_with_it() {
+        let mut app = App::new();
+
+        handle(&mut app, &Event::Key(press(KeyCode::Char('2'))), None);
+        handle(&mut app, &Event::Mouse(wheel(MouseEventKind::ScrollUp)), None);
+
+        let log: Vec<&String> = app.input_log.iter().collect();
+        assert!(log.iter().any(|entry| entry.starts_with("key")));
+        assert!(
+            log.iter().any(|entry| entry.starts_with("mouse")),
+            "the whole point is answering whether mouse events arrive"
+        );
+    }
+
+    #[test]
+    fn the_inspector_toggles_even_while_attached() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        assert!(app.is_attached());
+
+        on_key(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert!(app.show_inspector, "it must work when something is swallowing input");
+
+        on_key(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert!(!app.show_inspector);
+    }
+
+    #[test]
+    fn the_input_log_does_not_grow_without_limit() {
+        let mut app = App::new();
+        for _ in 0..200 {
+            handle(&mut app, &Event::Key(press(KeyCode::Char('x'))), None);
+        }
+        assert!(app.input_log.len() <= 14, "got {}", app.input_log.len());
+    }
+
     #[test]
     fn the_sessions_view_scrolls_a_session_without_any_mouse() {
         let mut app = App::new();

@@ -4,6 +4,8 @@
 //! to. It is deliberately small and centred rather than a full-screen mode —
 //! you are answering one question, and the context behind it stays visible.
 
+use std::collections::VecDeque;
+
 use crate::{
     app::Picker,
     form::Form,
@@ -205,4 +207,57 @@ fn truncate(text: &str, limit: usize) -> String {
         return text.to_string();
     }
     text.chars().take(limit.saturating_sub(1)).chain(std::iter::once('…')).collect()
+}
+
+/// The input inspector: what the terminal is actually sending.
+///
+/// Its whole job is to answer "are mouse events arriving?", which nothing else
+/// in the app can tell you.
+pub fn inspector(frame: &mut Frame, area: Rect, log: &VecDeque<String>, theme: Theme) {
+    let height = (u16::try_from(log.len()).unwrap_or(4).max(4) + 3).min(area.height);
+    let width = 58.min(area.width);
+
+    // Bottom-right, so it does not cover what you are testing.
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width),
+        y: area.y + area.height.saturating_sub(height),
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.code))
+        .style(Style::default().bg(theme.raised))
+        .title(Span::styled(
+            " input  ctrl+g to close ",
+            Style::default().fg(theme.code).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if log.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "  nothing yet — press a key or scroll",
+                Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = log
+        .iter()
+        .map(|entry| {
+            // Mouse events are the reason this exists, so they stand out.
+            let colour = if entry.starts_with("mouse") { theme.running } else { theme.dim };
+            Line::from(Span::styled(format!(" {entry}"), Style::default().fg(colour)))
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }

@@ -7,12 +7,12 @@
 
 use anyhow::Result;
 use crossterm::{
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
-use std::io::{Stdout, stdout};
+use std::io::{Stdout, Write, stdout};
 
 pub type Backend = CrosstermBackend<Stdout>;
 
@@ -57,10 +57,30 @@ impl Drop for Guard {
 }
 
 fn restore() -> Result<()> {
-    execute!(stdout(), DisableMouseCapture, DisableBracketedPaste, LeaveAlternateScreen)?;
+    let mut out = stdout();
+    out.write_all(MOUSE_OFF.as_bytes())?;
+    execute!(out, DisableBracketedPaste, LeaveAlternateScreen)?;
     disable_raw_mode()?;
     Ok(())
 }
+
+/// Ask only for button presses and SGR coordinates.
+///
+/// `crossterm`'s `EnableMouseCapture` also requests `?1002h` (drag) and
+/// `?1003h` (**every** movement), plus legacy urxvt mode. We need neither:
+/// `?1000h` already reports the wheel, and any-motion tracking floods us with
+/// an event per pixel of movement — each one marking the app dirty. It is also
+/// the grabbiest thing an app can ask a terminal for, and the reason people
+/// switch mouse reporting off.
+///
+/// `?1007l` turns off alternate scroll, so the terminal cannot quietly convert
+/// the wheel into arrow keys behind our back — which is what made the wheel
+/// cycle an agent's history instead of scrolling.
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h\x1b[?1007l";
+
+/// Everything `MOUSE_ON` might have set, plus the modes we never ask for, in
+/// case a previous program left them on.
+const MOUSE_OFF: &str = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1006l";
 
 /// Turns mouse reporting on or off.
 ///
@@ -69,10 +89,8 @@ fn restore() -> Result<()> {
 /// works again. Most terminals let you hold Shift to bypass reporting and
 /// select anyway, but not all, so this stays a setting rather than a decision.
 pub fn set_mouse(enabled: bool) -> Result<()> {
-    if enabled {
-        execute!(stdout(), EnableMouseCapture)?;
-    } else {
-        execute!(stdout(), DisableMouseCapture)?;
-    }
+    let mut out = stdout();
+    out.write_all(if enabled { MOUSE_ON.as_bytes() } else { MOUSE_OFF.as_bytes() })?;
+    out.flush()?;
     Ok(())
 }

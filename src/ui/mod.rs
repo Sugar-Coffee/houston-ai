@@ -63,6 +63,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let Some(picker) = &app.picker {
         overlay::picker(frame, body, picker, &app.sessions, theme);
     }
+    if app.show_inspector {
+        overlay::inspector(frame, body, &app.input_log, theme);
+    }
 
     chrome::keybind_bar(frame, footer, app, theme);
 }

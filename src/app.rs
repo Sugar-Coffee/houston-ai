@@ -9,7 +9,7 @@ use crate::{
     vault::{Browser, Vault, browser::Mode as VaultMode},
     worktree::Worktree,
 };
-use std::path::PathBuf;
+use std::{collections::VecDeque, path::PathBuf};
 
 /// The top-level views, rendered as the tab strip.
 ///
@@ -70,6 +70,11 @@ pub struct Picker {
     pub selected: usize,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "App is the single place application state lives; grouping these \
+              into sub-structs would add indirection without adding meaning"
+)]
 pub struct App {
     pub tab: Tab,
     pub sessions: Sessions,
@@ -107,7 +112,17 @@ pub struct App {
     /// The worktree manager's contents, loaded when it opens.
     pub worktrees: Option<Vec<Worktree>>,
     pub worktree_selected: usize,
+    /// The last few input events, newest last.
+    ///
+    /// Always recorded, shown only when asked for. Whether the terminal is
+    /// reporting the mouse at all is otherwise unanswerable from inside the
+    /// app — and guessing at it cost a whole round of work.
+    pub input_log: VecDeque<String>,
+    pub show_inspector: bool,
 }
+
+/// How many input events the inspector remembers.
+const INPUT_LOG: usize = 14;
 
 /// What accepting the open form does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +221,8 @@ impl App {
             settings: Form::new(Vec::new()),
             worktrees: None,
             worktree_selected: 0,
+            input_log: VecDeque::new(),
+            show_inspector: false,
         }
     }
 
@@ -262,6 +279,22 @@ impl App {
     fn is_vault_query(&self) -> bool {
         self.tab == Tab::Vault
             && self.browser.as_ref().is_some_and(|browser| browser.mode() != VaultMode::Browsing)
+    }
+
+    /// Records an input event for the inspector.
+    pub fn log_input(&mut self, description: String) {
+        if self.input_log.len() == INPUT_LOG {
+            self.input_log.pop_front();
+        }
+        self.input_log.push_back(description);
+        if self.show_inspector {
+            self.dirty = true;
+        }
+    }
+
+    pub const fn toggle_inspector(&mut self) {
+        self.show_inspector = !self.show_inspector;
+        self.dirty = true;
     }
 
     /// Cancels any pending confirmation. Called on every key that is not the
