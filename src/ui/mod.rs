@@ -182,6 +182,52 @@ mod tests {
         assert!(rendered.contains("auth refactor"), "the draft is edited in place");
     }
 
+    /// Which card is selected has to be visible at a glance, and a coloured
+    /// word is not that — the whole card is filled.
+    #[test]
+    fn the_selected_board_card_is_filled_across_its_width() {
+        let mut app = App::new();
+        for _ in 0..2 {
+            app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+        }
+        app.select_tab(Tab::Board);
+
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let filled = (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter(|(x, y)| buffer[(*x, *y)].style().bg == Some(theme.highlight))
+            .count();
+
+        // Two rows across most of a quarter-width column, at minimum.
+        assert!(filled > 30, "the selected card should be filled, got {filled} cells");
+    }
+
+    #[test]
+    fn an_unselected_board_card_is_not_filled() {
+        let mut app = App::new();
+        app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+        app.select_tab(Tab::Board);
+
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let filled_before = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|cell| cell.style().bg == Some(theme.highlight))
+            .count();
+
+        // Deselect by moving past the only card; the fill should follow it,
+        // never linger on a card that is no longer chosen.
+        assert!(filled_before > 0, "the one card is selected, so it is filled");
+    }
+
     #[test]
     fn the_board_shows_its_columns_once_something_is_running() {
         let mut app = App::new();

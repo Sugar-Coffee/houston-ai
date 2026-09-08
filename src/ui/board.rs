@@ -156,8 +156,9 @@ fn render_card(
         State::Exited(_) => theme.danger,
     };
 
-    // The spine shows state; the name shows selection. Two questions, two
-    // places, so neither has to lose to the other.
+    // The spine shows state, the fill shows selection. Two questions on two
+    // separate properties, so a card can be both urgent and selected without
+    // either answer having to lose — the same rule as every list in the app.
     let spine_colour = state_colour;
     let name_style = if selected {
         Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
@@ -195,7 +196,19 @@ fn render_card(
         ]),
     ];
 
-    frame.render_widget(Paragraph::new(lines), area);
+    // Fill the whole card, both rows, right across the column. A background
+    // that stops at the end of the text reads as a coloured word rather than
+    // as the selected card — which was the complaint.
+    let lines: Vec<Line> = if selected {
+        lines.into_iter().map(|line| keycap::fill(line, area.width)).collect()
+    } else {
+        lines
+    };
+
+    let paragraph = Paragraph::new(lines);
+    let paragraph = if selected { paragraph.style(keycap::selected_row(theme)) } else { paragraph };
+
+    frame.render_widget(paragraph, area);
 }
 
 fn truncate(text: &str, limit: usize) -> String {
