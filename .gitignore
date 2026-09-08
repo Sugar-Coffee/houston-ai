@@ -5,8 +5,13 @@
 # Houston local state
 /.houston/
 
-# Other people's source, kept for reference only (see reference/README.md)
+# Other people's source, kept for reference only
 /reference/
+
+# Working notes: vision, ADRs, research, build log. Kept locally and used by
+# whoever is developing, but not published — this is a standalone tool, not a
+# narrative of how it got made.
+/docs/
 
 # macOS
 .DS_Store

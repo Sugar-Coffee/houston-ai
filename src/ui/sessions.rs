@@ -296,7 +296,7 @@ fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme)
 /// Truncates from the *front*, keeping the end.
 ///
 /// For paths, the tail is what identifies it — `…/payments/api` says far more
-/// than `/Users/josh/Proj…`.
+/// than `/home/example/Proj…`.
 fn truncate_start(text: &str, limit: usize) -> String {
     let count = text.chars().count();
     if count <= limit || limit == 0 {

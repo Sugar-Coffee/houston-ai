@@ -1,111 +1,84 @@
-# Houston AI — agent instructions
+# Houston — working agreements
 
-## Before you touch anything
-
-1. [`docs/vision.md`](docs/vision.md) — what this is, and what it deliberately
-   is not. The "what it is not" list is the load-bearing half.
-2. [`docs/architecture.md`](docs/architecture.md) — how the code fits together,
-   and the invariants not to break.
-3. [`docs/roadmap.md`](docs/roadmap.md) — what is built, what is next, what is
-   parked.
-4. [`docs/adr/`](docs/adr/) — **before proposing any architectural change.**
-   Most big questions have already been argued and the reasoning recorded,
-   including the arguments that lost.
+Rules for anyone, human or agent, changing this codebase.
 
 ## What this project is
 
 A terminal workspace merging a markdown knowledge vault with a multiplexer for
-coding-agent sessions. The vault half is a **context bridge** first (ADR-0004)
-and a markdown editor second (ADR-0003). Houston is **not** an Obsidian
-replacement, **not** a code editor, and **not** a general-purpose multiplexer.
+coding-agent sessions. The vault half is a **context bridge** first and a
+markdown editor second.
 
-Written greenfield (ADR-0002). Chloe lives at `reference/chloe/` as a reference
-implementation — read it when stuck on terminal emulation, PTY handling or hook
-ingress. Do not paste from it by reflex; if you lift code verbatim, follow the
-attribution rules in ADR-0002.
+It is **not** an Obsidian replacement, **not** a code editor, and **not** a
+general-purpose terminal multiplexer. Those three sentences have prevented more
+bad features than any amount of planning.
 
-## The documentation loop
+## Done means done
 
-This project is built across many sessions with no shared memory. The docs are
-how the next session knows what happened. **They are part of the work, not a
-write-up afterwards.**
+- `cargo test` green
+- `cargo clippy --all-targets` clean under `pedantic` + `nursery`
+- `cargo fmt --check` clean
 
-### Every change
-
-Append to [`docs/build-log.md`](docs/build-log.md) **in the same commit as the
-code**, newest first. An entry is worth writing if it contains something the
-next person cannot read off the diff:
-
-- what you tried that did not work, and why
-- a bug that a test could not have caught, and what did catch it
-- a measurement that decided something
-- a tool or library that behaved unexpectedly
-
-Do not write an entry that just restates the commit message.
-
-### Every non-obvious decision
-
-A new numbered ADR in `docs/adr/`, using the shape of the existing ones:
-Context, Decision, Rationale, Consequences. Record the argument that lost as
-well as the one that won — a future agent will re-derive it otherwise and
-should be able to see it was considered.
-
-ADRs are immutable once **Accepted**. To change one, write a new ADR that
-supersedes it and update the old one's status line. The exception is adding
-*evidence* to an accepted decision, which strengthens rather than changes it.
-
-### Whenever a claim is load-bearing
-
-Measure it and put the numbers in `docs/research/`. "This is slow" needs a
-benchmark. "Nobody uses this" needs a file count. Two features were cut and one
-was promoted on the strength of `grep` counts — and the first version of those
-counts was **wrong**, which is why the correction is recorded at the top of
-`vault-profile.md` rather than quietly fixed.
-
-### Keep these current or delete them
-
-`README.md`, `docs/keybindings.md` and `docs/architecture.md` describe the app
-as it is. A stale one is worse than none. If you add a key, it goes in
-`keybindings.md` in the same change.
-
-## Working agreements
-
-- **Absolute dates.** `2026-09-08`, never "last week".
-- **Scope discipline.** The roadmap has a `Parked` section. If a good idea does
-  not serve the north star in `docs/vision.md`, park it rather than build it.
-- **Do not reorder the roadmap.** Phase 5 (the bridge) ships before Phase 7
-  (the editor) on purpose. The editor is bigger and more fun and will eat the
-  project if allowed to jump the queue. See ADR-0003's risk section.
-- **Report honestly.** If a test is flaky, say so and fix the flake — a test
-  that passes on a re-run is a bug, not a pass. If something is half-built, the
-  roadmap says `wip`, not `done`.
+Not "it compiles".
 
 ## Code conventions
 
-- Rust 2024, toolchain 1.98.1. `unsafe_code = "forbid"`.
-- **Done means:** `cargo test` green, `cargo clippy --all-targets` clean under
-  `pedantic` + `nursery`, and `cargo fmt --check` clean. Not "compiles".
+- Rust 2024. `unsafe_code = "forbid"`.
 - Match the surrounding style rather than importing your own.
-- Comments explain *why*, and are worth writing where the reason is not
-  recoverable from the code. Do not narrate what the line does.
+- Comments explain **why**, and only where the reason is not recoverable from
+  the code. Do not narrate what the line does.
 - Test names are sentences describing the guarantee. Assertions carry a message
   saying why it matters.
+- Absolute dates in any note or comment. `2026-09-09`, never "last week".
 
-### Three traps, already paid for
+## Things that are true about this codebase
+
+Each of these was paid for once. Do not pay again.
+
+**Input focus is an enum, not a set of booleans.** `App::focus()` decides where
+every keystroke goes, in one place. Add a variant; never add another boolean.
+The predecessor was three predicates, and forgetting one meant `q` quitting the
+app while someone typed a name.
+
+**There is exactly one `terminal.draw()`,** in the frame tick. Events set
+`app.dirty`; the tick draws. An agent emitting thousands of lines a second must
+cost one repaint per frame, not one per line.
+
+**`ui::layout` is the only source of screen geometry.** The event loop uses it
+to size PTY grids and the editor viewport, so a layout change cannot
+desynchronise them.
+
+**Agent state comes from hooks, never from parsing terminal output.** A hook is
+a fact; a screen-scrape is a guess. Shell sessions get no agent states at all
+rather than invented ones. In `hooks::EVENTS`, two entries carry the design:
+`Stop` means *idle* — it fires when a turn ends — and `PostToolUse` is what
+clears an attention state, because nothing fires when a permission is approved.
+
+**Scrollback lines have negative line numbers.** `display_iter` starts at
+`Line(-display_offset - 1)`, so a grid line maps to a viewport row by adding
+the offset back on. `u16::try_from` on the raw line silently drops every
+history row, which looks like the bottom of the screen emptying out.
+
+**Selection is a filled row; state is a colour.** Two questions on two
+properties, so a row can be both selected and urgent without either losing.
+
+**Every hue means exactly one thing** — see `ui::theme`. If a new element seems
+to need a new hue, it almost certainly does not need colour. Reach for `dim`.
+
+## Three traps
 
 - **`missing_const_for_fn` (nursery) lies.** It false-positives on any method
-  returning a deref-coerced borrow — `&self.query` where the field is a
-  `String`, `&self.tags` where it is a `Vec`. It suggests `const fn` and the
-  borrow checker then refuses to compile it. Accept where it compiles, revert
-  where it does not. This has cost four separate attempts; do not make it five.
+  returning a deref-coerced borrow — `&self.query` on a `String` field,
+  `&self.tags` on a `Vec`. It suggests `const fn`; the borrow checker then
+  refuses. Accept where it compiles, revert where it does not. This has cost
+  four attempts. Do not make it five.
 - **`unsafe_code = "forbid"` blocks `std::env::set_var` in tests.** That is the
   lint working. Make the thing under test a pure function taking the value
-  rather than reading the environment — see `config::resolve_vault`.
+  rather than reading the environment.
 - **Never let a test resolve a path under `$HOME`.** One did, wrote the real
   `~/.houston/config.toml`, and repointed a live install at a temp directory it
-  then deleted. Pass paths in — see `Config::save_to`.
+  then deleted. Pass paths in — see `Config::save_to` and `worktree::create_in`.
 
-### Verifying in a real terminal
+## Verifying in a real terminal
 
 Unit tests cannot see what a terminal does. For anything decoding input or
 drawing, drive the release binary through a pty:
@@ -114,16 +87,39 @@ drawing, drive the release binary through a pty:
 printf 'keys' | script -q /dev/null sh -c "stty rows 40 cols 120; exec ./target/release/houston"
 ```
 
-Two things that have already caught people out:
+Three things that have already caught people out:
 
 - **Escape-stripped pty output proves presence, never absence.** ratatui only
-  re-emits changed cells, so a string can be split across escape sequences and
-  fail a naive `grep` while being perfectly visible on screen.
+  re-emits changed cells, so a string can be split across escapes and fail a
+  naive `grep` while being perfectly visible.
+- **A cumulative capture holds every frame ever drawn.** Finding a line in it
+  says nothing about what is on screen now. Use a differential: capture with
+  and without the action, and compare.
 - **`FOO=bar keygen | script -c houston` sets the variable on the wrong side of
-  the pipe.** Houston will not see it, and the test will silently run against
-  your real vault.
+  the pipe.** Houston will not see it, and your test will silently run against
+  the real vault.
 
-## Tone for shared writing
+**Never verify a rendering bug through the state that drives the render.** A
+scrollback bug shipped twice because the indicator — which reads the state
+directly — was correct the whole time. Assert on the frame.
+
+## Two habits worth keeping
+
+**Evidence over assertion.** "This is slow" needs a benchmark; "nobody uses
+this" needs a count. Two features were cut and one was promoted on the strength
+of `grep` counts over a real vault — and the first version of those counts was
+wrong, which is the other half of the lesson.
+
+**A test that passes on a re-run is a bug, not a pass.** Find the shared state.
+
+## Working notes
+
+`docs/` holds the vision, ADRs, research and build log. It is **gitignored** —
+kept locally for whoever is developing, not published. If it is present, read
+it before proposing an architectural change; most big questions have been
+argued already, with the losing arguments recorded.
+
+## Tone
 
 PRs, commits and user-facing copy: natural and conversational, not corporate.
-Internal docs — ADRs, research, the build log — can be structured and dense.
+Internal notes can be dense.

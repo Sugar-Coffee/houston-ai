@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn base64_handles_a_path_with_spaces_and_unicode() {
-        let path = "/Users/x/Projects/houston/Daily/2026-09-08 — notes.md";
+        let path = "/home/example/vault/Daily/2026-09-08 — notes.md";
         // Round-tripping is what matters; the encoding just has to be valid.
         assert!(!base64(path.as_bytes()).contains(' '));
     }
