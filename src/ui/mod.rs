@@ -6,6 +6,7 @@
 
 pub mod board;
 mod chrome;
+pub mod editor;
 pub mod overlay;
 pub mod sessions;
 pub mod settings;
@@ -42,7 +43,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         Tab::Sessions => {
             sessions::render(frame, body, &app.sessions, app.renaming.as_deref(), theme);
         }
-        Tab::Vault => vault::render(frame, body, app.browser.as_ref(), theme),
+        Tab::Vault => match &app.editor {
+            Some(open) => editor::render(frame, body, open, theme),
+            None => vault::render(frame, body, app.browser.as_ref(), theme),
+        },
         Tab::Board => board::render(frame, body, &app.sessions, theme),
         Tab::Settings => settings::render(frame, body, app, theme),
     }

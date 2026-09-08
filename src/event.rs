@@ -62,6 +62,7 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
 
                 if app.dirty {
                     sync_session_size(terminal, &mut app)?;
+                    sync_editor_viewport(terminal, &mut app)?;
                     terminal.draw(|frame| ui::render(frame, &app))?;
                     app.dirty = false;
                 }
@@ -78,6 +79,19 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
 ///
 /// Derived from the same layout functions the renderer uses, so the two cannot
 /// drift. If they did, child output would wrap in the wrong column.
+/// Tells the editor how many rows it has.
+///
+/// Only the renderer knows, and the editor needs it for scrolling and for
+/// tagging exactly the lines that are on screen — a jump mode that tags
+/// invisible lines is worse than no jump mode.
+fn sync_editor_viewport(terminal: &Terminal<Backend>, app: &mut App) -> Result<()> {
+    let Some(editor) = app.editor.as_mut() else { return Ok(()) };
+    let [_, body, _] = ui::layout(terminal.size()?.into());
+    editor.set_viewport(ui::editor::text_height(body));
+    editor.follow_cursor();
+    Ok(())
+}
+
 fn sync_session_size(terminal: &Terminal<Backend>, app: &mut App) -> Result<()> {
     let [_, body, _] = ui::layout(terminal.size()?.into());
     let pane = ui::sessions::terminal_area(body);
@@ -131,11 +145,167 @@ fn on_key(app: &mut App, key: KeyEvent) {
     }
 
     match app.focus() {
+        InputFocus::Editor => on_key_editor(app, key),
         InputFocus::Session => on_key_attached(app, key),
         InputFocus::Overlay => on_key_picker(app, key),
         InputFocus::Text => on_key_typing(app, key),
         InputFocus::Commands => on_key_browsing(app, key),
     }
+}
+
+/// The editor. Dispatches on its own mode rather than Houston's focus, because
+/// modality is the editor's whole idea (ADR-0003).
+fn on_key_editor(app: &mut App, key: KeyEvent) {
+    use crate::editor::Mode;
+
+    let Some(editor) = app.editor.as_mut() else { return };
+    app.dirty = true;
+
+    match editor.mode.clone() {
+        Mode::Insert => on_key_editor_insert(app, key),
+        Mode::Jump { .. } => match key.code {
+            KeyCode::Esc => editor.enter_normal(),
+            KeyCode::Char(character) => {
+                editor.jump_input(character);
+                editor.follow_cursor();
+            }
+            _ => {}
+        },
+        Mode::Search { .. } => match key.code {
+            KeyCode::Esc => editor.enter_normal(),
+            KeyCode::Backspace => editor.search_backspace(),
+            KeyCode::Char(character) => editor.search_input(character),
+            KeyCode::Enter if !editor.search_accept() => app.notify("no match"),
+            _ => {}
+        },
+        Mode::Normal => on_key_editor_normal(app, key),
+    }
+}
+
+fn on_key_editor_insert(app: &mut App, key: KeyEvent) {
+    let Some(editor) = app.editor.as_mut() else { return };
+
+    match key.code {
+        KeyCode::Esc => editor.enter_normal(),
+        KeyCode::Char(character) => editor.buffer.insert(&character.to_string()),
+        KeyCode::Enter => editor.buffer.insert("\n"),
+        // Markdown nests with spaces, and a literal tab in a note is a
+        // rendering hazard nobody wants to debug.
+        KeyCode::Tab => editor.buffer.insert("  "),
+        KeyCode::Backspace => {
+            editor.buffer.delete_backwards();
+        }
+        KeyCode::Delete => {
+            editor.buffer.delete_forwards();
+        }
+        KeyCode::Left => editor.buffer.move_left(),
+        KeyCode::Right => editor.buffer.move_right(),
+        KeyCode::Up => editor.buffer.move_vertical(-1),
+        KeyCode::Down => editor.buffer.move_vertical(1),
+        _ => {}
+    }
+    editor.follow_cursor();
+}
+
+fn on_key_editor_normal(app: &mut App, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let Some(editor) = app.editor.as_mut() else { return };
+
+    // Anything that is not another close attempt cancels a pending discard.
+    if !matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+        editor.disarm_close();
+    }
+
+    match key.code {
+        KeyCode::Char('h') | KeyCode::Left => editor.buffer.move_left(),
+        KeyCode::Char('l') | KeyCode::Right => editor.buffer.move_right(),
+        KeyCode::Char('j') | KeyCode::Down => editor.buffer.move_vertical(1),
+        KeyCode::Char('k') | KeyCode::Up => editor.buffer.move_vertical(-1),
+        KeyCode::Char('0') | KeyCode::Home => editor.buffer.move_line_start(),
+        KeyCode::Char('$') | KeyCode::End => editor.buffer.move_line_end(),
+        KeyCode::Char('g') => editor.buffer.move_buffer_start(),
+        KeyCode::Char('G') => editor.buffer.move_buffer_end(),
+        KeyCode::Char('d') if ctrl => editor.scroll_by(10),
+        KeyCode::Char('u') if ctrl => editor.scroll_by(-10),
+        KeyCode::PageDown => editor.scroll_by(10),
+        KeyCode::PageUp => editor.scroll_by(-10),
+
+        KeyCode::Char('i') => editor.enter_insert(),
+        KeyCode::Char('a') => {
+            editor.buffer.move_right();
+            editor.enter_insert();
+        }
+        KeyCode::Char('A') => {
+            editor.buffer.move_line_end();
+            editor.enter_insert();
+        }
+        KeyCode::Char('o') => {
+            editor.buffer.move_line_end();
+            editor.buffer.insert("\n");
+            editor.enter_insert();
+        }
+
+        // amp's signature move.
+        KeyCode::Char('f') => editor.enter_jump(),
+        KeyCode::Char('/') => editor.enter_search(),
+        KeyCode::Char('n') => {
+            if !editor.search_next() {
+                app.notify("no match");
+            }
+        }
+
+        KeyCode::Char('x') => {
+            editor.buffer.delete_forwards();
+        }
+        KeyCode::Char('d') => editor.buffer.delete_line(),
+        KeyCode::Char('u') => {
+            if !editor.buffer.undo() {
+                app.notify("nothing to undo");
+            }
+        }
+        KeyCode::Char('r') if ctrl => {
+            if !editor.buffer.redo() {
+                app.notify("nothing to redo");
+            }
+        }
+
+        KeyCode::Char('s') => save_editor(app, false),
+        KeyCode::Char('S') => save_editor(app, true),
+        KeyCode::Esc | KeyCode::Char('q') => close_editor(app),
+        _ => {}
+    }
+
+    if let Some(editor) = app.editor.as_mut() {
+        editor.follow_cursor();
+    }
+}
+
+fn save_editor(app: &mut App, force: bool) {
+    let Some(editor) = app.editor.as_mut() else { return };
+    match editor.buffer.save(force) {
+        Ok(path) => {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            app.notify(format!("saved {name}"));
+        }
+        Err(error) => app.notify(error.to_string()),
+    }
+}
+
+/// Closes the editor, confirming first if there are unsaved changes.
+fn close_editor(app: &mut App) {
+    let confirmed = match app.editor.as_mut() {
+        Some(editor) if editor.buffer.modified => editor.arm_close(),
+        Some(_) => true,
+        None => return,
+    };
+
+    if !confirmed {
+        app.notify("unsaved changes — s to save, or esc again to discard them");
+        return;
+    }
+
+    app.editor = None;
+    app.dirty = true;
 }
 
 /// The modal session chooser.
@@ -506,11 +676,28 @@ fn on_key_vault(app: &mut App, key: KeyEvent) {
                 KeyCode::PageDown => browser.scroll(15),
                 KeyCode::PageUp => browser.scroll(-15),
                 KeyCode::Char('w') => browser.toggle_wrap(),
+                KeyCode::Char('e') => open_editor(app),
                 KeyCode::Char('g') => browser.scroll_to_top(),
                 KeyCode::Char('G') => browser.scroll_to_bottom(),
                 _ => {}
             }
         }
+    }
+}
+
+/// Opens the selected note in the editor.
+fn open_editor(app: &mut App) {
+    let Some(path) = selected_path(app) else {
+        app.notify("no note selected");
+        return;
+    };
+
+    match crate::editor::Editor::open(std::path::Path::new(&path)) {
+        Ok(editor) => {
+            app.editor = Some(editor);
+            app.dirty = true;
+        }
+        Err(error) => app.notify(format!("could not open for editing: {error}")),
     }
 }
 

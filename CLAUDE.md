@@ -42,6 +42,20 @@ verbatim, follow the attribution rules in ADR-0002.
   `nursery` clean before any change is considered done.
 - Match the surrounding style rather than importing your own.
 
+### Two clippy lints that lie to you
+
+Both are `nursery`. Do not spend time re-deriving these.
+
+- **`missing_const_for_fn`** false-positives on any method returning a
+  deref-coerced borrow — `&self.query` where the field is a `String`,
+  `&self.tags` where it is a `Vec`. It suggests `const fn`; the borrow checker
+  then refuses to compile it. Accept the suggestion where it compiles, revert
+  it where it does not.
+- **`unsafe_code = "forbid"` blocks `std::env::set_var` in tests.** That is the
+  lint working, not a problem to route around. Make the thing under test a pure
+  function that takes the value instead of reading the environment — see
+  `config::resolve_vault`.
+
 ## Tone for shared writing
 
 PRs, commits and user-facing copy: natural and conversational, not corporate.

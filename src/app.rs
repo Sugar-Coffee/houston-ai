@@ -2,6 +2,7 @@
 
 use crate::{
     config::Config,
+    editor::Editor,
     pty::Size,
     session::{Focus, Sessions},
     vault::{Browser, Vault, browser::Mode as VaultMode},
@@ -49,6 +50,8 @@ pub enum InputFocus {
     Text,
     /// Keys drive a modal overlay: move the selection, accept, cancel.
     Overlay,
+    /// Keys belong to the editor, which owns its own modality.
+    Editor,
 }
 
 /// A modal chooser: pick one of the running sessions.
@@ -90,6 +93,8 @@ pub struct App {
     pub renaming: Option<String>,
     /// The open modal chooser, if any.
     pub picker: Option<Picker>,
+    /// The open editor, if any. Replaces the reader on the Vault view.
+    pub editor: Option<Editor>,
 }
 
 impl App {
@@ -118,6 +123,7 @@ impl App {
             quit_armed: false,
             renaming: None,
             picker: None,
+            editor: None,
         }
     }
 
@@ -153,6 +159,11 @@ impl App {
         }
         if self.renaming.is_some() || self.editing_vault.is_some() || self.is_vault_query() {
             return InputFocus::Text;
+        }
+        // The editor owns both its command and its text modes, so it takes the
+        // keyboard whole rather than being split across two focuses.
+        if self.tab == Tab::Vault && self.editor.is_some() {
+            return InputFocus::Editor;
         }
         if self.tab == Tab::Sessions && self.sessions.focus() == Focus::Attached {
             return InputFocus::Session;
@@ -231,6 +242,26 @@ impl App {
             return vec![("q", "press again to quit"), ("esc", "stay")];
         }
 
+        if let Some(editor) = &self.editor
+            && self.tab == Tab::Vault
+        {
+            return match editor.mode {
+                crate::editor::Mode::Insert => vec![("esc", "normal mode")],
+                crate::editor::Mode::Jump { .. } => vec![("", "type a tag to jump")],
+                crate::editor::Mode::Search { .. } => vec![("↵", "find"), ("esc", "cancel")],
+                crate::editor::Mode::Normal => vec![
+                    ("hjkl", "move"),
+                    ("i/a/o", "insert"),
+                    ("f", "jump"),
+                    ("/", "search"),
+                    ("d", "cut line"),
+                    ("u", "undo"),
+                    ("s", "save"),
+                    ("esc", "close"),
+                ],
+            };
+        }
+
         match self.focus() {
             InputFocus::Session => {
                 return vec![("ctrl+\\", "detach"), ("", "all other keys go to the session")];
@@ -239,7 +270,7 @@ impl App {
             InputFocus::Overlay => {
                 return vec![("j/k", "choose"), ("1-9", "jump"), ("↵", "send"), ("esc", "cancel")];
             }
-            InputFocus::Commands => {}
+            InputFocus::Commands | InputFocus::Editor => {}
         }
 
         let mut binds: Vec<(&'static str, &'static str)> = vec![("tab", "view"), ("1-4", "jump")];
@@ -268,6 +299,7 @@ impl App {
                     ("f", "search"),
                     ("y", "yank"),
                     ("i", "to session"),
+                    ("e", "edit"),
                     ("w", "wrap"),
                 ]);
             }
