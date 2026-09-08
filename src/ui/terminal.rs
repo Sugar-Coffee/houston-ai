@@ -25,6 +25,16 @@ pub fn render(frame: &mut Frame, area: Rect, term: &Term<Notifier>, theme: Theme
     }
 
     let content = term.renderable_content();
+
+    // Scrollback lines have *negative* line numbers: `display_iter` starts at
+    // `Line(-display_offset - 1)` and counts up through the live screen. So a
+    // grid line maps to a viewport row by adding the offset back on.
+    //
+    // Getting this wrong is silent and confusing: `u16::try_from` on a negative
+    // line simply fails, every history row is skipped, and the live rows draw
+    // at the top — which looks like the bottom of the screen emptying out
+    // rather than like scrolling.
+    let offset = i32::try_from(content.display_offset).unwrap_or(0);
     let buffer = frame.buffer_mut();
 
     for indexed in content.display_iter {
@@ -37,13 +47,13 @@ pub fn render(frame: &mut Frame, area: Rect, term: &Term<Notifier>, theme: Theme
             continue;
         }
 
-        let Ok(line) = u16::try_from(indexed.point.line.0) else { continue };
+        let Some(row) = viewport_row(indexed.point.line.0, offset) else { continue };
         let Ok(column) = u16::try_from(indexed.point.column.0) else { continue };
-        if line >= area.height || column >= area.width {
+        if row >= area.height || column >= area.width {
             continue;
         }
 
-        let Some(target) = buffer.cell_mut(Position::new(area.x + column, area.y + line)) else {
+        let Some(target) = buffer.cell_mut(Position::new(area.x + column, area.y + row)) else {
             continue;
         };
 
@@ -67,16 +77,36 @@ pub fn render(frame: &mut Frame, area: Rect, term: &Term<Notifier>, theme: Theme
         );
     }
 
+    // The cursor lives in live-screen coordinates, so it moves down the
+    // viewport as you scroll back, and off it entirely once you are far enough.
     if focused {
         let cursor = content.cursor.point;
-        if let (Ok(line), Ok(column)) =
-            (u16::try_from(cursor.line.0), u16::try_from(cursor.column.0))
-            && line < area.height
+        if let Some(row) = viewport_row(cursor.line.0, offset)
+            && let Ok(column) = u16::try_from(cursor.column.0)
+            && row < area.height
             && column < area.width
         {
-            frame.set_cursor_position(Position::new(area.x + column, area.y + line));
+            frame.set_cursor_position(Position::new(area.x + column, area.y + row));
         }
     }
+}
+
+/// Maps a grid line onto a viewport row.
+///
+/// `line` is negative for scrollback history and zero-or-positive for the live
+/// screen; `offset` is how far back the view is scrolled. `None` means the line
+/// sits above the viewport and should not be drawn.
+const fn viewport_row(line: i32, offset: i32) -> Option<u16> {
+    let row = line + offset;
+    if row < 0 {
+        return None;
+    }
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "guarded by the negative check, and callers bound it by the area height"
+    )]
+    Some(row as u16)
 }
 
 fn modifiers(flags: Flags) -> Modifier {
@@ -130,5 +160,47 @@ fn convert(color: TermColor, theme: Theme) -> Color {
                 }
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bug this exists to prevent: scrollback lines are *negative*, and
+    /// `u16::try_from` on a negative silently drops them. That looked like the
+    /// bottom of the screen emptying out rather than like scrolling back.
+    #[test]
+    fn history_lines_map_onto_the_viewport_when_scrolled_back() {
+        // Scrolled back 30 lines: grid line -30 is the top row of the view.
+        assert_eq!(viewport_row(-30, 30), Some(0));
+        assert_eq!(viewport_row(-29, 30), Some(1));
+        assert_eq!(viewport_row(0, 30), Some(30), "the live screen sits below it");
+    }
+
+    #[test]
+    fn nothing_is_dropped_when_the_view_is_live() {
+        assert_eq!(viewport_row(0, 0), Some(0));
+        assert_eq!(viewport_row(23, 0), Some(23));
+    }
+
+    #[test]
+    fn lines_above_the_viewport_are_skipped_rather_than_wrapping() {
+        // Further back than we are scrolled: genuinely off-screen.
+        assert_eq!(viewport_row(-31, 30), None);
+        assert_eq!(viewport_row(-1, 0), None);
+    }
+
+    #[test]
+    fn every_row_of_a_scrolled_screen_is_accounted_for() {
+        // Twenty-four rows scrolled back thirty: each grid line must land on
+        // exactly one distinct viewport row, none dropped.
+        let offset = 30;
+        let rows: Vec<u16> =
+            (-offset..(24 - offset)).filter_map(|line| viewport_row(line, offset)).collect();
+
+        assert_eq!(rows.len(), 24, "a whole screen must render, not a partial one");
+        assert_eq!(rows.first(), Some(&0));
+        assert_eq!(rows.last(), Some(&23));
     }
 }
