@@ -140,7 +140,7 @@ mod tests {
         let vault = Vault::open(&root).unwrap();
         let mut matcher = Matcher::new();
 
-        let results = matcher.search(&vault, "cogreb", 10);
+        let results = matcher.search(&vault, "payreb", 10);
         assert!(!results.is_empty(), "an abbreviation should still match");
         assert_eq!(vault.get(results[0]).unwrap().stem, "payments-rebuild");
 

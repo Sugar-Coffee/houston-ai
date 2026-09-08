@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(browser.results().len(), 3);
 
         browser.begin_find();
-        for character in "cog".chars() {
+        for character in "pay".chars() {
             browser.push_query(character);
         }
         assert_eq!(browser.results().len(), 1);
