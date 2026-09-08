@@ -9,9 +9,14 @@ most big questions have already been argued, with reasoning recorded.
 ## What this project is
 
 A terminal workspace merging a markdown knowledge vault with a multiplexer for
-coding-agent sessions. The vault half is a **context bridge**, not a document
-reader (ADR-0004). Houston is **not** a text editor (ADR-0003) and **not** an
-Obsidian replacement.
+coding-agent sessions. The vault half is a **context bridge** first (ADR-0004)
+and an amp-style modal editor second (ADR-0003). Houston is **not** an Obsidian
+replacement and **not** a general-purpose editor.
+
+Written greenfield (ADR-0002). Chloe lives at `reference/chloe/` as a
+reference implementation — read it when stuck on terminal emulation, PTY
+handling or hook ingress. Do not paste from it by reflex; if you lift code
+verbatim, follow the attribution rules in ADR-0002.
 
 ## Working agreements
 
@@ -27,12 +32,15 @@ Obsidian replacement.
 - **Scope discipline.** The roadmap has a `Parked` section. If a good idea does
   not serve the north star in `docs/vision.md`, park it there rather than
   building it.
+- **Do not reorder the roadmap.** Phase 5 (the bridge) ships before Phase 7
+  (the editor) on purpose. The editor is bigger and more fun and will eat the
+  project if allowed to jump the queue. See ADR-0003's risk section.
 
 ## Code conventions (once code exists)
 
-- Rust 2024. `unsafe_code = "forbid"`. Clippy `pedantic` + `nursery` clean.
-- Inherited from the Chloe fork — match the surrounding style rather than
-  importing your own.
+- Rust 2024, toolchain 1.98.1. `unsafe_code = "forbid"`. Clippy `pedantic` +
+  `nursery` clean before any change is considered done.
+- Match the surrounding style rather than importing your own.
 
 ## Tone for shared writing
 

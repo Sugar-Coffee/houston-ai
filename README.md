@@ -23,16 +23,17 @@ what it deliberately is not.
 
 ## Prior art
 
-Houston is planned as a hard fork of [Chloe](https://github.com/KevinEdry/chloe)
-by Kevin Edry (MIT), which solves the agent-multiplexer half well. The
-terminal emulation, PTY handling, event loop and hook-driven agent state
-tracking are its work. See
-[`docs/adr/0002-fork-chloe.md`](docs/adr/0002-fork-chloe.md) and
-[`docs/research/chloe-teardown.md`](docs/research/chloe-teardown.md).
+[Chloe](https://github.com/KevinEdry/chloe) by Kevin Edry (MIT) solves the
+agent-multiplexer half of this problem, and solves it well. Houston is written
+from scratch rather than forked — the domain models diverge too far — but
+Chloe's source is kept on hand as a reference for the hard parts, and its
+hook-driven approach to tracking agent state is a design we're copying outright.
+See [`docs/adr/0002-greenfield-with-chloe-as-reference.md`](docs/adr/0002-greenfield-with-chloe-as-reference.md)
+and [`docs/research/chloe-teardown.md`](docs/research/chloe-teardown.md).
 
-Navigation feel takes cues from [amp](https://github.com/jmacdonald/amp).
+The editor and its navigation model take their cues from
+[amp](https://github.com/jmacdonald/amp) — particularly jump mode.
 
 ## Licence
 
-MIT. Chloe's original notice is preserved in `LICENSE-CHLOE` once the fork
-lands.
+MIT.

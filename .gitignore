@@ -5,6 +5,9 @@
 # Houston local state
 /.houston/
 
+# Other people's source, kept for reference only (see reference/README.md)
+/reference/
+
 # macOS
 .DS_Store
 
