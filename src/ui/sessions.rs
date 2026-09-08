@@ -144,6 +144,7 @@ fn render_card<'a>(
     };
 
     let badge = match session.state {
+        State::Idle => Span::styled(" ○", Style::default().fg(theme.accent)),
         State::Running => Span::styled(" ●", Style::default().fg(theme.running)),
         State::AwaitingInput => {
             Span::styled(" ◆", Style::default().fg(theme.attention).add_modifier(Modifier::BOLD))

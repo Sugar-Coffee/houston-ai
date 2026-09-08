@@ -281,8 +281,8 @@ mod tests {
         app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
         app.select_tab(Tab::Board);
 
-        let rendered = draw(&app, 120, 24);
-        for column in ["Needs you", "Working", "Shells", "Finished"] {
+        let rendered = draw(&app, 150, 24);
+        for column in ["Needs you", "Working", "Idle", "Shells", "Closed"] {
             assert!(rendered.contains(column), "board missing the {column} column");
         }
     }

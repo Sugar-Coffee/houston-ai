@@ -34,9 +34,16 @@ pub enum Kind {
 /// state would make the board lie.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
+    /// Started but not yet asked to do anything, or finished its turn and
+    /// waiting for your next message.
+    ///
+    /// Distinct from `Running` on purpose: an agent that has gone quiet
+    /// because it is done is not the same as one that is still thinking, and
+    /// conflating them is what made the board look stuck.
+    Idle,
     Running,
-    /// Set by Claude Code's `PermissionRequest` hook. Never guessed at from
-    /// terminal output — a hook is a fact, a screen-scrape is a guess.
+    /// Set by a hook that says the agent cannot continue. Never guessed at
+    /// from terminal output — a hook is a fact, a screen-scrape is a guess.
     AwaitingInput,
     Exited(Option<i32>),
 }
@@ -44,6 +51,7 @@ pub enum State {
 impl State {
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Idle => "idle",
             Self::Running => "running",
             Self::AwaitingInput => "needs you",
             Self::Exited(_) => "exited",
@@ -225,8 +233,9 @@ impl Session {
             return;
         }
         self.state = match kind {
-            HookKind::Start | HookKind::Stop => State::Running,
-            HookKind::Permission => State::AwaitingInput,
+            HookKind::Working => State::Running,
+            HookKind::Attention => State::AwaitingInput,
+            HookKind::Idle => State::Idle,
         };
     }
 
@@ -313,6 +322,22 @@ impl Sessions {
         self.items.get_mut(self.selected)
     }
 
+    /// Whether a live agent session is already running in `directory`.
+    ///
+    /// Matters because Claude Code's hooks live in the project's settings file
+    /// and carry a fixed session id. Installing hooks for a second agent in the
+    /// same directory replaces the first's, so the first goes silent and its
+    /// state freezes on whatever it last reported — which reads as the board
+    /// getting stuck. A worktree gives each agent its own directory and avoids
+    /// this entirely.
+    pub fn agent_in(&self, directory: &Path) -> Option<&Session> {
+        self.items.iter().find(|session| {
+            matches!(session.kind, Kind::Agent { .. })
+                && !matches!(session.state, State::Exited(_))
+                && session.spec.cwd == directory
+        })
+    }
+
     /// Whether any live session is using a worktree.
     pub fn uses_worktree(&self, name: &str) -> bool {
         self.items.iter().any(|session| {
@@ -358,10 +383,22 @@ impl Sessions {
         };
 
         let agent = matches!(kind, Kind::Agent { .. });
+
+        // Checked before spawning, because afterwards the new session is
+        // itself "an agent in this directory".
+        let collision = agent.then(|| self.agent_in(cwd).map(Session::display_name)).flatten();
+
         let id = self.spawn(name, kind, spec, size)?;
 
         if agent {
             self.hook_warning = install_hooks(cwd, id).err().map(|error| error.to_string());
+
+            if let Some(other) = collision {
+                self.hook_warning = Some(format!(
+                    "{other} is already running here — only this session will report status. \
+                     Use a worktree to run both."
+                ));
+            }
         }
         Ok(id)
     }
@@ -388,13 +425,18 @@ impl Sessions {
         let id = SessionId(self.next_id);
         self.next_id += 1;
 
+        // An agent has not been asked to do anything yet; a shell is simply
+        // live. Claiming a fresh agent is "working" would be the same lie the
+        // `Stop` mapping used to tell.
+        let state = if matches!(kind, Kind::Agent { .. }) { State::Idle } else { State::Running };
+
         self.items.push(Session {
             id,
             default_name: name.clone(),
             name,
             named_by_user: false,
             kind,
-            state: State::Running,
+            state,
             branch: crate::worktree::branch_of(&spec.cwd),
             spec,
             worktree: None,
@@ -589,21 +631,51 @@ mod hook_tests {
     }
 
     #[test]
-    fn a_permission_hook_marks_a_session_as_needing_you() {
+    fn a_full_turn_walks_through_the_states_and_ends_idle() {
         let mut sessions = sessions_with_one_shell();
         let id = sessions.selected().unwrap().id;
 
-        assert!(sessions.apply_hook(id.0, HookKind::Permission));
+        // You send a prompt.
+        assert!(sessions.apply_hook(id.0, HookKind::Working));
+        assert_eq!(sessions.selected().unwrap().state, State::Running);
+
+        // It asks permission and stops dead.
+        assert!(sessions.apply_hook(id.0, HookKind::Attention));
         assert_eq!(sessions.selected().unwrap().state, State::AwaitingInput);
 
-        assert!(sessions.apply_hook(id.0, HookKind::Stop));
+        // You approve; the tool runs and reports back. Without this the
+        // session would sit on "needs you" for the whole of the work.
+        assert!(sessions.apply_hook(id.0, HookKind::Working));
         assert_eq!(sessions.selected().unwrap().state, State::Running);
+
+        // The turn ends. This is the one that used to say "running" and pin
+        // the board on busy until you next typed.
+        assert!(sessions.apply_hook(id.0, HookKind::Idle));
+        assert_eq!(sessions.selected().unwrap().state, State::Idle);
+    }
+
+    #[test]
+    fn several_turns_in_a_row_do_not_drift() {
+        let mut sessions = sessions_with_one_shell();
+        let id = sessions.selected().unwrap().id;
+
+        for _ in 0..5 {
+            sessions.apply_hook(id.0, HookKind::Working);
+            sessions.apply_hook(id.0, HookKind::Attention);
+            sessions.apply_hook(id.0, HookKind::Working);
+            sessions.apply_hook(id.0, HookKind::Idle);
+            assert_eq!(
+                sessions.selected().unwrap().state,
+                State::Idle,
+                "every cycle must land back on idle, not accumulate a wrong state"
+            );
+        }
     }
 
     #[test]
     fn a_hook_for_an_unknown_session_is_ignored() {
         let mut sessions = sessions_with_one_shell();
-        assert!(!sessions.apply_hook(9999, HookKind::Permission));
+        assert!(!sessions.apply_hook(9999, HookKind::Attention));
         assert_eq!(sessions.selected().unwrap().state, State::Running);
     }
 
@@ -613,11 +685,58 @@ mod hook_tests {
         let id = sessions.selected().unwrap().id;
         sessions.selected_mut().unwrap().state = State::Exited(Some(0));
 
-        sessions.apply_hook(id.0, HookKind::Permission);
+        sessions.apply_hook(id.0, HookKind::Attention);
         assert_eq!(
             sessions.selected().unwrap().state,
             State::Exited(Some(0)),
             "exit is the more truthful state; a late hook must not override it"
         );
+    }
+}
+
+#[cfg(test)]
+mod collision_tests {
+    use super::*;
+
+    #[test]
+    fn a_second_agent_in_the_same_directory_is_flagged() {
+        // Two agents sharing a directory share one hooks file, so the second
+        // silences the first — the board then freezes on its last state.
+        let mut sessions = Sessions::new();
+        let directory = std::env::temp_dir();
+
+        assert!(sessions.agent_in(&directory).is_none(), "nothing there yet");
+
+        sessions.items.push(Session {
+            id: SessionId(1),
+            name: "first".to_string(),
+            default_name: "first".to_string(),
+            named_by_user: false,
+            kind: Kind::Agent { provider: "Claude Code" },
+            state: State::Idle,
+            branch: None,
+            spec: LaunchSpec::command("claude", Vec::new(), directory.clone()),
+            worktree: None,
+            pty: PtySession::spawn(
+                &LaunchSpec::command(provider::login_shell(), Vec::new(), directory.clone()),
+                Size::new(24, 80),
+            )
+            .unwrap(),
+        });
+
+        assert!(sessions.agent_in(&directory).is_some(), "the live agent is found");
+
+        // An exited one does not count: its hooks are nobody's concern.
+        sessions.items[0].state = State::Exited(Some(0));
+        assert!(sessions.agent_in(&directory).is_none());
+    }
+
+    #[test]
+    fn a_shell_in_the_same_directory_is_not_a_collision() {
+        let mut sessions = Sessions::new();
+        let directory = std::env::temp_dir();
+        sessions.spawn_shell(&directory, Size::new(24, 80)).unwrap();
+
+        assert!(sessions.agent_in(&directory).is_none(), "shells install no hooks");
     }
 }

@@ -112,26 +112,26 @@ mod tests {
     #[test]
     fn notify_parses_its_flags_in_any_order() {
         let command =
-            parse_args(&["notify", "permission", "--socket", "/tmp/a.sock", "--session", "3"])
+            parse_args(&["notify", "attention", "--socket", "/tmp/a.sock", "--session", "3"])
                 .unwrap();
 
         let Command::Notify { notification, socket } = command else { panic!("expected notify") };
         assert_eq!(notification.session, 3);
-        assert_eq!(notification.kind, Kind::Permission);
+        assert_eq!(notification.kind, Kind::Attention);
         assert_eq!(socket, PathBuf::from("/tmp/a.sock"));
     }
 
     #[test]
     fn notify_rejects_incomplete_invocations() {
         assert!(parse_args(&["notify"]).is_err(), "an event is required");
-        assert!(parse_args(&["notify", "start"]).is_err(), "--session is required");
+        assert!(parse_args(&["notify", "working"]).is_err(), "--session is required");
         assert!(
-            parse_args(&["notify", "start", "--session", "1"]).is_err(),
+            parse_args(&["notify", "working", "--session", "1"]).is_err(),
             "--socket is required"
         );
         assert!(parse_args(&["notify", "wat", "--session", "1"]).is_err(), "unknown event");
         assert!(
-            parse_args(&["notify", "start", "--session", "x", "--socket", "/s"]).is_err(),
+            parse_args(&["notify", "working", "--session", "x", "--socket", "/s"]).is_err(),
             "a non-numeric session is an error, not a silent zero"
         );
     }

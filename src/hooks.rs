@@ -20,36 +20,64 @@ use std::{
     thread,
 };
 
-/// What an agent just did.
+/// What an agent just did, named by *meaning* rather than by which hook fired.
+///
+/// Several hooks map onto each of these, and the mapping is the interesting
+/// part — see [`EVENTS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
-    /// A prompt was submitted: the agent is working.
-    Start,
-    /// The agent is asking permission and cannot continue without you.
-    Permission,
-    /// The agent finished its turn.
-    Stop,
+    /// The agent is doing something and does not need you.
+    Working,
+    /// The agent cannot continue without you.
+    Attention,
+    /// The agent finished its turn and is waiting for your next message.
+    Idle,
 }
 
 impl Kind {
     pub fn parse(text: &str) -> Option<Self> {
+        // `start`, `permission`, `stop` and `end` are older spellings, kept so
+        // a settings file written by a previous version keeps reporting until
+        // it is rewritten on next launch.
         match text {
-            "start" => Some(Self::Start),
-            "permission" => Some(Self::Permission),
-            "stop" | "end" => Some(Self::Stop),
+            "working" | "start" => Some(Self::Working),
+            "attention" | "permission" => Some(Self::Attention),
+            "idle" | "stop" | "end" => Some(Self::Idle),
             _ => None,
         }
     }
 
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Start => "start",
-            Self::Permission => "permission",
-            Self::Stop => "stop",
+            Self::Working => "working",
+            Self::Attention => "attention",
+            Self::Idle => "idle",
         }
     }
 }
+
+/// Which Claude Code hooks Houston listens to, and what each one means.
+///
+/// The two that matter, and that a first version got wrong:
+///
+/// - **`Stop` means idle, not working.** It fires when the agent *finishes* its
+///   turn. Mapping it to "working" leaves the board claiming an agent is busy
+///   from the moment it goes quiet until you next type — which looks exactly
+///   like the board getting stuck.
+/// - **`PostToolUse` is what clears an attention state.** Nothing fires when
+///   you approve a permission prompt, so without it a session stays on "needs
+///   you" for the whole of the work it was asking permission to do.
+pub const EVENTS: [(&str, Kind); 4] = [
+    ("UserPromptSubmit", Kind::Working),
+    ("PostToolUse", Kind::Working),
+    ("PermissionRequest", Kind::Attention),
+    ("Notification", Kind::Attention),
+];
+
+/// Hooks that end a turn. Kept separate only because `Stop` is the one whose
+/// meaning is easiest to get backwards.
+pub const END_EVENTS: [(&str, Kind); 1] = [("Stop", Kind::Idle)];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
@@ -178,11 +206,7 @@ pub fn install(project: &Path, session: SessionId, socket: &Path) -> Result<Path
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}));
 
-    for (event, kind) in [
-        ("UserPromptSubmit", Kind::Start),
-        ("PermissionRequest", Kind::Permission),
-        ("Stop", Kind::Stop),
-    ] {
+    for (event, kind) in EVENTS.into_iter().chain(END_EVENTS) {
         let Some(hooks) = hooks.as_object_mut() else { continue };
         let entry = hooks.entry(event).or_insert_with(|| serde_json::json!([]));
         let Some(list) = entry.as_array_mut() else { continue };
@@ -227,11 +251,42 @@ mod tests {
 
     #[test]
     fn event_names_round_trip() {
-        for kind in [Kind::Start, Kind::Permission, Kind::Stop] {
+        for kind in [Kind::Working, Kind::Attention, Kind::Idle] {
             assert_eq!(Kind::parse(kind.as_str()), Some(kind));
         }
-        assert_eq!(Kind::parse("end"), Some(Kind::Stop), "chloe's spelling is accepted");
         assert_eq!(Kind::parse("nonsense"), None);
+    }
+
+    /// A settings file written by an older Houston keeps reporting until it is
+    /// rewritten, so its spellings have to keep working.
+    #[test]
+    fn older_event_spellings_are_still_understood() {
+        assert_eq!(Kind::parse("start"), Some(Kind::Working));
+        assert_eq!(Kind::parse("permission"), Some(Kind::Attention));
+        assert_eq!(Kind::parse("stop"), Some(Kind::Idle));
+        assert_eq!(Kind::parse("end"), Some(Kind::Idle));
+    }
+
+    /// The bug this whole mapping exists to prevent: `Stop` fires when a turn
+    /// *ends*, so treating it as "working" pins the board on busy from the
+    /// moment the agent goes quiet.
+    #[test]
+    fn stop_means_idle_not_working() {
+        let stop = END_EVENTS.iter().find(|(name, _)| *name == "Stop").unwrap();
+        assert_eq!(stop.1, Kind::Idle);
+    }
+
+    /// Nothing fires when a permission is approved, so without `PostToolUse`
+    /// a session stays on "needs you" for the whole of the work it asked about.
+    #[test]
+    fn something_clears_an_attention_state() {
+        let clears: Vec<&str> = EVENTS
+            .iter()
+            .filter(|(_, kind)| *kind == Kind::Working)
+            .map(|(name, _)| *name)
+            .collect();
+
+        assert!(clears.contains(&"PostToolUse"), "got {clears:?}");
     }
 
     #[test]
@@ -243,7 +298,7 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         let hooks = &settings["hooks"];
 
-        for event in ["UserPromptSubmit", "PermissionRequest", "Stop"] {
+        for (event, _) in EVENTS.into_iter().chain(END_EVENTS) {
             assert!(hooks[event].is_array(), "{event} should be wired");
         }
         let command = hooks["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
@@ -330,7 +385,7 @@ mod tests {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let _listener = Listener::start_at(socket.clone(), sender).unwrap();
 
-        notify(&socket, &Notification { session: 12, kind: Kind::Permission }).unwrap();
+        notify(&socket, &Notification { session: 12, kind: Kind::Attention }).unwrap();
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
             .await
@@ -338,7 +393,7 @@ mod tests {
             .expect("the channel should stay open");
 
         assert_eq!(event.session, 12);
-        assert_eq!(event.kind, Kind::Permission);
+        assert_eq!(event.kind, Kind::Attention);
     }
 
     #[test]
@@ -346,18 +401,18 @@ mod tests {
         // Normal when Houston has been quit but an agent is still running.
         let result = notify(
             Path::new("/tmp/houston-definitely-not-listening.sock"),
-            &Notification { session: 1, kind: Kind::Stop },
+            &Notification { session: 1, kind: Kind::Idle },
         );
         assert!(result.is_err());
     }
 
     #[test]
     fn notifications_round_trip_as_json() {
-        let notification = Notification { session: 42, kind: Kind::Permission };
+        let notification = Notification { session: 42, kind: Kind::Attention };
         let encoded = serde_json::to_string(&notification).unwrap();
         let decoded: Notification = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded.session, 42);
-        assert_eq!(decoded.kind, Kind::Permission);
+        assert_eq!(decoded.kind, Kind::Attention);
     }
 }

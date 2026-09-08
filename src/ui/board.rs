@@ -19,12 +19,13 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 
-/// The columns, in the order they are read.
-pub const COLUMNS: [(&str, Column); 4] = [
+/// The columns, in the order they are read: most urgent first.
+pub const COLUMNS: [(&str, Column); 5] = [
     ("Needs you", Column::AwaitingInput),
     ("Working", Column::Running),
+    ("Idle", Column::Idle),
     ("Shells", Column::Shell),
-    ("Finished", Column::Exited),
+    ("Closed", Column::Exited),
 ];
 
 /// Rows a card occupies: name, detail, and a blank between cards.
@@ -34,6 +35,8 @@ const CARD_HEIGHT: u16 = 3;
 pub enum Column {
     AwaitingInput,
     Running,
+    /// Finished its turn, waiting for you to read it or reply.
+    Idle,
     Shell,
     Exited,
 }
@@ -46,6 +49,7 @@ impl Column {
             (Kind::Shell, _) => Self::Shell,
             (Kind::Agent { .. }, State::AwaitingInput) => Self::AwaitingInput,
             (Kind::Agent { .. }, State::Running) => Self::Running,
+            (Kind::Agent { .. }, State::Idle) => Self::Idle,
         }
     }
 }
@@ -81,7 +85,7 @@ pub fn render(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme) 
 
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 4); 4])
+        .constraints([Constraint::Ratio(1, 5); 5])
         .split(area);
 
     for (index, (title, column)) in COLUMNS.iter().enumerate() {
@@ -108,6 +112,9 @@ fn render_column(
         match column {
             Column::AwaitingInput => theme.attention,
             Column::Running => theme.running,
+            // Idle takes the accent rather than a state colour: it is not a
+            // problem, it is where your attention goes next.
+            Column::Idle => theme.accent,
             Column::Shell => theme.link,
             Column::Exited => theme.dim,
         }
@@ -152,6 +159,7 @@ fn render_card(
         State::AwaitingInput => theme.attention,
         State::Running if matches!(session.kind, Kind::Shell) => theme.link,
         State::Running => theme.running,
+        State::Idle => theme.accent,
         State::Exited(Some(0) | None) => theme.dim,
         State::Exited(_) => theme.danger,
     };
@@ -245,6 +253,15 @@ mod tests {
         let agent = Kind::Agent { provider: "Claude Code" };
         assert_eq!(Column::of(&agent, State::AwaitingInput), Column::AwaitingInput);
         assert_eq!(Column::of(&agent, State::Running), Column::Running);
+    }
+
+    /// An agent that has finished its turn is not working, and saying it is
+    /// leaves the board pinned on busy from the moment it goes quiet.
+    #[test]
+    fn a_finished_turn_is_idle_rather_than_working() {
+        let agent = Kind::Agent { provider: "Claude Code" };
+        assert_eq!(Column::of(&agent, State::Idle), Column::Idle);
+        assert_ne!(Column::of(&agent, State::Idle), Column::Running);
     }
 
     #[test]
