@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use crossterm::{
-    event::{DisableBracketedPaste, EnableBracketedPaste},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -57,7 +57,22 @@ impl Drop for Guard {
 }
 
 fn restore() -> Result<()> {
-    execute!(stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
+    execute!(stdout(), DisableMouseCapture, DisableBracketedPaste, LeaveAlternateScreen)?;
     disable_raw_mode()?;
+    Ok(())
+}
+
+/// Turns mouse reporting on or off.
+///
+/// A genuine trade: with it on, the wheel scrolls a session's scrollback and
+/// clicks select rows — with it off, your terminal's own click-drag selection
+/// works again. Most terminals let you hold Shift to bypass reporting and
+/// select anyway, but not all, so this stays a setting rather than a decision.
+pub fn set_mouse(enabled: bool) -> Result<()> {
+    if enabled {
+        execute!(stdout(), EnableMouseCapture)?;
+    } else {
+        execute!(stdout(), DisableMouseCapture)?;
+    }
     Ok(())
 }

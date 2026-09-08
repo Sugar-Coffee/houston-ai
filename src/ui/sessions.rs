@@ -2,7 +2,7 @@
 //! child's screen on the right.
 
 use crate::{
-    session::{Focus, Kind, Sessions, State},
+    session::{Focus, Kind, Session, Sessions, State},
     ui::{Theme, keycap, terminal},
 };
 use ratatui::{
@@ -15,10 +15,11 @@ use ratatui::{
 
 /// Width of the session list.
 ///
-/// Sessions are renameable, so this is the column where you tell one agent's
-/// job from another's. Wide enough for a real name — "payments auth refactor",
-/// not "payments au…" — plus its kind and state.
-const LIST_WIDTH: u16 = 34;
+/// Sessions are renameable and each card carries its directory and branch, so
+/// this is the column where you tell one agent's job from another's. Wide
+/// enough for a real name — "payments auth refactor", not "payments au…" — and
+/// for a path tail that identifies the project.
+const LIST_WIDTH: u16 = 38;
 
 /// Splits the view into (list, terminal).
 ///
@@ -51,6 +52,9 @@ pub fn render(
     render_pane(frame, pane_area, sessions, theme);
 }
 
+/// Rows each session card occupies: name, directory, and branch.
+const CARD_HEIGHT: usize = 3;
+
 fn render_list(
     frame: &mut Frame,
     area: Rect,
@@ -75,7 +79,7 @@ fn render_list(
     if sessions.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "no sessions",
+                "  no sessions",
                 Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
             ))),
             inner,
@@ -84,80 +88,129 @@ fn render_list(
     }
 
     let attached = sessions.focus() == Focus::Attached;
-    let lines: Vec<Line> = sessions
-        .iter()
-        .enumerate()
-        .map(|(index, session)| {
-            let selected = index == sessions.selected_index();
+    let width = inner.width as usize;
 
-            // The marker distinguishes "this is where the cursor is" from
-            // "your keystrokes are going here", which are not the same thing.
-            let marker = match (selected, attached) {
-                (true, true) => "▶ ",
-                (true, false) => "· ",
-                (false, _) => "  ",
-            };
+    // Window around the selection so a long list stays usable. Three rows per
+    // card means a full-screen terminal shows roughly fifteen.
+    let visible = (inner.height as usize / CARD_HEIGHT).max(1);
+    let selected = sessions.selected_index();
+    let start = selected.saturating_sub(visible.saturating_sub(1) / 2);
+    let start = start.min(sessions.len().saturating_sub(visible));
 
-            let name_style = match (selected, session.state) {
-                // A session wanting you outranks the one you are looking at.
-                (_, State::AwaitingInput) => {
-                    Style::default().fg(theme.attention).add_modifier(Modifier::BOLD)
-                }
-                (true, _) => Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
-                (false, State::Exited(_)) => Style::default().fg(theme.dim),
-                (false, _) => Style::default().fg(theme.text),
-            };
+    let mut lines = Vec::with_capacity(visible * CARD_HEIGHT);
 
-            // The badge is the whole point of the sidebar at a glance, so it
-            // uses the state colours rather than the selection one.
-            let badge = match session.state {
-                State::Running => Span::styled(" ●", Style::default().fg(theme.running)),
-                State::AwaitingInput => Span::styled(
-                    " ◆",
-                    Style::default().fg(theme.attention).add_modifier(Modifier::BOLD),
-                ),
-                State::Exited(_) => Span::styled(" ×", Style::default().fg(theme.danger)),
-            };
+    for (index, session) in sessions.iter().enumerate().skip(start).take(visible) {
+        let chosen = index == selected;
+        let card = render_card(session, index, chosen, attached, renaming, width, theme);
 
-            let kind = match session.kind {
-                Kind::Agent { .. } => "",
-                Kind::Shell => " $",
-            };
-
-            // A number, so the send-to-session chooser's shortcuts match what
-            // you already see in the sidebar.
-            let ordinal = if index < 9 { format!("{} ", index + 1) } else { "  ".to_string() };
-
-            // While renaming, the row itself becomes the field. No popup, and
-            // no guessing which session you are renaming.
-            if selected && let Some(draft) = renaming {
-                return Line::from(vec![
-                    Span::styled(marker, Style::default().fg(theme.accent)),
-                    Span::styled(ordinal, Style::default().fg(theme.dim)),
-                    Span::styled(
-                        format!("{draft}▏"),
-                        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
-                    ),
-                ]);
-            }
-
-            let line = Line::from(vec![
-                Span::styled(marker, Style::default().fg(theme.accent)),
-                Span::styled(ordinal, Style::default().fg(theme.dim)),
-                Span::styled(truncate(&session.display_name(), 22), name_style),
-                Span::styled(kind, Style::default().fg(theme.dim)),
-                badge,
-            ]);
-
-            if selected {
+        for line in card {
+            lines.push(if chosen {
                 keycap::fill(line, inner.width).style(keycap::selected_row(theme))
             } else {
                 line
-            }
-        })
-        .collect();
+            });
+        }
+    }
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// One session as three rows: what it is, where it runs, and on what branch.
+fn render_card<'a>(
+    session: &Session,
+    index: usize,
+    chosen: bool,
+    attached: bool,
+    renaming: Option<&str>,
+    width: usize,
+    theme: Theme,
+) -> [Line<'a>; CARD_HEIGHT] {
+    // The marker distinguishes "this is where the cursor is" from "your
+    // keystrokes are going here", which are not the same thing.
+    let marker = match (chosen, attached) {
+        (true, true) => "▶ ",
+        (true, false) => "· ",
+        (false, _) => "  ",
+    };
+
+    let name_style = match (chosen, session.state) {
+        // A session wanting you outranks the one you are looking at.
+        (_, State::AwaitingInput) => {
+            Style::default().fg(theme.attention).add_modifier(Modifier::BOLD)
+        }
+        (true, _) => Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        (false, State::Exited(_)) => Style::default().fg(theme.dim),
+        (false, _) => Style::default().fg(theme.text),
+    };
+
+    let badge = match session.state {
+        State::Running => Span::styled(" ●", Style::default().fg(theme.running)),
+        State::AwaitingInput => {
+            Span::styled(" ◆", Style::default().fg(theme.attention).add_modifier(Modifier::BOLD))
+        }
+        State::Exited(_) => Span::styled(" ×", Style::default().fg(theme.danger)),
+    };
+
+    let kind = match session.kind {
+        Kind::Agent { .. } => "",
+        Kind::Shell => " $",
+    };
+
+    let ordinal = if index < 9 { format!("{} ", index + 1) } else { "  ".to_string() };
+
+    // While renaming, the row itself becomes the field. No popup, and no
+    // guessing which session you are renaming.
+    let name = if chosen && let Some(draft) = renaming {
+        Line::from(vec![
+            Span::styled(marker, Style::default().fg(theme.accent)),
+            Span::styled(ordinal, Style::default().fg(theme.dim)),
+            Span::styled(
+                format!("{draft}▏"),
+                Style::default().fg(theme.code).add_modifier(Modifier::BOLD),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(marker, Style::default().fg(theme.accent)),
+            Span::styled(ordinal, Style::default().fg(theme.dim)),
+            Span::styled(truncate(&session.display_name(), width.saturating_sub(10)), name_style),
+            Span::styled(kind, Style::default().fg(theme.dim)),
+            badge,
+        ])
+    };
+
+    // Where it runs. This is why the sidebar is worth three rows: with several
+    // agents going, "which one is this" is answered by the path far more often
+    // than by the name.
+    let directory = crate::paths::contract_home(session.directory());
+    let where_it_runs = Line::from(vec![
+        Span::raw("    "),
+        Span::styled(
+            truncate_start(&directory, width.saturating_sub(5)),
+            Style::default().fg(theme.dim),
+        ),
+    ]);
+
+    // A worktree is worth saying out loud; a plain branch is context.
+    let branch = match (&session.worktree, &session.branch) {
+        (Some(worktree), _) => Line::from(vec![
+            Span::raw("    "),
+            Span::styled("⑂ ", Style::default().fg(theme.link)),
+            Span::styled(
+                truncate(worktree, width.saturating_sub(15)),
+                Style::default().fg(theme.link),
+            ),
+            Span::styled("  worktree", Style::default().fg(theme.dim)),
+        ]),
+        (None, Some(branch)) => Line::from(vec![
+            Span::raw("    "),
+            Span::styled("⑂ ", Style::default().fg(theme.dim)),
+            Span::styled(truncate(branch, width.saturating_sub(7)), Style::default().fg(theme.dim)),
+        ]),
+        (None, None) => Line::from(""),
+    };
+
+    [name, where_it_runs, branch]
 }
 
 fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme) {
@@ -168,6 +221,10 @@ fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme)
         |session| format!(" {} · {} ", session.display_name(), session.state.label()),
     );
 
+    // Scrolled back, you are not looking at live output. Saying so is the
+    // difference between "the agent has stopped" and "you scrolled up".
+    let scrolled = sessions.selected().map_or(0, Session::scrollback_offset);
+
     // Green border while attached: keystrokes are going to the child.
     let border_style =
         if attached { Style::default().fg(theme.running) } else { Style::default().fg(theme.dim) };
@@ -177,6 +234,16 @@ fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme)
         .border_type(BorderType::Rounded)
         .border_style(border_style)
         .title(Span::styled(title, border_style.add_modifier(Modifier::BOLD)));
+
+    let block = if scrolled > 0 {
+        block.title_bottom(Span::styled(
+            format!(" ↑ {scrolled} lines back · type to return "),
+            Style::default().fg(theme.attention).add_modifier(Modifier::BOLD),
+        ))
+    } else {
+        block
+    };
+
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -218,6 +285,18 @@ fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme)
     }
 }
 
+/// Truncates from the *front*, keeping the end.
+///
+/// For paths, the tail is what identifies it — `…/payments/api` says far more
+/// than `/Users/josh/Proj…`.
+fn truncate_start(text: &str, limit: usize) -> String {
+    let count = text.chars().count();
+    if count <= limit || limit == 0 {
+        return text.to_string();
+    }
+    std::iter::once('…').chain(text.chars().skip(count - limit.saturating_sub(1))).collect()
+}
+
 /// Truncates to a cell budget, with an ellipsis when it bites.
 fn truncate(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
@@ -247,6 +326,18 @@ mod tests {
     fn truncation_counts_characters_not_bytes() {
         // Eight two-byte characters fit in a limit of eight cells.
         assert_eq!(truncate("αααααααα", 8).chars().count(), 8);
+    }
+
+    #[test]
+    fn paths_are_truncated_from_the_front_so_the_tail_survives() {
+        // The end of a path is what tells you which project it is.
+        let truncated = truncate_start("~/Projects/payments/api", 12);
+        assert_eq!(truncated.chars().count(), 12);
+        assert!(truncated.starts_with('…'));
+        assert!(truncated.ends_with("api"), "the identifying half must survive");
+
+        assert_eq!(truncate_start("~/short", 20), "~/short", "short paths are left alone");
+        assert_eq!(truncate_start("anything", 0), "anything", "a zero budget cannot ellipsize");
     }
 
     #[test]

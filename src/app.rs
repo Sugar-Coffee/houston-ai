@@ -126,6 +126,7 @@ pub mod fields {
     pub const VAULT: &str = "Vault folder";
     pub const AGENT_DIRECTORY: &str = "New sessions start in";
     pub const CREATE: &str = "Create";
+    pub const MOUSE: &str = "Capture the mouse";
 }
 
 impl App {
@@ -152,6 +153,11 @@ impl App {
         self.settings = Form::new(vec![
             Field::directory(fields::VAULT, "~/.houston/vault", vault),
             Field::directory(fields::AGENT_DIRECTORY, "~/", agent),
+            Field::toggle(
+                fields::MOUSE,
+                "wheel scrolls sessions; off restores text selection",
+                self.config.mouse_enabled(),
+            ),
         ]);
     }
 

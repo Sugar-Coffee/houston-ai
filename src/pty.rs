@@ -20,8 +20,8 @@
 
 use alacritty_terminal::{
     event::{Event as TermEvent, EventListener, OnResize, WindowSize},
-    grid::Dimensions,
-    term::{Config, Term},
+    grid::{Dimensions, Scroll},
+    term::{Config, Term, TermMode},
     tty::{self, ChildEvent, EventedPty, Options, Pty, Shell},
     vte::ansi::{Processor, StdSyncHandler},
 };
@@ -226,9 +226,41 @@ impl PtySession {
     /// Whether the child has asked for bracketed paste. ADR-0005 uses this to
     /// decide whether to wrap a paste in `ESC[200~`/`ESC[201~`.
     pub fn wants_bracketed_paste(&self) -> bool {
-        self.term.lock().is_ok_and(|term| {
-            term.mode().contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
-        })
+        self.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
+    /// The child's current terminal modes.
+    pub fn mode(&self) -> TermMode {
+        self.term.lock().map_or_else(|_| TermMode::empty(), |term| *term.mode())
+    }
+
+    /// Scrolls the scrollback by `lines`, positive being back into history.
+    ///
+    /// This is *our* scrollback, not the child's — the child has no idea it
+    /// happened, which is exactly right for a program that prints and forgets.
+    pub fn scroll(&self, lines: i32) {
+        if let Ok(mut term) = self.term.lock() {
+            term.scroll_display(Scroll::Delta(lines));
+        }
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    /// Jumps back to the live output.
+    ///
+    /// Called whenever you type: writing into a scrolled-back view and not
+    /// seeing where it went is disorienting.
+    pub fn scroll_to_bottom(&self) {
+        let scrolled = self.term.lock().is_ok_and(|term| term.grid().display_offset() != 0);
+
+        if scrolled && let Ok(mut term) = self.term.lock() {
+            term.scroll_display(Scroll::Bottom);
+            self.dirty.store(true, Ordering::Release);
+        }
+    }
+
+    /// How far back in history the view is, in lines. Zero means live.
+    pub fn scrollback_offset(&self) -> usize {
+        self.term.lock().map_or(0, |term| term.grid().display_offset())
     }
 
     pub fn resize(&mut self, size: Size) {

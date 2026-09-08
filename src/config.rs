@@ -52,6 +52,12 @@ pub struct Config {
     /// leave it running for days, so where it happened to be launched says
     /// nothing about where the next agent should work.
     pub agent_directory: Option<PathBuf>,
+    /// Whether Houston captures the mouse. `None` means yes.
+    ///
+    /// A real trade, which is why it is a setting: capturing gives you a
+    /// working scroll wheel inside sessions, and costs your terminal's own
+    /// click-drag text selection.
+    pub mouse: Option<bool>,
 }
 
 impl Config {
@@ -87,6 +93,15 @@ impl Config {
         std::fs::write(path, text)
             .with_context(|| format!("could not write {}", path.display()))?;
         Ok(())
+    }
+
+    /// Whether to capture the mouse.
+    #[must_use]
+    pub const fn mouse_enabled(&self) -> bool {
+        match self.mouse {
+            Some(enabled) => enabled,
+            None => true,
+        }
     }
 
     /// Where a new agent session should start.

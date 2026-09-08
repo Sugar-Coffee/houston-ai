@@ -5,7 +5,7 @@
 //! program assumes.
 
 use alacritty_terminal::term::TermMode;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 /// Encodes a key press. Returns `None` for keys with no terminal meaning
 /// (modifier presses on their own, media keys, and so on).
@@ -144,6 +144,66 @@ fn encode_char(character: char, ctrl: bool, alt: bool) -> Vec<u8> {
     bytes
 }
 
+/// Encodes a mouse event for a child that has asked to receive them.
+///
+/// Two encodings, and which one to use is the child's choice: SGR
+/// (`ESC[<b;x;yM`) is unambiguous and handles coordinates past 223, so anything
+/// modern asks for it. The legacy X10 form is a fallback for things that did
+/// not.
+///
+/// `column` and `line` are zero-based within the child's grid; both wire
+/// formats are one-based.
+#[must_use]
+pub fn encode_mouse(event: MouseEvent, column: u16, line: u16, mode: TermMode) -> Option<Vec<u8>> {
+    let (button, released) = match event.kind {
+        MouseEventKind::Down(button) => (mouse_button(button), false),
+        MouseEventKind::Up(button) => (mouse_button(button), true),
+        MouseEventKind::Drag(button) => (mouse_button(button) + 32, false),
+        // Wheel buttons have no release event, by convention.
+        MouseEventKind::ScrollUp => (64, false),
+        MouseEventKind::ScrollDown => (65, false),
+        MouseEventKind::ScrollLeft => (66, false),
+        MouseEventKind::ScrollRight => (67, false),
+        MouseEventKind::Moved => {
+            if !mode.contains(TermMode::MOUSE_MOTION) {
+                return None;
+            }
+            (35, false)
+        }
+    };
+
+    let mut code = button;
+    if event.modifiers.contains(KeyModifiers::SHIFT) {
+        code += 4;
+    }
+    if event.modifiers.contains(KeyModifiers::ALT) {
+        code += 8;
+    }
+    if event.modifiers.contains(KeyModifiers::CONTROL) {
+        code += 16;
+    }
+
+    if mode.contains(TermMode::SGR_MOUSE) {
+        let final_byte = if released { 'm' } else { 'M' };
+        return Some(format!("\x1b[<{code};{};{}{final_byte}", column + 1, line + 1).into_bytes());
+    }
+
+    // X10 offsets everything by 32 and cannot express a coordinate past 223.
+    // The button byte is *not* one-based — only the coordinates are.
+    let code = if released { 3 } else { code };
+    let button = code.checked_add(32)?;
+    let coordinate = |value: u16| -> Option<u8> { u8::try_from(value + 1 + 32).ok() };
+    Some(vec![0x1b, b'[', b'M', button, coordinate(column)?, coordinate(line)?])
+}
+
+const fn mouse_button(button: MouseButton) -> u8 {
+    match button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    }
+}
+
 /// Wraps pasted text so the child receives it as one atomic block.
 ///
 /// This is the heart of ADR-0005. Two things matter:
@@ -242,6 +302,74 @@ mod tests {
     fn navigation_keys_use_tilde_sequences() {
         assert_eq!(plain(KeyCode::Delete), Some(b"\x1b[3~".to_vec()));
         assert_eq!(plain(KeyCode::PageUp), Some(b"\x1b[5~".to_vec()));
+    }
+
+    fn wheel(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent { kind, column: 0, row: 0, modifiers: KeyModifiers::NONE }
+    }
+
+    #[test]
+    fn sgr_mouse_reporting_is_one_based_and_unambiguous() {
+        let bytes = encode_mouse(wheel(MouseEventKind::ScrollUp), 9, 4, TermMode::SGR_MOUSE);
+        assert_eq!(
+            bytes,
+            Some(b"\x1b[<64;10;5M".to_vec()),
+            "coordinates are one-based on the wire"
+        );
+
+        let down = encode_mouse(wheel(MouseEventKind::ScrollDown), 0, 0, TermMode::SGR_MOUSE);
+        assert_eq!(down, Some(b"\x1b[<65;1;1M".to_vec()));
+    }
+
+    #[test]
+    fn a_release_is_distinguishable_only_in_sgr() {
+        let up = MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        let sgr = encode_mouse(up, 0, 0, TermMode::SGR_MOUSE).unwrap();
+        assert_eq!(sgr.last(), Some(&b'm'), "SGR marks a release with a lowercase m");
+
+        // X10 cannot say which button was released, so it reports button 3.
+        let legacy = encode_mouse(up, 0, 0, TermMode::MOUSE_REPORT_CLICK).unwrap();
+        assert_eq!(legacy[3], 3 + 32);
+    }
+
+    #[test]
+    fn modifiers_are_folded_into_the_button_code() {
+        let shifted = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+        };
+        let bytes = encode_mouse(shifted, 0, 0, TermMode::SGR_MOUSE).unwrap();
+        let rendered = String::from_utf8(bytes).unwrap();
+        assert!(rendered.starts_with("\x1b[<20;"), "0 + shift(4) + ctrl(16), got {rendered}");
+    }
+
+    #[test]
+    fn plain_movement_is_reported_only_when_the_child_tracks_motion() {
+        let moved = wheel(MouseEventKind::Moved);
+        assert!(encode_mouse(moved, 0, 0, TermMode::SGR_MOUSE).is_none());
+        assert!(encode_mouse(moved, 0, 0, TermMode::MOUSE_MOTION | TermMode::SGR_MOUSE).is_some());
+    }
+
+    #[test]
+    fn a_coordinate_past_the_legacy_limit_is_dropped_rather_than_wrapped() {
+        // X10 tops out at 223. Sending a wrapped byte would put the child's
+        // cursor somewhere arbitrary, which is worse than sending nothing.
+        let far =
+            encode_mouse(wheel(MouseEventKind::ScrollUp), 300, 0, TermMode::MOUSE_REPORT_CLICK);
+        assert!(far.is_none());
+
+        // SGR has no such limit.
+        assert!(
+            encode_mouse(wheel(MouseEventKind::ScrollUp), 300, 0, TermMode::SGR_MOUSE).is_some()
+        );
     }
 
     #[test]

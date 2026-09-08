@@ -22,23 +22,38 @@ use crate::{
     vault::browser::Mode as VaultMode,
 };
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
 use futures::StreamExt;
-use ratatui::Terminal;
+use ratatui::{Terminal, layout::Rect};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// ~60fps. The upper bound on how often we draw, not how often we poll.
 const FRAME_BUDGET: Duration = Duration::from_millis(16);
 
+/// How often session branches are re-read.
+///
+/// A branch changes when you switch it, not when you blink. Reading `.git/HEAD`
+/// is cheap but not free, and doing it per frame would be sixty file reads a
+/// second per session for information that changes hourly.
+const BRANCH_REFRESH: Duration = Duration::from_secs(3);
+
 pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
     let mut input = EventStream::new();
     let mut frames = tokio::time::interval(FRAME_BUDGET);
     frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    let mut branches = tokio::time::interval(BRANCH_REFRESH);
+    branches.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     // Agent lifecycle events arrive over a Unix socket. If the listener cannot
     // start, Houston still works — the board just cannot show agent state — so
     // this is reported rather than fatal.
+    // The setting decides; ignoring a failure here costs the wheel, not the app.
+    let _ = crate::terminal::set_mouse(app.config.mouse_enabled());
+
     let (hook_sender, mut hook_events) = tokio::sync::mpsc::unbounded_channel();
     let _listener = match hooks::Listener::start(hook_sender) {
         Ok(listener) => Some(listener),
@@ -54,9 +69,17 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
             // waits on a draw.
             biased;
 
-            Some(event) = input.next() => handle(&mut app, &event?),
+            Some(event) = input.next() => {
+                    let area = session_area(terminal).ok();
+                    handle(&mut app, &event?, area);
+                }
 
             Some(notification) = hook_events.recv() => on_hook(&mut app, &notification),
+
+            _ = branches.tick() => {
+                app.sessions.refresh_branches();
+                app.dirty = true;
+            }
 
             _ = frames.tick() => {
                 // Children draw on their own schedule; ask them what changed.
@@ -77,6 +100,14 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
             return Ok(());
         }
     }
+}
+
+/// The rectangle the attached session's grid is drawn into.
+///
+/// Needed to translate a mouse position into the child's own coordinates.
+fn session_area(terminal: &Terminal<Backend>) -> Result<Rect> {
+    let [_, body, _] = ui::layout(terminal.size()?.into());
+    Ok(ui::sessions::terminal_area(body))
 }
 
 /// Keeps every child's grid the same size as the area it is drawn into.
@@ -111,13 +142,67 @@ fn on_hook(app: &mut App, notification: &Notification) {
     }
 }
 
-fn handle(app: &mut App, event: &Event) {
+/// The wheel, and clicks.
+///
+/// Everything except an attached session treats the wheel as "scroll what I am
+/// looking at". An attached session hands it to `Session::send_mouse`, which
+/// decides whether the child wants it.
+fn on_mouse(app: &mut App, mouse: MouseEvent, area: Option<Rect>) {
+    let scroll: i32 = match mouse.kind {
+        MouseEventKind::ScrollUp => -1,
+        MouseEventKind::ScrollDown => 1,
+        _ => 0,
+    };
+
+    if app.is_attached() {
+        let Some(area) = area else { return };
+        // Translate to the child's own grid, so a forwarded click lands where
+        // it was aimed rather than where it was on our screen.
+        let column = mouse.column.saturating_sub(area.x);
+        let line = mouse.row.saturating_sub(area.y);
+
+        if let Some(session) = app.sessions.selected_mut()
+            && let Err(error) = session.send_mouse(mouse, column, line)
+        {
+            app.notify(format!("mouse: {error}"));
+        }
+        app.dirty = true;
+        return;
+    }
+
+    if scroll == 0 {
+        return;
+    }
+    app.dirty = true;
+
+    match app.tab {
+        Tab::Sessions => {
+            // Not attached, so the wheel still scrolls the visible session —
+            // reading back through an agent's output without attaching first
+            // is a normal thing to want.
+            if let Some(session) = app.sessions.selected() {
+                session.scroll(-scroll * 3);
+            }
+        }
+        Tab::Vault => {
+            if let Some(editor) = app.editor.as_mut() {
+                editor.scroll_rows(isize::try_from(scroll * 3).unwrap_or(0));
+            } else if let Some(browser) = app.browser.as_mut() {
+                browser.scroll(scroll * 3);
+            }
+        }
+        Tab::Board | Tab::Settings => {}
+    }
+}
+
+fn handle(app: &mut App, event: &Event, terminal_area: Option<Rect>) {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             app.clear_notice();
             on_key(app, *key);
         }
         Event::Paste(text) => on_paste(app, text),
+        Event::Mouse(mouse) => on_mouse(app, *mouse, terminal_area),
         Event::Resize(_, _) => app.dirty = true,
         _ => {}
     }
@@ -434,6 +519,14 @@ fn sync_form_visibility(app: &mut App, modal: bool) {
 fn apply_form_field(app: &mut App, modal: bool) {
     if modal {
         return;
+    }
+
+    // Applied immediately: a mouse setting that needs a restart is a mouse
+    // setting you cannot tell whether you like.
+    let mouse = app.settings.is_on(fields::MOUSE);
+    if mouse != app.config.mouse_enabled() {
+        app.config.mouse = Some(mouse);
+        let _ = crate::terminal::set_mouse(mouse);
     }
 
     let vault = app.settings.value(fields::VAULT);
@@ -1208,6 +1301,51 @@ mod tests {
         assert_eq!(app.worktrees.as_ref().unwrap().len(), 1, "nothing was removed");
     }
 
+    fn wheel(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent { kind, column: 0, row: 0, modifiers: KeyModifiers::NONE }
+    }
+
+    #[test]
+    fn the_wheel_scrolls_a_sessions_own_scrollback() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+
+        // A shell prints nothing yet, so there is no history to move through —
+        // what matters is that the wheel reaches the session at all rather
+        // than being handled as an arrow key.
+        on_mouse(&mut app, wheel(MouseEventKind::ScrollUp), Some(Rect::new(0, 0, 80, 24)));
+        assert!(app.dirty, "the wheel is acted on, not ignored");
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn typing_returns_a_scrolled_session_to_the_live_output() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+
+        app.sessions.selected().unwrap().scroll(5);
+        on_key(&mut app, press(KeyCode::Char('x')));
+
+        assert_eq!(
+            app.sessions.selected().unwrap().scrollback_offset(),
+            0,
+            "writing into a scrolled-back view and not seeing it is disorienting"
+        );
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_vault_reader_when_not_attached() {
+        let mut app = App::new();
+        if app.browser.is_none() {
+            return;
+        }
+        app.select_tab(Tab::Vault);
+
+        on_mouse(&mut app, wheel(MouseEventKind::ScrollDown), None);
+        assert!(app.dirty);
+        assert!(!app.should_quit, "the wheel is never a command");
+    }
+
     #[test]
     fn quitting_takes_two_presses() {
         let mut app = App::new();
@@ -1344,7 +1482,7 @@ mod tests {
     fn a_pressed_key_clears_a_stale_notice() {
         let mut app = App::new();
         app.notify("something went wrong");
-        handle(&mut app, &Event::Key(press(KeyCode::Char('2'))));
+        handle(&mut app, &Event::Key(press(KeyCode::Char('2'))), None);
         assert!(app.notice.is_none());
     }
 
@@ -1352,7 +1490,7 @@ mod tests {
     fn paste_while_browsing_is_dropped_not_typed() {
         let mut app = App::new();
         // Nothing to receive it, and it must never be re-encoded as keystrokes.
-        handle(&mut app, &Event::Paste("rm -rf /".to_string()));
+        handle(&mut app, &Event::Paste("rm -rf /".to_string()), None);
         assert!(!app.should_quit);
         assert!(app.notice.is_none());
     }

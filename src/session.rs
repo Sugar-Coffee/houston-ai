@@ -12,8 +12,11 @@ use crate::{
 };
 use alacritty_terminal::{term::TermMode, tty::ChildEvent};
 use anyhow::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use std::path::Path;
+
+/// Lines moved per wheel notch. Three is the terminal convention.
+const SCROLL_LINES: i32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(pub u64);
@@ -59,19 +62,33 @@ pub struct Session {
     pub state: State,
     /// Kept so a session can be restarted, and persisted across restarts in
     /// Phase 2's `~/.houston/state.json`.
-    #[expect(dead_code, reason = "Phase 2 persists and restarts sessions from this")]
     pub spec: LaunchSpec,
     /// The worktree this session runs in, by name, if it was given one.
     ///
     /// Lets the worktree manager say which checkouts are still in use, so
     /// cleaning up does not mean guessing.
     pub worktree: Option<String>,
+    /// The branch its directory is on, refreshed periodically.
+    ///
+    /// Cached rather than read per frame: it is a file read, but sixty of them
+    /// a second per session for something that changes hourly is waste.
+    pub branch: Option<String>,
     pty: PtySession,
 }
 
 impl Session {
     pub const fn pty(&self) -> &PtySession {
         &self.pty
+    }
+
+    /// The directory this session runs in.
+    pub fn directory(&self) -> &Path {
+        &self.spec.cwd
+    }
+
+    /// Re-reads the branch. Cheap, but not free — call on a timer, not a frame.
+    pub fn refresh_branch(&mut self) {
+        self.branch = crate::worktree::branch_of(&self.spec.cwd);
     }
 
     /// Sets a name the user chose, or clears it back to the default.
@@ -104,11 +121,66 @@ impl Session {
         self.pty.resize(size);
     }
 
+    /// Scrolls this session's scrollback. Positive goes back in history.
+    pub fn scroll(&self, lines: i32) {
+        self.pty.scroll(lines);
+    }
+
+    pub fn scrollback_offset(&self) -> usize {
+        self.pty.scrollback_offset()
+    }
+
+    /// Handles a wheel or click while this session is attached.
+    ///
+    /// Three cases, in order. A child that asked for mouse reporting gets the
+    /// event — that is its business, not ours. A full-screen child that asked
+    /// for alternate scroll gets arrow keys, which is the convention `less`
+    /// and friends rely on. Anything else scrolls *our* scrollback, which is
+    /// what makes the wheel work in an agent session at all.
+    pub fn send_mouse(&mut self, event: MouseEvent, column: u16, line: u16) -> Result<()> {
+        let mode = self.pty.mode();
+
+        let wants_mouse = mode.intersects(
+            TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG,
+        );
+        if wants_mouse {
+            if let Some(bytes) = input::encode_mouse(event, column, line, mode) {
+                self.pty.write(&bytes)?;
+            }
+            return Ok(());
+        }
+
+        let lines = match event.kind {
+            MouseEventKind::ScrollUp => SCROLL_LINES,
+            MouseEventKind::ScrollDown => -SCROLL_LINES,
+            _ => return Ok(()),
+        };
+
+        if mode.contains(TermMode::ALT_SCREEN) {
+            // No history on the alternate screen, so scrolling it would do
+            // nothing. Arrow keys are what the child expects instead.
+            if mode.contains(TermMode::ALTERNATE_SCROLL) {
+                let arrow = if lines > 0 { KeyCode::Up } else { KeyCode::Down };
+                let key = KeyEvent::new(arrow, KeyModifiers::NONE);
+                for _ in 0..SCROLL_LINES {
+                    self.send_key(key)?;
+                }
+            }
+            return Ok(());
+        }
+
+        self.pty.scroll(lines);
+        Ok(())
+    }
+
     /// Sends a key press to the child.
     pub fn send_key(&mut self, key: KeyEvent) -> Result<()> {
         let mode = self.pty.term().lock().map_or_else(|_| TermMode::default(), |term| *term.mode());
 
         if let Some(bytes) = input::encode(key, mode) {
+            // Typing into a scrolled-back view and not seeing where it went is
+            // disorienting, so any keypress returns to the live output.
+            self.pty.scroll_to_bottom();
             self.pty.write(&bytes)?;
         }
         Ok(())
@@ -309,6 +381,7 @@ impl Sessions {
             named_by_user: false,
             kind,
             state: State::Running,
+            branch: crate::worktree::branch_of(&spec.cwd),
             spec,
             worktree: None,
             pty,
@@ -368,6 +441,14 @@ impl Sessions {
     pub fn resize_all(&mut self, size: Size) {
         for session in &mut self.items {
             session.resize(size);
+        }
+    }
+
+    /// Re-reads every session's branch. Driven on a slow timer by the event
+    /// loop, because a branch changes when you switch it, not when you blink.
+    pub fn refresh_branches(&mut self) {
+        for session in &mut self.items {
+            session.refresh_branch();
         }
     }
 

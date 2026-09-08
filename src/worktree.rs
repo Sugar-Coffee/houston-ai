@@ -40,6 +40,46 @@ pub struct Worktree {
     pub commits: usize,
 }
 
+/// The branch checked out in a directory, by reading `.git/HEAD`.
+///
+/// Deliberately not `git rev-parse`: this is shown for every session in the
+/// sidebar and refreshed while you watch, and spawning a process per session
+/// per refresh to read one short file would be absurd.
+///
+/// Handles the worktree case, where `.git` is a *file* pointing at the real
+/// git directory rather than being one.
+#[must_use]
+pub fn branch_of(directory: &Path) -> Option<String> {
+    let git = find_git(directory)?;
+
+    let head = std::fs::read_to_string(git.join("HEAD")).ok()?;
+    let head = head.trim();
+
+    // `ref: refs/heads/main` when on a branch; a bare hash when detached.
+    head.strip_prefix("ref: refs/heads/").map_or_else(
+        || head.get(..8).map(|short| format!("detached {short}")),
+        |branch| Some(branch.to_string()),
+    )
+}
+
+/// Walks up looking for `.git`, resolving the worktree indirection.
+fn find_git(directory: &Path) -> Option<PathBuf> {
+    for ancestor in directory.ancestors() {
+        let candidate = ancestor.join(".git");
+
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        if candidate.is_file() {
+            // A worktree's `.git` is `gitdir: /path/to/repo/.git/worktrees/name`.
+            let contents = std::fs::read_to_string(&candidate).ok()?;
+            let path = contents.trim().strip_prefix("gitdir:")?.trim();
+            return Some(PathBuf::from(path));
+        }
+    }
+    None
+}
+
 /// Whether a directory is inside a git repository.
 #[must_use]
 pub fn is_repository(directory: &Path) -> bool {
@@ -235,6 +275,36 @@ mod tests {
         let found = main_repository(&worktree.path).unwrap();
         assert_eq!(found, repository.canonicalize().unwrap());
         assert_ne!(found, worktree.path, "the worktree is not its own repository");
+
+        remove(&worktree, true).ok();
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&repository).ok();
+    }
+
+    #[test]
+    fn the_branch_is_read_from_the_file_rather_than_by_running_git() {
+        let repository = scratch_repository("branch");
+        assert_eq!(branch_of(&repository).as_deref(), Some("main"));
+
+        // A subdirectory finds it by walking up.
+        let nested = repository.join("deep/inside");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(branch_of(&nested).as_deref(), Some("main"));
+
+        assert!(branch_of(Path::new("/")).is_none(), "not a repository");
+
+        std::fs::remove_dir_all(&repository).ok();
+    }
+
+    /// A worktree's `.git` is a file pointing elsewhere, not a directory.
+    #[test]
+    fn a_worktrees_branch_is_found_through_the_gitdir_indirection() {
+        let repository = scratch_repository("branchwt");
+        let root = scratch_root("branchwt");
+        let worktree = create_in(&root, &repository, "feature work").unwrap();
+
+        assert!(worktree.path.join(".git").is_file(), "the premise of this test");
+        assert_eq!(branch_of(&worktree.path).as_deref(), Some("feature-work"));
 
         remove(&worktree, true).ok();
         std::fs::remove_dir_all(&root).ok();
