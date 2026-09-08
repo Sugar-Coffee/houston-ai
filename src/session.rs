@@ -5,6 +5,7 @@
 //! the terminal in here" needs no special machinery.
 
 use crate::{
+    hooks::{self, Kind as HookKind},
     input,
     provider::{self, Provider},
     pty::{LaunchSpec, PtySession, Size},
@@ -31,15 +32,13 @@ pub enum Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Running,
-    /// Set by Claude Code's `PermissionRequest` hook in Phase 6. Nothing
-    /// constructs it yet, and nothing should guess at it from terminal output.
-    #[expect(dead_code, reason = "Phase 6's hook ingress is what sets this")]
+    /// Set by Claude Code's `PermissionRequest` hook. Never guessed at from
+    /// terminal output — a hook is a fact, a screen-scrape is a guess.
     AwaitingInput,
     Exited(Option<i32>),
 }
 
 impl State {
-    #[expect(dead_code, reason = "Phase 6 renders these on the board")]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -105,6 +104,19 @@ impl Session {
         self.pty.write(&bytes)
     }
 
+    /// Applies a lifecycle event reported by an agent hook.
+    pub const fn apply_hook(&mut self, kind: HookKind) {
+        // A hook from a session that has already exited is stale; the exit is
+        // the more truthful state.
+        if matches!(self.state, State::Exited(_)) {
+            return;
+        }
+        self.state = match kind {
+            HookKind::Start | HookKind::Stop => State::Running,
+            HookKind::Permission => State::AwaitingInput,
+        };
+    }
+
     fn poll(&mut self) -> bool {
         let dirty = self.pty.take_dirty();
 
@@ -146,11 +158,18 @@ pub struct Sessions {
     selected: usize,
     focus: Focus,
     next_id: u64,
+    hook_warning: Option<String>,
 }
 
 impl Sessions {
     pub const fn new() -> Self {
-        Self { items: Vec::new(), selected: 0, focus: Focus::Browsing, next_id: 1 }
+        Self {
+            items: Vec::new(),
+            selected: 0,
+            focus: Focus::Browsing,
+            next_id: 1,
+            hook_warning: None,
+        }
     }
 
     pub const fn is_empty(&self) -> bool {
@@ -181,7 +200,23 @@ impl Sessions {
         self.items.get_mut(self.selected)
     }
 
+    /// Routes a hook notification to the session that raised it.
+    ///
+    /// Returns `true` if it matched a live session.
+    pub fn apply_hook(&mut self, session: u64, kind: HookKind) -> bool {
+        let Some(target) = self.items.iter_mut().find(|item| item.id.0 == session) else {
+            return false;
+        };
+        target.apply_hook(kind);
+        true
+    }
+
     /// Starts an agent session using the first available provider.
+    ///
+    /// Also wires Claude Code's hooks into the project so the board can tell
+    /// whether the agent is working or waiting on you. A failure to install
+    /// hooks is reported but does not stop the session: a working agent with
+    /// no status is far better than no agent.
     pub fn spawn_agent(&mut self, cwd: &Path, size: Size) -> Result<SessionId> {
         let provider = provider::default();
         let (kind, spec) = provider.map_or_else(
@@ -201,7 +236,20 @@ impl Sessions {
             Kind::Agent { provider } => (*provider).to_string(),
             Kind::Shell => directory_label(cwd),
         };
-        self.spawn(name, kind, spec, size)
+
+        let agent = matches!(kind, Kind::Agent { .. });
+        let id = self.spawn(name, kind, spec, size)?;
+
+        if agent {
+            self.hook_warning = install_hooks(cwd, id).err().map(|error| error.to_string());
+        }
+        Ok(id)
+    }
+
+    /// Why hook installation failed for the most recent agent session, if it
+    /// did. Surfaced in the UI rather than swallowed.
+    pub const fn take_hook_warning(&mut self) -> Option<String> {
+        self.hook_warning.take()
     }
 
     pub fn spawn_shell(&mut self, cwd: &Path, size: Size) -> Result<SessionId> {
@@ -291,6 +339,13 @@ impl Default for Sessions {
     }
 }
 
+/// Wires Houston's hooks into a project's Claude Code settings.
+fn install_hooks(cwd: &Path, id: SessionId) -> Result<()> {
+    let socket = hooks::socket_path()?;
+    hooks::install(cwd, id, &socket)?;
+    Ok(())
+}
+
 /// A short label for a working directory: its last component.
 fn directory_label(path: &Path) -> String {
     path.file_name().map_or_else(|| "shell".to_string(), |name| name.to_string_lossy().into_owned())
@@ -375,5 +430,49 @@ mod tests {
         let mut sessions = Sessions::new();
         sessions.spawn_shell(Path::new("/usr/local/lib"), size()).unwrap();
         assert_eq!(sessions.selected().unwrap().name, "lib");
+    }
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+
+    fn sessions_with_one_shell() -> Sessions {
+        let mut sessions = Sessions::new();
+        sessions.spawn_shell(&std::env::temp_dir(), Size::new(24, 80)).unwrap();
+        sessions
+    }
+
+    #[test]
+    fn a_permission_hook_marks_a_session_as_needing_you() {
+        let mut sessions = sessions_with_one_shell();
+        let id = sessions.selected().unwrap().id;
+
+        assert!(sessions.apply_hook(id.0, HookKind::Permission));
+        assert_eq!(sessions.selected().unwrap().state, State::AwaitingInput);
+
+        assert!(sessions.apply_hook(id.0, HookKind::Stop));
+        assert_eq!(sessions.selected().unwrap().state, State::Running);
+    }
+
+    #[test]
+    fn a_hook_for_an_unknown_session_is_ignored() {
+        let mut sessions = sessions_with_one_shell();
+        assert!(!sessions.apply_hook(9999, HookKind::Permission));
+        assert_eq!(sessions.selected().unwrap().state, State::Running);
+    }
+
+    #[test]
+    fn a_hook_cannot_resurrect_an_exited_session() {
+        let mut sessions = sessions_with_one_shell();
+        let id = sessions.selected().unwrap().id;
+        sessions.selected_mut().unwrap().state = State::Exited(Some(0));
+
+        sessions.apply_hook(id.0, HookKind::Permission);
+        assert_eq!(
+            sessions.selected().unwrap().state,
+            State::Exited(Some(0)),
+            "exit is the more truthful state; a late hook must not override it"
+        );
     }
 }

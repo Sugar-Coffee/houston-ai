@@ -11,6 +11,7 @@
 use crate::{
     app::{App, Tab},
     clipboard,
+    hooks::{self, Notification},
     pty::Size,
     terminal::Backend,
     ui,
@@ -31,6 +32,18 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
     let mut frames = tokio::time::interval(FRAME_BUDGET);
     frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // Agent lifecycle events arrive over a Unix socket. If the listener cannot
+    // start, Houston still works — the board just cannot show agent state — so
+    // this is reported rather than fatal.
+    let (hook_sender, mut hook_events) = tokio::sync::mpsc::unbounded_channel();
+    let _listener = match hooks::Listener::start(hook_sender) {
+        Ok(listener) => Some(listener),
+        Err(error) => {
+            app.notify(format!("agent status unavailable: {error}"));
+            None
+        }
+    };
+
     loop {
         tokio::select! {
             // Keystrokes are checked before the frame tick, so typing never
@@ -38,6 +51,8 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
             biased;
 
             Some(event) = input.next() => handle(&mut app, &event?),
+
+            Some(notification) = hook_events.recv() => on_hook(&mut app, &notification),
 
             _ = frames.tick() => {
                 // Children draw on their own schedule; ask them what changed.
@@ -68,6 +83,13 @@ fn sync_session_size(terminal: &Terminal<Backend>, app: &mut App) -> Result<()> 
     let pane = ui::sessions::terminal_area(body);
     app.resize_sessions(Size::new(pane.height, pane.width));
     Ok(())
+}
+
+/// Applies an agent lifecycle event reported by a hook.
+fn on_hook(app: &mut App, notification: &Notification) {
+    if app.sessions.apply_hook(notification.session, notification.kind) {
+        app.dirty = true;
+    }
 }
 
 fn handle(app: &mut App, event: &Event) {
@@ -321,6 +343,11 @@ fn spawn(app: &mut App, shell: bool) {
         Ok(_) => {
             app.sessions.attach();
             app.dirty = true;
+            // Hook installation is best-effort, but a silent failure would
+            // leave the board quietly wrong for the rest of the session.
+            if let Some(warning) = app.sessions.take_hook_warning() {
+                app.notify(format!("agent status unavailable: {warning}"));
+            }
         }
         Err(error) => app.notify(format!("could not start a session: {error}")),
     }

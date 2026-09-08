@@ -114,9 +114,10 @@ fn render_list(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme)
 fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme) {
     let attached = sessions.focus() == Focus::Attached;
 
-    let title = sessions
-        .selected()
-        .map_or_else(|| " Houston ".to_string(), |session| format!(" {} ", session.display_name()));
+    let title = sessions.selected().map_or_else(
+        || " Houston ".to_string(),
+        |session| format!(" {} · {} ", session.display_name(), session.state.label()),
+    );
 
     let border_style =
         if attached { Style::default().fg(theme.accent) } else { Style::default().fg(theme.dim) };

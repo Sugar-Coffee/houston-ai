@@ -5,8 +5,10 @@
 //! the way it is.
 
 mod app;
+mod cli;
 mod clipboard;
 mod event;
+mod hooks;
 mod input;
 mod palette;
 mod provider;
@@ -21,6 +23,11 @@ use app::App;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let command = cli::parse(std::env::args().skip(1))?;
+    if cli::dispatch(&command) {
+        return Ok(());
+    }
+
     let mut guard = terminal::enter()?;
     let result = event::run(&mut guard.terminal, App::new()).await;
     guard.leave()?;

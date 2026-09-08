@@ -37,7 +37,7 @@ impl Tab {
         match self {
             Self::Sessions => ("Sessions", ""),
             Self::Vault => ("Vault", ""),
-            Self::Board => ("Board", "Phase 6 — which agents are blocked on you"),
+            Self::Board => ("Board", ""),
             Self::Settings => ("Settings", "Phase 8 — providers, vault path, theme"),
         }
     }

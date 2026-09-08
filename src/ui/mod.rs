@@ -4,6 +4,7 @@
 //! of Chloe the brief singled out as making it pleasant to live in, so it is
 //! present from the first commit rather than bolted on later.
 
+pub mod board;
 mod chrome;
 pub mod sessions;
 pub mod terminal;
@@ -38,7 +39,8 @@ pub fn render(frame: &mut Frame, app: &App) {
     match app.tab {
         Tab::Sessions => sessions::render(frame, body, &app.sessions, theme),
         Tab::Vault => vault::render(frame, body, app.browser.as_ref(), theme),
-        _ => chrome::placeholder(frame, body, app, theme),
+        Tab::Board => board::render(frame, body, &app.sessions, theme),
+        Tab::Settings => chrome::placeholder(frame, body, app, theme),
     }
 
     chrome::keybind_bar(frame, footer, app, theme);
@@ -79,9 +81,21 @@ mod tests {
     #[test]
     fn body_follows_the_selected_tab() {
         let mut app = App::new();
-        app.select_tab(Tab::Board);
+        app.select_tab(Tab::Settings);
         let rendered = draw(&app, 100, 24);
-        assert!(rendered.contains("which agents are blocked on you"));
+        assert!(rendered.contains("providers, vault path, theme"));
+    }
+
+    #[test]
+    fn the_board_shows_its_columns_once_something_is_running() {
+        let mut app = App::new();
+        app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+        app.select_tab(Tab::Board);
+
+        let rendered = draw(&app, 120, 24);
+        for column in ["Needs you", "Working", "Shells", "Finished"] {
+            assert!(rendered.contains(column), "board missing the {column} column");
+        }
     }
 
     #[test]
