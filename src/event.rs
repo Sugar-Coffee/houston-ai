@@ -8,7 +8,15 @@
 //!    output mark the app dirty; a tick draws at most once per frame. An agent
 //!    emitting thousands of lines a second must not cost thousands of repaints.
 
-use crate::{app::App, app::Tab, pty::Size, terminal::Backend, ui};
+use crate::{
+    app::{App, Tab},
+    clipboard,
+    pty::Size,
+    terminal::Backend,
+    ui,
+    ui::Theme,
+    vault::browser::Mode as VaultMode,
+};
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
@@ -90,8 +98,36 @@ fn on_paste(app: &mut App, text: &str) {
 fn on_key(app: &mut App, key: KeyEvent) {
     if app.is_attached() {
         on_key_attached(app, key);
+    } else if app.is_typing() {
+        on_key_typing(app, key);
     } else {
         on_key_browsing(app, key);
+    }
+}
+
+/// While a vault query is being typed, ordinary letters are query text. `q`
+/// must not quit and `1` must not switch view.
+fn on_key_typing(app: &mut App, key: KeyEvent) {
+    let Some(browser) = app.browser.as_mut() else { return };
+    app.dirty = true;
+
+    match key.code {
+        KeyCode::Esc => {
+            browser.end_query();
+            browser.show_all();
+        }
+        KeyCode::Enter => {
+            if browser.mode() == VaultMode::Searching {
+                browser.run_search();
+            } else {
+                browser.end_query();
+            }
+        }
+        KeyCode::Backspace => browser.pop_query(),
+        KeyCode::Char(character) => browser.push_query(character),
+        KeyCode::Down => browser.select_next(),
+        KeyCode::Up => browser.select_previous(),
+        _ => {}
     }
 }
 
@@ -136,8 +172,108 @@ fn on_key_browsing(app: &mut App, key: KeyEvent) {
             app.select_tab(Tab::ALL[index]);
         }
         _ if app.tab == Tab::Sessions => on_key_sessions(app, key),
+        _ if app.tab == Tab::Vault => on_key_vault(app, key),
         _ => {}
     }
+}
+
+fn on_key_vault(app: &mut App, key: KeyEvent) {
+    if app.browser.is_none() {
+        return;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let theme = Theme::default();
+    app.dirty = true;
+
+    // Split so the borrow of `app.browser` ends before the arms that need
+    // `app` as a whole (yank, and sending into a session).
+    match key.code {
+        KeyCode::Char('y') => yank_selected_path(app),
+        KeyCode::Char('i') => send_selected_to_session(app),
+        _ => {
+            let Some(browser) = app.browser.as_mut() else { return };
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => browser.select_next(),
+                KeyCode::Char('k') | KeyCode::Up => browser.select_previous(),
+                KeyCode::Enter => {
+                    if let Err(error) = browser.open_selected(theme) {
+                        app.notify(format!("could not open note: {error}"));
+                    }
+                }
+                KeyCode::Char('/') => browser.begin_find(),
+                KeyCode::Char('f') => browser.begin_search(),
+                KeyCode::Char('a') => browser.show_all(),
+                KeyCode::Char('l') => {
+                    if !browser.show_links() {
+                        app.notify("this note has no outgoing links");
+                    }
+                }
+                KeyCode::Char('b') => {
+                    if !browser.show_backlinks() {
+                        app.notify("no backlinks yet — they build up as you visit notes");
+                    }
+                }
+                KeyCode::Backspace => {
+                    if !browser.go_back(theme) {
+                        app.notify("nowhere to go back to");
+                    }
+                }
+                KeyCode::Char('d') if ctrl => browser.scroll(15),
+                KeyCode::Char('u') if ctrl => browser.scroll(-15),
+                KeyCode::PageDown => browser.scroll(15),
+                KeyCode::PageUp => browser.scroll(-15),
+                KeyCode::Char('g') => browser.scroll_to_top(),
+                KeyCode::Char('G') => browser.scroll_to_bottom(),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Copies the selected note's absolute path. The minimum bar the brief set.
+fn yank_selected_path(app: &mut App) {
+    let Some(path) = selected_path(app) else {
+        app.notify("no note selected");
+        return;
+    };
+
+    match clipboard::copy(&path) {
+        Ok(_) => app.notify(format!("copied {path}")),
+        Err(error) => app.notify(format!("could not copy: {error}")),
+    }
+}
+
+/// Pushes `@<path>` into the selected session's prompt and jumps to it.
+///
+/// This is ADR-0004's north star: getting a note into an agent's context
+/// without a clipboard round-trip or leaving the app. Deliberately does *not*
+/// press Return — you almost always want to type a question after the path.
+fn send_selected_to_session(app: &mut App) {
+    let Some(path) = selected_path(app) else {
+        app.notify("no note selected");
+        return;
+    };
+    if app.sessions.is_empty() {
+        app.notify("no session to send to — start one with n on the Sessions view");
+        return;
+    }
+
+    let payload = format!("@{path} ");
+    let Some(session) = app.sessions.selected_mut() else { return };
+    let name = session.display_name();
+
+    match session.send_paste(&payload) {
+        Ok(()) => {
+            app.select_tab(Tab::Sessions);
+            app.sessions.attach();
+            app.notify(format!("sent to {name}"));
+        }
+        Err(error) => app.notify(format!("could not send: {error}")),
+    }
+}
+
+fn selected_path(app: &App) -> Option<String> {
+    app.browser.as_ref()?.selected_note().map(|note| note.path.to_string_lossy().into_owned())
 }
 
 fn on_key_sessions(app: &mut App, key: KeyEvent) {
@@ -197,6 +333,55 @@ mod tests {
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn typing_a_query_does_not_trigger_commands() {
+        let mut app = App::new();
+        // Only meaningful when a vault exists on this machine.
+        if app.browser.is_none() {
+            return;
+        }
+
+        app.select_tab(Tab::Vault);
+        on_key(&mut app, press(KeyCode::Char('/')));
+        assert!(app.is_typing());
+
+        // Every one of these is a command while browsing.
+        for character in "q1f".chars() {
+            on_key(&mut app, press(KeyCode::Char(character)));
+        }
+
+        assert!(!app.should_quit, "q inside a query is text, not a command");
+        assert_eq!(app.tab, Tab::Vault, "1 inside a query must not switch view");
+        assert_eq!(app.browser.as_ref().unwrap().query(), "q1f");
+    }
+
+    #[test]
+    fn escape_leaves_a_query_without_quitting() {
+        let mut app = App::new();
+        if app.browser.is_none() {
+            return;
+        }
+        app.select_tab(Tab::Vault);
+        on_key(&mut app, press(KeyCode::Char('/')));
+        on_key(&mut app, press(KeyCode::Esc));
+
+        assert!(!app.is_typing());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn sending_a_note_with_no_session_says_so() {
+        let mut app = App::new();
+        if app.browser.is_none() {
+            return;
+        }
+        app.select_tab(Tab::Vault);
+        on_key(&mut app, press(KeyCode::Char('i')));
+
+        assert!(app.notice.as_deref().is_some_and(|notice| notice.contains("no session")));
+        assert_eq!(app.tab, Tab::Vault, "a failed send must not switch view");
     }
 
     #[test]

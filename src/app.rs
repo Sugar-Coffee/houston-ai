@@ -3,6 +3,7 @@
 use crate::{
     pty::Size,
     session::{Focus, Sessions},
+    vault::{self, Browser, Vault, browser::Mode as VaultMode},
 };
 use std::path::PathBuf;
 
@@ -35,7 +36,7 @@ impl Tab {
     pub const fn placeholder(self) -> (&'static str, &'static str) {
         match self {
             Self::Sessions => ("Sessions", ""),
-            Self::Vault => ("Vault", "Phase 4 — browse, search and follow wikilinks"),
+            Self::Vault => ("Vault", ""),
             Self::Board => ("Board", "Phase 6 — which agents are blocked on you"),
             Self::Settings => ("Settings", "Phase 8 — providers, vault path, theme"),
         }
@@ -45,6 +46,8 @@ impl Tab {
 pub struct App {
     pub tab: Tab,
     pub sessions: Sessions,
+    /// `None` when no vault could be found. The view says how to fix that.
+    pub browser: Option<Browser>,
     /// Where new sessions start. The directory Houston was launched from.
     pub cwd: PathBuf,
     pub should_quit: bool,
@@ -60,6 +63,9 @@ impl App {
         Self {
             tab: Tab::Sessions,
             sessions: Sessions::new(),
+            browser: vault::default_root()
+                .and_then(|root| Vault::open(root).ok())
+                .map(Browser::new),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             should_quit: false,
             dirty: true,
@@ -70,6 +76,13 @@ impl App {
     /// Whether keystrokes belong to a child rather than to Houston.
     pub fn is_attached(&self) -> bool {
         self.tab == Tab::Sessions && self.sessions.focus() == Focus::Attached
+    }
+
+    /// Whether keystrokes are filling in a vault query rather than acting as
+    /// commands. Typing `q` into a search box must not quit the app.
+    pub fn is_typing(&self) -> bool {
+        self.tab == Tab::Vault
+            && self.browser.as_ref().is_some_and(|browser| browser.mode() != VaultMode::Browsing)
     }
 
     pub fn select_tab(&mut self, tab: Tab) {
@@ -112,13 +125,30 @@ impl App {
             return vec![("ctrl+\\", "detach"), ("", "all other keys go to the session")];
         }
 
+        if self.is_typing() {
+            return vec![("↵", "accept"), ("esc", "cancel")];
+        }
+
         let mut binds: Vec<(&'static str, &'static str)> = vec![("tab", "view"), ("1-4", "jump")];
 
-        if self.tab == Tab::Sessions {
-            binds.extend([("n", "agent"), ("s", "shell")]);
-            if !self.sessions.is_empty() {
-                binds.extend([("j/k", "select"), ("↵", "attach"), ("x", "close")]);
+        match self.tab {
+            Tab::Sessions => {
+                binds.extend([("n", "agent"), ("s", "shell")]);
+                if !self.sessions.is_empty() {
+                    binds.extend([("j/k", "select"), ("↵", "attach"), ("x", "close")]);
+                }
             }
+            Tab::Vault if self.browser.is_some() => {
+                binds.extend([
+                    ("j/k", "select"),
+                    ("↵", "open"),
+                    ("/", "find"),
+                    ("f", "search"),
+                    ("y", "yank"),
+                    ("i", "to session"),
+                ]);
+            }
+            _ => {}
         }
 
         binds.push(("q", "quit"));

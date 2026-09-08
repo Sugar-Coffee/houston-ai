@@ -8,6 +8,7 @@ mod chrome;
 pub mod sessions;
 pub mod terminal;
 mod theme;
+pub mod vault;
 
 pub use theme::Theme;
 
@@ -36,6 +37,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     match app.tab {
         Tab::Sessions => sessions::render(frame, body, &app.sessions, theme),
+        Tab::Vault => vault::render(frame, body, app.browser.as_ref(), theme),
         _ => chrome::placeholder(frame, body, app, theme),
     }
 
@@ -77,9 +79,20 @@ mod tests {
     #[test]
     fn body_follows_the_selected_tab() {
         let mut app = App::new();
-        app.select_tab(Tab::Vault);
+        app.select_tab(Tab::Board);
         let rendered = draw(&app, 100, 24);
-        assert!(rendered.contains("browse, search and follow wikilinks"));
+        assert!(rendered.contains("which agents are blocked on you"));
+    }
+
+    #[test]
+    fn the_vault_view_says_how_to_fix_a_missing_vault() {
+        let mut app = App::new();
+        app.browser = None;
+        app.select_tab(Tab::Vault);
+
+        let rendered = draw(&app, 100, 24);
+        assert!(rendered.contains("No vault found"));
+        assert!(rendered.contains("HOUSTON_VAULT"), "the message must say how to fix it");
     }
 
     /// A terminal can legitimately be one row tall mid-resize, and every view

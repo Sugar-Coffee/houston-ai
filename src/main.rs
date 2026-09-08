@@ -5,6 +5,7 @@
 //! the way it is.
 
 mod app;
+mod clipboard;
 mod event;
 mod input;
 mod palette;
@@ -13,6 +14,7 @@ mod pty;
 mod session;
 mod terminal;
 mod ui;
+mod vault;
 
 use anyhow::Result;
 use app::App;
