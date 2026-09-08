@@ -12,6 +12,11 @@ pub enum FieldKind {
     Directory,
     /// Flipped with space or Return.
     Toggle,
+    /// One of a fixed list. Return cycles to the next.
+    ///
+    /// A cycle rather than a popup: the lists here are short, and seeing the
+    /// result immediately is the point — you pick a theme by looking at it.
+    Choice,
     /// A button. Return on it submits the form.
     ///
     /// A row rather than a modifier chord because most terminals send Ctrl-Enter
@@ -45,6 +50,8 @@ pub struct Field {
     /// Hidden until a condition holds — the worktree name is pointless until
     /// the worktree toggle is on.
     pub visible: bool,
+    /// The options a [`FieldKind::Choice`] cycles through.
+    pub options: Vec<String>,
 }
 
 impl Field {
@@ -57,6 +64,7 @@ impl Field {
             on: false,
             completions: Vec::new(),
             visible: true,
+            options: Vec::new(),
         }
     }
 
@@ -72,11 +80,41 @@ impl Field {
         Self { kind: FieldKind::Action, ..Self::text(label, hint, "") }
     }
 
+    pub fn choice(
+        label: &'static str,
+        hint: &'static str,
+        options: Vec<String>,
+        current: &str,
+    ) -> Self {
+        let value = options
+            .iter()
+            .find(|option| option.as_str() == current)
+            .cloned()
+            .or_else(|| options.first().cloned())
+            .unwrap_or_default();
+
+        Self { kind: FieldKind::Choice, options, ..Self::text(label, hint, value) }
+    }
+
+    /// Moves a choice field to its next option, wrapping.
+    fn cycle(&mut self) {
+        if self.options.is_empty() {
+            return;
+        }
+        let next = self
+            .options
+            .iter()
+            .position(|option| *option == self.value)
+            .map_or(0, |index| (index + 1) % self.options.len());
+        self.value = self.options[next].clone();
+    }
+
     /// What the field shows when it is not being edited.
     pub fn display(&self) -> String {
         match self.kind {
             FieldKind::Toggle => if self.on { "yes" } else { "no" }.to_string(),
             FieldKind::Action => self.hint.to_string(),
+            FieldKind::Choice => self.value.clone(),
             _ if self.value.is_empty() => self.hint.to_string(),
             _ => self.value.clone(),
         }
@@ -167,6 +205,10 @@ impl Form {
 
         match field.kind {
             FieldKind::Action => Activation::Submitted,
+            FieldKind::Choice => {
+                field.cycle();
+                Activation::Toggled
+            }
             FieldKind::Toggle => {
                 field.on = !field.on;
                 Activation::Toggled
@@ -302,6 +344,28 @@ mod tests {
         form.move_focus(true);
         form.activate();
         assert_eq!(form.value("Worktree"), "yes");
+    }
+
+    #[test]
+    fn a_choice_cycles_through_its_options_and_wraps() {
+        let options = vec!["One".to_string(), "Two".to_string(), "Three".to_string()];
+        let mut form = Form::new(vec![Field::choice("Theme", "", options, "Two")]);
+
+        assert_eq!(form.value("Theme"), "Two", "it opens on the current value");
+
+        assert_eq!(form.activate(), Activation::Toggled, "a choice never takes the keyboard");
+        assert_eq!(form.value("Theme"), "Three");
+
+        form.activate();
+        assert_eq!(form.value("Theme"), "One", "and wraps");
+    }
+
+    #[test]
+    fn a_choice_falls_back_to_the_first_option_when_the_current_is_unknown() {
+        let options = vec!["One".to_string(), "Two".to_string()];
+        let form = Form::new(vec![Field::choice("Theme", "", options, "Deleted")]);
+
+        assert_eq!(form.value("Theme"), "One", "a theme file that vanished must not blank the row");
     }
 
     /// Ctrl-Enter is indistinguishable from Enter in most terminals, so the

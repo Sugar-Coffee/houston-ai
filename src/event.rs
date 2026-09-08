@@ -18,7 +18,6 @@ use crate::{
     pty::Size,
     terminal::Backend,
     ui,
-    ui::Theme,
     vault::browser::Mode as VaultMode,
 };
 use anyhow::Result;
@@ -575,6 +574,14 @@ fn apply_form_field(app: &mut App, modal: bool) {
         let _ = crate::terminal::set_mouse(mouse);
     }
 
+    // Applied immediately, so you choose a theme by looking at it rather than
+    // by reading its name.
+    let chosen = app.settings.value(fields::THEME);
+    if Some(chosen.as_str()) != app.config.theme.as_deref() && !chosen.is_empty() {
+        app.config.theme = Some(chosen);
+        app.reload_theme();
+    }
+
     let vault = app.settings.value(fields::VAULT);
     let agent = app.settings.value(fields::AGENT_DIRECTORY);
 
@@ -982,7 +989,7 @@ fn on_key_vault(app: &mut App, key: KeyEvent) {
         return;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let theme = Theme::default();
+    let theme = app.theme;
     app.dirty = true;
 
     // Split so the borrow of `app.browser` ends before the arms that need

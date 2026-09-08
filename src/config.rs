@@ -58,6 +58,8 @@ pub struct Config {
     /// working scroll wheel inside sessions, and costs your terminal's own
     /// click-drag text selection.
     pub mouse: Option<bool>,
+    /// The theme by name. `None` means the default.
+    pub theme: Option<String>,
 }
 
 impl Config {
@@ -93,6 +95,36 @@ impl Config {
         std::fs::write(path, text)
             .with_context(|| format!("could not write {}", path.display()))?;
         Ok(())
+    }
+
+    /// Where theme files live, created with a template on first use.
+    pub fn themes_dir() -> Result<PathBuf> {
+        let directory = crate::hooks::state_dir()?.join("themes");
+        std::fs::create_dir_all(&directory)
+            .with_context(|| format!("could not create {}", directory.display()))?;
+
+        // Written once. Never overwritten — someone may well have edited it.
+        let template = directory.join("example.toml");
+        if !template.exists() {
+            let _ = std::fs::write(&template, crate::ui::theme::TEMPLATE);
+        }
+        Ok(directory)
+    }
+
+    /// The theme in force, and every theme available to choose from.
+    #[must_use]
+    pub fn themes(&self) -> (crate::ui::Theme, Vec<crate::ui::theme::Named>) {
+        let available = Self::themes_dir()
+            .map_or_else(|_| crate::ui::theme::built_in(), |dir| crate::ui::theme::available(&dir));
+
+        let chosen = self
+            .theme
+            .as_deref()
+            .and_then(|name| available.iter().find(|theme| theme.name == name))
+            .or_else(|| available.first())
+            .map_or_else(crate::ui::Theme::default, |named| named.theme);
+
+        (chosen, available)
     }
 
     /// Whether to capture the mouse.

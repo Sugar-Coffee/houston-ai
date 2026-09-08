@@ -13,7 +13,7 @@ pub mod overlay;
 pub mod sessions;
 pub mod settings;
 pub mod terminal;
-mod theme;
+pub mod theme;
 pub mod vault;
 
 pub use theme::Theme;
@@ -24,19 +24,24 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
 };
 
-/// Splits the screen into (tab strip, body, keybind bar).
+/// Splits the screen into (header, body, keybind bar).
 ///
-/// Shared with the event loop, which needs the body rect to size child grids.
+/// Shared with the event loop, which needs the body rect to size child grids —
+/// so changing the header height cannot desynchronise them.
 pub fn layout(area: Rect) -> [Rect; 3] {
+    // A short terminal keeps the body usable by dropping the header's padding
+    // rather than the body's content.
+    let header = if area.height >= 12 { chrome::HEADER_HEIGHT } else { 1 };
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([Constraint::Length(header), Constraint::Min(0), Constraint::Length(1)])
         .split(area);
     [rows[0], rows[1], rows[2]]
 }
 
 pub fn render(frame: &mut Frame, app: &App) {
-    let theme = Theme::default();
+    let theme = app.theme;
     let [tabs, body, footer] = layout(frame.area());
 
     chrome::tab_strip(frame, tabs, app, theme);
@@ -83,6 +88,48 @@ mod tests {
             .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn the_header_is_padded_and_ruled_on_a_normal_terminal() {
+        let rendered = draw(&App::new(), 100, 30);
+        let rows: Vec<&str> = rendered.lines().collect();
+
+        assert!(rows[0].trim().is_empty(), "a padding row above the tabs");
+        assert!(rows[1].contains("houston") && rows[1].contains("Sessions"));
+        assert!(rows[2].contains('─'), "a rule separating chrome from content");
+    }
+
+    /// A short terminal should lose the header's padding, never the body's
+    /// content.
+    #[test]
+    fn a_short_terminal_falls_back_to_a_single_header_row() {
+        let rendered = draw(&App::new(), 100, 10);
+        let rows: Vec<&str> = rendered.lines().collect();
+
+        assert!(rows[0].contains("houston"), "the tabs move up into row zero");
+        assert!(!rows[0].contains('─'));
+    }
+
+    #[test]
+    fn the_active_tab_is_a_filled_pill() {
+        let mut app = App::new();
+        app.select_tab(Tab::Board);
+
+        let theme = app.theme;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // The pill is padded, so the fill reaches beyond the label itself.
+        let filled = (0..buffer.area.width)
+            .filter(|x| buffer[(*x, 1)].style().bg == Some(theme.accent))
+            .count();
+
+        // `chars().count()`, not `len()` — `·` is two bytes and one cell, and
+        // a byte-length assertion here demanded one more cell than exists.
+        let expected = "  3·Board  ".chars().count();
+        assert_eq!(filled, expected, "the active tab should be a filled pill, padding included");
     }
 
     #[test]

@@ -6,6 +6,7 @@ use crate::{
     form::{Field, Form},
     pty::Size,
     session::{Focus, Sessions},
+    ui::{Theme, theme},
     vault::{Browser, Vault, browser::Mode as VaultMode},
     worktree::Worktree,
 };
@@ -119,6 +120,10 @@ pub struct App {
     /// app — and guessing at it cost a whole round of work.
     pub input_log: VecDeque<String>,
     pub show_inspector: bool,
+    /// The theme in force. Resolved once, not per frame.
+    pub theme: Theme,
+    /// Every theme available, for the Settings row.
+    pub themes: Vec<theme::Named>,
 }
 
 /// How many input events the inspector remembers.
@@ -140,6 +145,7 @@ pub mod fields {
     pub const WORKTREE_NAME: &str = "Worktree name";
     pub const VAULT: &str = "Vault folder";
     pub const AGENT_DIRECTORY: &str = "New sessions start in";
+    pub const THEME: &str = "Theme";
     pub const CREATE: &str = "Create";
     pub const MOUSE: &str = "Capture the mouse";
 }
@@ -149,9 +155,21 @@ impl App {
         let (config, config_error) = Config::load();
         let mut app = Self::with_config(config);
         app.notice = config_error;
+        app.reload_theme();
         app.load_vault();
         app.rebuild_settings();
         app
+    }
+
+    /// Re-resolves the theme from config and disk.
+    ///
+    /// Called when the setting changes, so a theme file you have just edited
+    /// takes effect without a restart.
+    pub fn reload_theme(&mut self) {
+        let (theme, available) = self.config.themes();
+        self.theme = theme;
+        self.themes = available;
+        self.dirty = true;
     }
 
     /// Rebuilds the Settings form from the current config.
@@ -168,6 +186,12 @@ impl App {
         self.settings = Form::new(vec![
             Field::directory(fields::VAULT, "~/.houston/vault", vault),
             Field::directory(fields::AGENT_DIRECTORY, "~/", agent),
+            Field::choice(
+                fields::THEME,
+                "",
+                self.themes.iter().map(|theme| theme.name.clone()).collect(),
+                self.config.theme.as_deref().unwrap_or("Dracula"),
+            ),
             Field::toggle(
                 fields::MOUSE,
                 "wheel scrolls sessions; off restores text selection",
@@ -223,6 +247,8 @@ impl App {
             worktree_selected: 0,
             input_log: VecDeque::new(),
             show_inspector: false,
+            theme: Theme::default(),
+            themes: Vec::new(),
         }
     }
 

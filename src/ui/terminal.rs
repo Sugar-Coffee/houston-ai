@@ -141,7 +141,7 @@ fn convert(color: TermColor, theme: Theme) -> Color {
         TermColor::Indexed(index) => Color::Indexed(index),
         TermColor::Named(named) => match named {
             NamedColor::Foreground | NamedColor::BrightForeground => theme.text,
-            NamedColor::Background => theme.surface,
+            NamedColor::Background => theme.terminal_background,
             NamedColor::Cursor => theme.accent,
             NamedColor::DimForeground => theme.dim,
             other => {
