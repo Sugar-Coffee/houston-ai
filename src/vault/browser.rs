@@ -72,6 +72,7 @@ pub struct Browser {
     history: Vec<NoteId>,
     mode: Mode,
     query: String,
+    wrap: bool,
 }
 
 impl Browser {
@@ -88,7 +89,22 @@ impl Browser {
             history: Vec::new(),
             mode: Mode::Browsing,
             query: String::new(),
+            wrap: true,
         }
+    }
+
+    /// Whether long lines are wrapped.
+    ///
+    /// Prose wants wrapping; a wide table does not, because wrapping destroys
+    /// the column alignment that makes it readable. `ratatui`'s `Paragraph`
+    /// applies one policy to the whole document, so until the renderer does
+    /// its own per-line wrapping this is a toggle rather than a decision.
+    pub const fn wraps(&self) -> bool {
+        self.wrap
+    }
+
+    pub const fn toggle_wrap(&mut self) {
+        self.wrap = !self.wrap;
     }
 
     pub const fn mode(&self) -> Mode {

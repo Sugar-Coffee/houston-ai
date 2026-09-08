@@ -12,10 +12,7 @@ pub use browser::Browser;
 pub use search::Matcher;
 
 use anyhow::{Context, Result};
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, path::PathBuf};
 use walkdir::WalkDir;
 
 /// Directories that are never notes, however deep they are nested.
@@ -201,20 +198,6 @@ fn is_skipped(name: &str) -> bool {
 fn stem_of(target: &str) -> &str {
     let last = target.rsplit('/').next().unwrap_or(target);
     last.strip_suffix(".md").unwrap_or(last)
-}
-
-/// Where the vault lives.
-///
-/// Checked in order: `HOUSTON_VAULT`, then the conventional location. Phase 8
-/// replaces this with a settings file.
-#[must_use]
-pub fn default_root() -> Option<PathBuf> {
-    if let Some(configured) = std::env::var_os("HOUSTON_VAULT") {
-        return Some(PathBuf::from(configured));
-    }
-    let home = std::env::var_os("HOME")?;
-    let candidate = Path::new(&home).join("Projects").join("houston");
-    candidate.is_dir().then_some(candidate)
 }
 
 #[cfg(test)]

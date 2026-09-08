@@ -1,9 +1,10 @@
 //! Application state.
 
 use crate::{
+    config::Config,
     pty::Size,
     session::{Focus, Sessions},
-    vault::{self, Browser, Vault, browser::Mode as VaultMode},
+    vault::{Browser, Vault, browser::Mode as VaultMode},
 };
 use std::path::PathBuf;
 
@@ -30,24 +31,21 @@ impl Tab {
             Self::Settings => "Settings",
         }
     }
-
-    /// Placeholder copy for views that are not built yet. Names the roadmap
-    /// phase, so the app itself says what is missing.
-    pub const fn placeholder(self) -> (&'static str, &'static str) {
-        match self {
-            Self::Sessions => ("Sessions", ""),
-            Self::Vault => ("Vault", ""),
-            Self::Board => ("Board", ""),
-            Self::Settings => ("Settings", "Phase 8 — providers, vault path, theme"),
-        }
-    }
 }
 
 pub struct App {
     pub tab: Tab,
     pub sessions: Sessions,
-    /// `None` when no vault could be found. The view says how to fix that.
+    /// `None` when the vault could not be opened. The view says how to fix it.
     pub browser: Option<Browser>,
+    pub config: Config,
+    /// Where `config` is persisted. A field rather than a lookup so tests can
+    /// point it somewhere harmless.
+    pub config_path: PathBuf,
+    /// Why the vault could not be opened, if it could not.
+    pub vault_error: Option<String>,
+    /// The path being typed in Settings. `None` when not editing.
+    pub editing_vault: Option<String>,
     /// Where new sessions start. The directory Houston was launched from.
     pub cwd: PathBuf,
     pub should_quit: bool,
@@ -60,17 +58,50 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
+        let (config, config_error) = Config::load();
+        let mut app = Self::with_config(config);
+        app.notice = config_error;
+        app.load_vault();
+        app
+    }
+
+    fn with_config(config: Config) -> Self {
         Self {
             tab: Tab::Sessions,
             sessions: Sessions::new(),
-            browser: vault::default_root()
-                .and_then(|root| Vault::open(root).ok())
-                .map(Browser::new),
+            browser: None,
+            config,
+            config_path: crate::config::config_path()
+                .unwrap_or_else(|_| PathBuf::from("houston-config.toml")),
+            vault_error: None,
+            editing_vault: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             should_quit: false,
             dirty: true,
             notice: None,
         }
+    }
+
+    /// Opens the configured vault, creating the default one if needed.
+    ///
+    /// ADR-0007: only the default location is created. A configured path that
+    /// is missing is reported, because it is almost certainly a typo.
+    pub fn load_vault(&mut self) {
+        self.vault_error = None;
+
+        match self.config.ensure_vault().and_then(Vault::open) {
+            Ok(vault) => self.browser = Some(Browser::new(vault)),
+            Err(error) => {
+                self.browser = None;
+                self.vault_error = Some(error.to_string());
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Whether keystrokes are filling in the Settings path field.
+    pub const fn is_editing_settings(&self) -> bool {
+        self.editing_vault.is_some()
     }
 
     /// Whether keystrokes belong to a child rather than to Houston.
@@ -81,6 +112,9 @@ impl App {
     /// Whether keystrokes are filling in a vault query rather than acting as
     /// commands. Typing `q` into a search box must not quit the app.
     pub fn is_typing(&self) -> bool {
+        if self.is_editing_settings() {
+            return true;
+        }
         self.tab == Tab::Vault
             && self.browser.as_ref().is_some_and(|browser| browser.mode() != VaultMode::Browsing)
     }
@@ -138,6 +172,7 @@ impl App {
                     binds.extend([("j/k", "select"), ("↵", "attach"), ("x", "close")]);
                 }
             }
+            Tab::Settings => binds.push(("e", "change vault")),
             Tab::Vault if self.browser.is_some() => {
                 binds.extend([
                     ("j/k", "select"),
@@ -146,6 +181,7 @@ impl App {
                     ("f", "search"),
                     ("y", "yank"),
                     ("i", "to session"),
+                    ("w", "wrap"),
                 ]);
             }
             _ => {}

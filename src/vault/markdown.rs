@@ -50,6 +50,20 @@ enum Block {
     Metadata,
 }
 
+/// Rows collected while a table is being parsed.
+///
+/// Tables have to be buffered: column widths are not known until the last row
+/// has been seen, and a streaming renderer would have already emitted the
+/// first. 39% of the notes in the real vault contain one, so they are worth
+/// aligning properly rather than separating with pipes and hoping.
+#[derive(Default)]
+struct Table {
+    rows: Vec<Vec<Vec<Span<'static>>>>,
+    row: Vec<Vec<Span<'static>>>,
+    /// Number of rows belonging to the header, so a divider can go under them.
+    header_rows: usize,
+}
+
 struct Renderer {
     theme: Theme,
     /// Wikilink targets lifted out before parsing, indexed by sentinel number.
@@ -64,6 +78,7 @@ struct Renderer {
     /// Nesting depth and per-level counters for lists.
     list_stack: Vec<Option<u64>>,
     quote_depth: usize,
+    table: Option<Table>,
 }
 
 /// Marks where a wikilink was lifted out of the source. NUL is used because it
@@ -123,6 +138,7 @@ pub fn parse(source: &str, theme: Theme) -> Document {
         code_inline: false,
         list_stack: Vec::new(),
         quote_depth: 0,
+        table: None,
     };
 
     for event in Parser::new_ext(&source, options) {
@@ -223,20 +239,18 @@ impl Renderer {
             Tag::MetadataBlock(_) => {
                 self.block = Block::Metadata;
             }
-            Tag::TableCell => {
-                if !self.pending.is_empty() {
-                    self.pending.push(Span::styled(" │ ", Style::default().fg(self.theme.dim)));
+            Tag::Table(_) => {
+                self.flush();
+                self.table = Some(Table::default());
+            }
+            Tag::TableCell => self.pending.clear(),
+            Tag::TableRow => {
+                if let Some(table) = self.table.as_mut() {
+                    table.row.clear();
                 }
             }
-            Tag::Table(_)
-            | Tag::TableRow
-            | Tag::FootnoteDefinition(_)
-            | Tag::HtmlBlock
-            | Tag::DefinitionList
-            | Tag::DefinitionListTitle
-            | Tag::DefinitionListDefinition
-            | Tag::Superscript
-            | Tag::Subscript => {}
+            // Structural tags with no styling of their own.
+            _ => {}
         }
     }
 
@@ -263,7 +277,32 @@ impl Renderer {
                     self.blank();
                 }
             }
-            TagEnd::Item | TagEnd::TableRow | TagEnd::TableHead => self.flush(),
+            TagEnd::Item => self.flush(),
+            TagEnd::TableCell => {
+                let cell = std::mem::take(&mut self.pending);
+                if let Some(table) = self.table.as_mut() {
+                    table.row.push(cell);
+                }
+            }
+            TagEnd::TableRow | TagEnd::TableHead => {
+                let header = tag == TagEnd::TableHead;
+                if let Some(table) = self.table.as_mut() {
+                    let row = std::mem::take(&mut table.row);
+                    if !row.is_empty() {
+                        table.rows.push(row);
+                        if header {
+                            table.header_rows = table.rows.len();
+                        }
+                    }
+                }
+                if header {
+                    self.inline.remove(Modifier::BOLD);
+                }
+            }
+            TagEnd::Table => {
+                self.emit_table();
+                self.blank();
+            }
             TagEnd::Emphasis => self.inline.remove(Modifier::ITALIC),
             TagEnd::Strong => self.inline.remove(Modifier::BOLD),
             TagEnd::Strikethrough => self.inline.remove(Modifier::CROSSED_OUT),
@@ -420,6 +459,56 @@ impl Renderer {
         self.document.lines.push(Line::from(spans));
     }
 
+    /// Emits a buffered table with its columns lined up.
+    fn emit_table(&mut self) {
+        let Some(table) = self.table.take() else { return };
+        if table.rows.is_empty() {
+            return;
+        }
+
+        let columns = table.rows.iter().map(Vec::len).max().unwrap_or(0);
+        let widths: Vec<usize> = (0..columns)
+            .map(|column| {
+                table
+                    .rows
+                    .iter()
+                    .filter_map(|row| row.get(column))
+                    .map(|cell| cell_width(cell))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        let divider = Style::default().fg(self.theme.dim);
+
+        for (index, row) in table.rows.iter().enumerate() {
+            let mut spans = Vec::new();
+            for (column, width) in widths.iter().enumerate() {
+                if column > 0 {
+                    spans.push(Span::styled(" │ ", divider));
+                }
+                match row.get(column) {
+                    Some(cell) => {
+                        let padding = width.saturating_sub(cell_width(cell));
+                        spans.extend(cell.iter().cloned());
+                        if padding > 0 {
+                            spans.push(Span::raw(" ".repeat(padding)));
+                        }
+                    }
+                    None => spans.push(Span::raw(" ".repeat(*width))),
+                }
+            }
+            self.document.lines.push(Line::from(spans));
+
+            // A rule under the header, drawn to the same widths.
+            if index + 1 == table.header_rows {
+                let rule =
+                    widths.iter().map(|width| "─".repeat(*width)).collect::<Vec<_>>().join("─┼─");
+                self.document.lines.push(Line::from(Span::styled(rule, divider)));
+            }
+        }
+    }
+
     /// A blank separator, never two in a row.
     fn blank(&mut self) {
         if self.document.lines.last().is_some_and(|line| line.spans.is_empty()) {
@@ -427,6 +516,15 @@ impl Renderer {
         }
         self.document.lines.push(Line::default());
     }
+}
+
+/// Display width of a cell.
+///
+/// Counts characters rather than terminal columns: a CJK note would misalign,
+/// but adding `unicode-width` for a vault that is entirely English is not
+/// worth the dependency. Revisit if that stops being true.
+fn cell_width(cell: &[Span<'_>]) -> usize {
+    cell.iter().map(|span| span.content.chars().count()).sum()
 }
 
 const fn heading_level(level: HeadingLevel) -> u8 {
@@ -510,6 +608,36 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("1. first")));
         assert!(rendered.iter().any(|line| line.contains("2. second")));
         assert!(rendered.iter().any(|line| line.contains("3. third")));
+    }
+
+    #[test]
+    fn tables_line_their_columns_up() {
+        let document =
+            render("| Name | Status |\n|---|---|\n| a | ok |\n| much-longer-name | pending |");
+        let lines = text(&document);
+
+        let rows: Vec<&String> = lines.iter().filter(|line| line.contains('│')).collect();
+        assert_eq!(rows.len(), 3, "header plus two body rows, got {lines:?}");
+
+        // Every row's separator must land in the same column, which is the
+        // whole point of buffering the table before emitting it.
+        let positions: Vec<usize> = rows.iter().map(|row| row.find('│').unwrap()).collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] == pair[1]),
+            "columns are misaligned: {positions:?}"
+        );
+
+        assert!(lines.iter().any(|line| line.contains('┼')), "a rule sits under the header");
+    }
+
+    #[test]
+    fn a_ragged_table_does_not_panic_or_misalign() {
+        // Rows with fewer cells than the header are common in hand-written
+        // notes and must not take the renderer down.
+        let document = render("| a | b | c |\n|---|---|---|\n| only-one |\n| x | y | z |");
+        let lines = text(&document);
+        let rows = lines.iter().filter(|line| line.contains('│')).count();
+        assert_eq!(rows, 3);
     }
 
     #[test]

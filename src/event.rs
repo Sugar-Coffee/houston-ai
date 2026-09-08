@@ -127,9 +127,15 @@ fn on_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// While a vault query is being typed, ordinary letters are query text. `q`
-/// must not quit and `1` must not switch view.
+/// While text is being typed — a vault query, or the Settings path field —
+/// ordinary letters are content. `q` must not quit and `1` must not switch
+/// view.
 fn on_key_typing(app: &mut App, key: KeyEvent) {
+    if app.is_editing_settings() {
+        on_key_editing_vault(app, key);
+        return;
+    }
+
     let Some(browser) = app.browser.as_mut() else { return };
     app.dirty = true;
 
@@ -195,7 +201,76 @@ fn on_key_browsing(app: &mut App, key: KeyEvent) {
         }
         _ if app.tab == Tab::Sessions => on_key_sessions(app, key),
         _ if app.tab == Tab::Vault => on_key_vault(app, key),
+        _ if app.tab == Tab::Settings => on_key_settings(app, key),
         _ => {}
+    }
+}
+
+fn on_key_settings(app: &mut App, key: KeyEvent) {
+    if key.code == KeyCode::Char('e') {
+        // Seed the field with what is in use, so editing is a tweak rather
+        // than a retype.
+        app.editing_vault = Some(
+            app.config
+                .vault_root()
+                .map_or_else(|_| String::new(), |root| root.display().to_string()),
+        );
+        app.dirty = true;
+    }
+}
+
+/// Editing the vault path in Settings.
+fn on_key_editing_vault(app: &mut App, key: KeyEvent) {
+    app.dirty = true;
+
+    match key.code {
+        KeyCode::Esc => app.editing_vault = None,
+        KeyCode::Backspace => {
+            if let Some(draft) = app.editing_vault.as_mut() {
+                draft.pop();
+            }
+        }
+        KeyCode::Char(character) => {
+            if let Some(draft) = app.editing_vault.as_mut() {
+                draft.push(character);
+            }
+        }
+        KeyCode::Enter => commit_vault_path(app),
+        _ => {}
+    }
+}
+
+/// Saves the typed vault path and reopens the vault.
+///
+/// The old vault is kept if the new path does not work, so a typo cannot leave
+/// you with no vault at all.
+fn commit_vault_path(app: &mut App) {
+    let Some(draft) = app.editing_vault.take() else { return };
+    let draft = draft.trim().to_string();
+
+    let previous = app.config.vault.clone();
+    // An empty field means "go back to the default", which is the only way to
+    // undo a bad path without editing the config file by hand.
+    app.config.vault = (!draft.is_empty()).then(|| std::path::PathBuf::from(&draft));
+
+    app.load_vault();
+
+    if let Some(error) = app.vault_error.clone() {
+        app.config.vault = previous;
+        app.load_vault();
+        app.notify(error);
+        return;
+    }
+
+    match app.config.save_to(&app.config_path) {
+        Ok(()) => {
+            let count = app.browser.as_ref().map_or(0, |browser| browser.vault.len());
+            app.notify(format!(
+                "vault set — {count} notes indexed, saved to {}",
+                app.config_path.display()
+            ));
+        }
+        Err(error) => app.notify(format!("vault opened but could not save config: {error}")),
     }
 }
 
@@ -244,6 +319,7 @@ fn on_key_vault(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('u') if ctrl => browser.scroll(-15),
                 KeyCode::PageDown => browser.scroll(15),
                 KeyCode::PageUp => browser.scroll(-15),
+                KeyCode::Char('w') => browser.toggle_wrap(),
                 KeyCode::Char('g') => browser.scroll_to_top(),
                 KeyCode::Char('G') => browser.scroll_to_bottom(),
                 _ => {}
@@ -409,6 +485,71 @@ mod tests {
 
         assert!(app.notice.as_deref().is_some_and(|notice| notice.contains("no session")));
         assert_eq!(app.tab, Tab::Vault, "a failed send must not switch view");
+    }
+
+    #[test]
+    fn editing_the_vault_path_captures_every_key() {
+        let mut app = App::new();
+        app.select_tab(Tab::Settings);
+        on_key(&mut app, press(KeyCode::Char('e')));
+
+        assert!(app.is_editing_settings());
+        assert!(!app.editing_vault.as_ref().unwrap().is_empty(), "seeded with the current path");
+
+        // `q` and `1` are commands everywhere else.
+        for character in "q1".chars() {
+            on_key(&mut app, press(KeyCode::Char(character)));
+        }
+        assert!(!app.should_quit);
+        assert_eq!(app.tab, Tab::Settings);
+        assert!(app.editing_vault.as_ref().unwrap().ends_with("q1"));
+
+        on_key(&mut app, press(KeyCode::Esc));
+        assert!(!app.is_editing_settings(), "escape abandons the edit");
+    }
+
+    #[test]
+    fn a_bad_vault_path_is_rejected_and_the_old_one_kept() {
+        let mut app = App::new();
+        app.config_path = std::env::temp_dir().join("houston-bad-path-config.toml");
+        let before = app.config.vault.clone();
+        let indexed_before = app.browser.as_ref().map(|browser| browser.vault.len());
+
+        app.select_tab(Tab::Settings);
+        app.editing_vault = Some("/tmp/houston-nope-not-here".to_string());
+        commit_vault_path(&mut app);
+
+        assert!(app.notice.is_some(), "the failure is reported");
+        assert_eq!(app.config.vault, before, "the config is rolled back");
+        assert_eq!(
+            app.browser.as_ref().map(|browser| browser.vault.len()),
+            indexed_before,
+            "a typo must not leave you with no vault"
+        );
+    }
+
+    #[test]
+    fn pointing_at_a_real_folder_switches_the_vault() {
+        let root = std::env::temp_dir().join("houston-settings-switch");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("only-note.md"), "# Only note").unwrap();
+
+        let mut app = App::new();
+        // Never the real config: an earlier version of this test repointed a
+        // live install at a temp folder that it then deleted.
+        app.config_path = std::env::temp_dir().join("houston-settings-switch-config.toml");
+
+        app.select_tab(Tab::Settings);
+        app.editing_vault = Some(root.display().to_string());
+        commit_vault_path(&mut app);
+
+        assert_eq!(app.browser.as_ref().unwrap().vault.len(), 1);
+        assert!(app.vault_error.is_none());
+        assert!(app.config_path.exists(), "the setting is persisted");
+
+        std::fs::remove_file(&app.config_path).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

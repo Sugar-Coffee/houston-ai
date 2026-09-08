@@ -7,6 +7,7 @@
 pub mod board;
 mod chrome;
 pub mod sessions;
+pub mod settings;
 pub mod terminal;
 mod theme;
 pub mod vault;
@@ -40,7 +41,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Tab::Sessions => sessions::render(frame, body, &app.sessions, theme),
         Tab::Vault => vault::render(frame, body, app.browser.as_ref(), theme),
         Tab::Board => board::render(frame, body, &app.sessions, theme),
-        Tab::Settings => chrome::placeholder(frame, body, app, theme),
+        Tab::Settings => settings::render(frame, body, app, theme),
     }
 
     chrome::keybind_bar(frame, footer, app, theme);
@@ -83,7 +84,29 @@ mod tests {
         let mut app = App::new();
         app.select_tab(Tab::Settings);
         let rendered = draw(&app, 100, 24);
-        assert!(rendered.contains("providers, vault path, theme"));
+        assert!(rendered.contains("Agents detected"));
+    }
+
+    #[test]
+    fn settings_shows_where_the_vault_is_and_how_to_change_it() {
+        let mut app = App::new();
+        app.select_tab(Tab::Settings);
+
+        let rendered = draw(&app, 110, 30);
+        assert!(rendered.contains("Vault"));
+        assert!(rendered.contains("change the vault folder"));
+        assert!(rendered.contains("HOUSTON_VAULT"), "the override is discoverable");
+    }
+
+    #[test]
+    fn settings_turns_into_an_edit_field_while_typing() {
+        let mut app = App::new();
+        app.select_tab(Tab::Settings);
+        app.editing_vault = Some("/tmp/somewhere-else".to_string());
+
+        let rendered = draw(&app, 110, 30);
+        assert!(rendered.contains("/tmp/somewhere-else"));
+        assert!(app.is_typing(), "keys must go to the field, not act as commands");
     }
 
     #[test]

@@ -162,7 +162,7 @@ fn render_note(frame: &mut Frame, area: Rect, browser: &Browser, theme: Theme) {
                 Style::default().fg(theme.dim),
             )),
             Line::from(Span::styled(
-                "y yank path      i send to session",
+                "y yank path      i send to session      w wrap",
                 Style::default().fg(theme.dim),
             )),
         ];
@@ -183,12 +183,10 @@ fn render_note(frame: &mut Frame, area: Rect, browser: &Browser, theme: Theme) {
         return;
     }
 
-    frame.render_widget(
-        Paragraph::new(open.document.lines.clone())
-            .wrap(Wrap { trim: false })
-            .scroll((open.scroll, 0)),
-        inner,
-    );
+    let paragraph = Paragraph::new(open.document.lines.clone()).scroll((open.scroll, 0));
+    let paragraph = if browser.wraps() { paragraph.wrap(Wrap { trim: false }) } else { paragraph };
+
+    frame.render_widget(paragraph, inner);
 }
 
 fn truncate(text: &str, limit: usize) -> String {
