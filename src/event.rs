@@ -546,6 +546,10 @@ fn on_key_form(app: &mut App, key: KeyEvent) {
     }
 
     match key.code {
+        // Tab belongs to the view switcher everywhere else, so in Settings it
+        // keeps that job and the arrows walk the list. A modal form has no
+        // views to switch between, so there Tab moves between fields.
+        KeyCode::Tab | KeyCode::BackTab if !modal => on_key_browsing(app, key),
         KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => form.move_focus(true),
         KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => form.move_focus(false),
         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -1282,6 +1286,41 @@ mod tests {
 
         assert!(app.notice.as_deref().is_some_and(|notice| notice.contains("no session")));
         assert_eq!(app.tab, Tab::Vault, "a failed send must not switch view");
+    }
+
+    /// Tab is the view switcher everywhere else, so Settings must not steal
+    /// it — the arrows are what you reach for in a list.
+    #[test]
+    fn tab_still_switches_view_from_settings() {
+        let mut app = App::new();
+        app.select_tab(Tab::Settings);
+
+        on_key(&mut app, press(KeyCode::Tab));
+        assert_ne!(app.tab, Tab::Settings, "tab should leave Settings, not walk its rows");
+    }
+
+    #[test]
+    fn arrows_walk_the_settings_list() {
+        let mut app = App::new();
+        app.select_tab(Tab::Settings);
+        let first = app.settings.focused().unwrap().label;
+
+        on_key(&mut app, press(KeyCode::Down));
+        assert_ne!(app.settings.focused().unwrap().label, first);
+        assert_eq!(app.tab, Tab::Settings, "and stay in Settings");
+    }
+
+    /// A modal form has no views to switch between, so Tab keeps moving
+    /// between its fields.
+    #[test]
+    fn tab_still_moves_between_fields_in_a_modal_form() {
+        let mut app = App::new();
+        app.open_new_session_form();
+        let first = app.form.as_ref().unwrap().focused().unwrap().label;
+
+        on_key(&mut app, press(KeyCode::Tab));
+        assert_ne!(app.form.as_ref().unwrap().focused().unwrap().label, first);
+        assert!(app.form.is_some(), "and does not switch view out from under you");
     }
 
     #[test]
