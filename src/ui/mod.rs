@@ -24,6 +24,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
 };
 
+#[cfg(test)]
+use ratatui::style::Color;
+
 /// Splits the screen into (header, body, keybind bar).
 ///
 /// Shared with the event loop, which needs the body rect to size child grids —
@@ -42,6 +45,16 @@ pub fn layout(area: Rect) -> [Rect; 3] {
 
 pub fn render(frame: &mut Frame, app: &App) {
     let theme = app.theme;
+
+    // Paint everything first. Without this the body shows the user's terminal
+    // background through, and a theme can only recolour text — which made
+    // light mode on a dark terminal look broken rather than light.
+    frame.render_widget(
+        ratatui::widgets::Block::default()
+            .style(ratatui::style::Style::default().bg(theme.surface)),
+        frame.area(),
+    );
+
     let [tabs, body, footer] = layout(frame.area());
 
     chrome::tab_strip(frame, tabs, app, theme);
@@ -88,6 +101,27 @@ mod tests {
             .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// A theme has to reach every cell, or switching to light mode leaves
+    /// dark text on whatever the terminal happens to be.
+    #[test]
+    fn the_whole_frame_is_painted_by_the_theme() {
+        let app = App::new();
+        let theme = app.theme;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let unpainted = buffer
+            .content()
+            .iter()
+            .filter(|cell| cell.style().bg.is_none() || cell.style().bg == Some(Color::Reset))
+            .count();
+
+        assert_eq!(unpainted, 0, "{unpainted} cells show the terminal through");
+        let _ = theme;
     }
 
     #[test]

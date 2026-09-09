@@ -64,10 +64,17 @@ pub struct Theme {
 
     /// What a child process's *default* background paints as.
     ///
-    /// Usually [`Color::Reset`], which lets your own terminal background show
-    /// through — a session then matches every other pane instead of sitting in
-    /// a slightly different shade of dark. Themes that want to own the whole
-    /// window can set it explicitly.
+    /// Normally the theme's own `surface`, so a session matches every other
+    /// pane and a theme actually changes how the app looks. Set it to
+    /// `default` in a theme file to let your terminal's own background show
+    /// through instead.
+    ///
+    /// **Superseded an earlier decision.** This defaulted to [`Color::Reset`]
+    /// so sessions would inherit the terminal, which fixed one inconsistency
+    /// and created a worse one: with the body unpainted too, a theme could
+    /// only recolour text. Light mode on a dark terminal was the proof — dark
+    /// text on a dark background. A theme has to own the surface to be a
+    /// theme.
     pub terminal_background: Color,
 }
 
@@ -95,7 +102,7 @@ impl Theme {
             heading: Color::Rgb(0xFF, 0x79, 0xC6),
             link: Color::Rgb(0x8B, 0xE9, 0xFD),
             code: Color::Rgb(0xF1, 0xFA, 0x8C),
-            terminal_background: Color::Reset,
+            terminal_background: Color::Rgb(0x28, 0x2A, 0x36),
         }
     }
 
@@ -114,7 +121,7 @@ impl Theme {
             heading: Color::Rgb(0xF9, 0x26, 0x72),
             link: Color::Rgb(0x66, 0xD9, 0xEF),
             code: Color::Rgb(0xE6, 0xDB, 0x74),
-            terminal_background: Color::Reset,
+            terminal_background: Color::Rgb(0x27, 0x28, 0x22),
         }
     }
 
@@ -133,7 +140,7 @@ impl Theme {
             heading: Color::Rgb(0xB4, 0x8E, 0xAD),
             link: Color::Rgb(0x81, 0xA1, 0xC1),
             code: Color::Rgb(0xD0, 0x87, 0x70),
-            terminal_background: Color::Reset,
+            terminal_background: Color::Rgb(0x2E, 0x34, 0x40),
         }
     }
 
@@ -154,7 +161,7 @@ impl Theme {
             heading: Color::Rgb(0xA6, 0x22, 0x7E),
             link: Color::Rgb(0x1D, 0x66, 0x92),
             code: Color::Rgb(0x8A, 0x63, 0x00),
-            terminal_background: Color::Reset,
+            terminal_background: Color::Rgb(0xFD, 0xF6, 0xE3),
         }
     }
 
@@ -178,7 +185,7 @@ impl Theme {
             heading: Color::Rgb(0xE6, 0xE8, 0xEA),
             link: Color::Rgb(0xA8, 0xAE, 0xB5),
             code: Color::Rgb(0x9A, 0xA0, 0xA7),
-            terminal_background: Color::Reset,
+            terminal_background: Color::Rgb(0x14, 0x15, 0x18),
         }
     }
 }
@@ -275,8 +282,13 @@ impl File {
             value.map_or(Ok(fallback), |text| parse_colour(&text))
         };
 
+        // Resolved first: a file that names a surface but not a terminal
+        // background should have its sessions match that surface, not
+        // Dracula's.
+        let surface = pick(self.surface, base.surface)?;
+
         Ok(Theme {
-            surface: pick(self.surface, base.surface)?,
+            surface,
             raised: pick(self.raised, base.raised)?,
             highlight: pick(self.highlight, base.highlight)?,
             text: pick(self.text, base.text)?,
@@ -288,7 +300,7 @@ impl File {
             heading: pick(self.heading, base.heading)?,
             link: pick(self.link, base.link)?,
             code: pick(self.code, base.code)?,
-            terminal_background: pick(self.terminal_background, base.terminal_background)?,
+            terminal_background: pick(self.terminal_background, surface)?,
         })
     }
 }
@@ -353,9 +365,10 @@ heading   = "#FF79C6"   # markdown structure
 link      = "#8BE9FD"   # followable
 code      = "#F1FA8C"   # literal
 
-# What a session's default background paints as. "default" lets your own
-# terminal background show through, which is usually what you want.
-terminal_background = "default"
+# What a session's default background paints as. Defaults to `surface` above,
+# so sessions match the rest of the app. Set it to "default" if you would
+# rather your own terminal background showed through.
+# terminal_background = "default"
 "##;
 
 #[cfg(test)]
@@ -405,18 +418,43 @@ mod tests {
         assert!(u32::from(r) + u32::from(g) + u32::from(b) < 300, "and dark text");
     }
 
-    /// A session should match the rest of the app rather than sitting in a
-    /// slightly different shade — which is what a hardcoded surface did.
+    /// A theme that cannot change the background is not a theme — light mode
+    /// on a dark terminal was dark text on a dark background.
     #[test]
-    fn themes_leave_the_terminal_background_alone_by_default() {
+    fn every_theme_owns_its_background() {
         for theme in built_in() {
             assert_eq!(
-                theme.theme.terminal_background,
-                Color::Reset,
-                "{} paints over the user's terminal background",
+                theme.theme.terminal_background, theme.theme.surface,
+                "{} lets the terminal show through, so switching to it changes little",
                 theme.name
             );
+            assert_ne!(theme.theme.surface, Color::Reset, "{}", theme.name);
         }
+    }
+
+    #[test]
+    fn a_theme_file_naming_only_a_surface_gets_matching_sessions() {
+        let path = std::env::temp_dir().join("houston-theme-surface-only.toml");
+        std::fs::write(&path, "name = \"Surface\"\nsurface = \"#101010\"\n").unwrap();
+
+        let loaded = load(&path).unwrap();
+        assert_eq!(
+            loaded.theme.terminal_background,
+            Color::Rgb(0x10, 0x10, 0x10),
+            "sessions should match the surface the file asked for"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_theme_can_still_ask_for_the_terminals_own_background() {
+        let path = std::env::temp_dir().join("houston-theme-passthrough.toml");
+        std::fs::write(&path, "terminal_background = \"default\"\n").unwrap();
+
+        assert_eq!(load(&path).unwrap().theme.terminal_background, Color::Reset);
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
