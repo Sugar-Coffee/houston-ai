@@ -491,20 +491,26 @@ impl Sessions {
     /// hooks is reported but does not stop the session: a working agent with
     /// no status is far better than no agent.
     pub fn spawn_agent(&mut self, cwd: &Path, size: Size) -> Result<SessionId> {
-        let provider = provider::default();
-        let (kind, spec) = provider.map_or_else(
-            // No agent CLI installed: fall back to a shell rather than failing.
-            || {
-                (
-                    Kind::Shell,
-                    LaunchSpec::command(provider::login_shell(), Vec::new(), cwd.to_path_buf()),
-                )
-            },
-            |provider: Provider| {
-                (Kind::Agent { provider: provider.label }, provider.launch(cwd.to_path_buf()))
-            },
-        );
+        let (kind, spec) = agent_launch(cwd);
+        self.spawn_agent_as(kind, spec, cwd, size)
+    }
 
+    /// Spawns an agent session with the kind already decided.
+    ///
+    /// Split from [`Self::spawn_agent`] for the same reason `restore_spec` is
+    /// split from `restore`: everything interesting here — displacing another
+    /// agent's hooks, marking it stale, warning about it — happens only when
+    /// the kind is `Agent`, and the kind depends on whether a coding agent is
+    /// installed on this machine. The collision test used to call the
+    /// detecting version, so it passed on a laptop with Claude Code and failed
+    /// on CI, where the fallback to a shell meant no collision ever happened.
+    fn spawn_agent_as(
+        &mut self,
+        kind: Kind,
+        spec: LaunchSpec,
+        cwd: &Path,
+        size: Size,
+    ) -> Result<SessionId> {
         let name = match &kind {
             Kind::Agent { provider } => (*provider).to_string(),
             Kind::Shell => directory_label(cwd),
@@ -772,6 +778,24 @@ fn install_hooks(cwd: &Path, id: SessionId) -> Result<()> {
 }
 
 /// A short label for a working directory: its last component.
+/// What to launch for a new agent session on this machine.
+///
+/// Falls back to a shell when no agent CLI is installed, rather than failing:
+/// a terminal in the right directory is more use than an error.
+fn agent_launch(cwd: &Path) -> (Kind, LaunchSpec) {
+    provider::default().map_or_else(
+        || {
+            (
+                Kind::Shell,
+                LaunchSpec::command(provider::login_shell(), Vec::new(), cwd.to_path_buf()),
+            )
+        },
+        |provider: Provider| {
+            (Kind::Agent { provider: provider.label }, provider.launch(cwd.to_path_buf()))
+        },
+    )
+}
+
 fn directory_label(path: &Path) -> String {
     path.file_name().map_or_else(|| "shell".to_string(), |name| name.to_string_lossy().into_owned())
 }
@@ -1140,7 +1164,19 @@ mod collision_tests {
         assert!(!sessions.items[0].status_is_stale(), "it owns its hooks for now");
 
         // A second agent in the same directory overwrites its hooks.
-        sessions.spawn_agent(&directory, Size::new(24, 80)).unwrap();
+        //
+        // Spawned as an agent explicitly rather than by detection. A CI runner
+        // has no coding agent installed, so `spawn_agent` would fall back to a
+        // shell there — and a shell displaces nobody, so this test would only
+        // ever have passed on a developer's laptop.
+        sessions
+            .spawn_agent_as(
+                Kind::Agent { provider: "Claude Code" },
+                LaunchSpec::command(provider::login_shell(), Vec::new(), directory.clone()),
+                &directory,
+                Size::new(24, 80),
+            )
+            .unwrap();
 
         assert!(
             sessions.items[0].status_is_stale(),

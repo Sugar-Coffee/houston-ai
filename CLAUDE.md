@@ -161,6 +161,20 @@ tests a function in isolation can see that. When a feature crosses a process
 boundary, test it across the boundary: `tests/hook_payload.rs` spawns the real
 binary. Confirm such a test fails against the bug before trusting it.
 
+**A test that spawns an agent only passes where one is installed.**
+`spawn_agent` falls back to a shell when no coding agent CLI is found, and a
+shell displaces nobody — so the hook-collision test passed on a laptop with
+Claude Code and failed the first time CI ran it. `spawn_agent_as` takes the
+kind as a parameter for exactly this reason, the same way `restore_spec` is
+split from `restore`.
+
+You can see what CI will see without waiting for it:
+
+```sh
+cargo test --no-run
+env -i HOME="$HOME" PATH=/usr/bin:/bin TMPDIR=/tmp target/debug/deps/houston-<hash>
+```
+
 ## Two habits worth keeping
 
 **Evidence over assertion.** "This is slow" needs a benchmark; "nobody uses
