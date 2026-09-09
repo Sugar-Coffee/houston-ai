@@ -110,6 +110,8 @@ pub struct App {
     /// The Settings view, which *is* a form — a menu of fields you move
     /// through and press Return to edit.
     pub settings: Form,
+    /// The open theme picker, if any.
+    pub theme_picker: Option<ThemePicker>,
     /// The open diff, if any. Captured once on open; see [`crate::diff::View`].
     pub diff: Option<crate::diff::View>,
     /// The worktree manager's contents, loaded when it opens.
@@ -141,6 +143,17 @@ pub enum FormPurpose {
     NewSession,
     /// Land the named worktree: commit, push, open a PR, remove.
     Land(String),
+}
+
+/// The theme picker's state.
+///
+/// `original` is what to go back to on Esc. Held here rather than read from
+/// config on cancel because the preview does *not* touch config — a theme you
+/// scrolled past should not survive a crash as your setting.
+#[derive(Debug, Clone)]
+pub struct ThemePicker {
+    pub selected: usize,
+    pub original: Option<String>,
 }
 
 /// Field labels, so the form and the code that reads it cannot drift apart.
@@ -283,6 +296,81 @@ impl App {
         self.dirty = true;
     }
 
+    /// Adopts whatever `config.theme` names from the already-loaded list.
+    ///
+    /// Distinct from `reload_theme`, which re-reads the disk. Used when the
+    /// list is already in hand and only the choice has moved.
+    pub fn reload_theme_from_list(&mut self) {
+        self.theme = self
+            .config
+            .theme
+            .as_deref()
+            .and_then(|name| self.themes.iter().find(|theme| theme.name == name))
+            .map_or_else(Theme::default, |named| named.theme);
+        self.dirty = true;
+    }
+
+    /// Opens the theme picker, previewing as you move through it.
+    pub fn open_theme_picker(&mut self) {
+        if self.themes.is_empty() {
+            return self.notify("no themes are available");
+        }
+
+        let current = self.config.theme.clone();
+        let selected = current
+            .as_deref()
+            .and_then(|name| self.themes.iter().position(|theme| theme.name == name))
+            .unwrap_or(0);
+
+        self.theme_picker = Some(ThemePicker { selected, original: current });
+        self.dirty = true;
+    }
+
+    /// Moves the picker, repainting the app in whatever is now under the
+    /// cursor.
+    ///
+    /// The preview is the feature. Cycling a hidden value and pressing Return
+    /// to find out what you got is how this worked before, and it made the
+    /// eighteen themes nobody had seen effectively invisible.
+    pub fn move_theme_picker(&mut self, forward: bool) {
+        let count = self.themes.len();
+        let Some(picker) = self.theme_picker.as_mut() else { return };
+        if count == 0 {
+            return;
+        }
+
+        picker.selected = if forward {
+            (picker.selected + 1) % count
+        } else {
+            (picker.selected + count - 1) % count
+        };
+
+        self.theme = self.themes[picker.selected].theme;
+        self.dirty = true;
+    }
+
+    /// Keeps the previewed theme.
+    pub fn accept_theme_picker(&mut self) -> Option<String> {
+        let picker = self.theme_picker.take()?;
+        let chosen = self.themes.get(picker.selected)?.name.clone();
+
+        self.config.theme = Some(chosen.clone());
+        self.theme = self.themes[picker.selected].theme;
+        self.rebuild_settings();
+        self.dirty = true;
+        Some(chosen)
+    }
+
+    /// Puts back whatever was in force before the picker opened.
+    pub fn cancel_theme_picker(&mut self) {
+        let Some(picker) = self.theme_picker.take() else { return };
+
+        // `config.theme` was never touched by the preview, so putting it back
+        // is a matter of re-reading it.
+        self.config.theme = picker.original;
+        self.reload_theme_from_list();
+    }
+
     /// Opens the landing form for a worktree.
     ///
     /// The title names the branch and where it is going, because pushing and
@@ -344,6 +432,7 @@ impl App {
             form: None,
             form_purpose: FormPurpose::None,
             settings: Form::new(Vec::new()),
+            theme_picker: None,
             diff: None,
             worktrees: None,
             worktree_selected: 0,
@@ -391,12 +480,17 @@ impl App {
         if self.form.is_some() {
             return InputFocus::Form;
         }
+        // Before Settings-as-a-form, since the picker is opened *from* Settings
+        // and would otherwise never see a keystroke.
+        if self.theme_picker.is_some() {
+            return InputFocus::Overlay;
+        }
         // Settings is a form too, so editing a row there takes the keyboard
         // the same way — otherwise `q` in a path would quit the app.
         if self.tab == Tab::Settings {
             return InputFocus::Form;
         }
-        if self.worktrees.is_some() || self.diff.is_some() {
+        if self.worktrees.is_some() || self.diff.is_some() || self.theme_picker.is_some() {
             return InputFocus::Overlay;
         }
         if self.renaming.is_some() || self.is_vault_query() {
@@ -540,6 +634,9 @@ impl App {
                 ("", "all other keys go to the session"),
             ]),
             InputFocus::Text => Some(vec![("\u{21b5}", "accept"), ("esc", "cancel")]),
+            InputFocus::Overlay if self.theme_picker.is_some() => {
+                Some(vec![("j/k", "preview"), ("\u{21b5}", "keep"), ("esc", "revert")])
+            }
             InputFocus::Overlay if self.diff.is_some() => Some(vec![
                 ("j/k", "scroll"),
                 ("u/d", "page"),
@@ -701,6 +798,65 @@ mod tests {
         assert!(
             !form.is_on(fields::REMOVE),
             "removing the directory is the one step here that cannot be undone"
+        );
+    }
+
+    /// The whole point of the picker: you see the theme before you commit to
+    /// it.
+    #[test]
+    fn moving_through_the_picker_repaints_the_app() {
+        let mut app = App::new();
+        app.themes = crate::ui::theme::built_in();
+        app.open_theme_picker();
+
+        let before = app.theme;
+        app.move_theme_picker(true);
+
+        assert_ne!(app.theme, before, "the app is drawn in whatever is under the cursor");
+        assert!(app.config.theme.is_none(), "previewing must not write to config");
+    }
+
+    #[test]
+    fn escaping_the_picker_puts_the_old_theme_back() {
+        let mut app = App::new();
+        app.themes = crate::ui::theme::built_in();
+        app.config.theme = Some("Nord".to_string());
+        app.reload_theme_from_list();
+
+        let before = app.theme;
+        app.open_theme_picker();
+        app.move_theme_picker(true);
+        app.move_theme_picker(true);
+        app.cancel_theme_picker();
+
+        assert_eq!(app.theme, before, "esc means the preview never happened");
+        assert_eq!(app.config.theme.as_deref(), Some("Nord"), "and the setting is untouched");
+    }
+
+    #[test]
+    fn keeping_a_theme_records_it_as_the_setting() {
+        let mut app = App::new();
+        app.themes = crate::ui::theme::built_in();
+        app.open_theme_picker();
+        app.move_theme_picker(true);
+
+        let kept = app.accept_theme_picker().expect("something was chosen");
+
+        assert_eq!(app.config.theme.as_deref(), Some(kept.as_str()));
+        assert!(app.theme_picker.is_none(), "keeping closes the picker");
+    }
+
+    #[test]
+    fn the_picker_opens_on_whatever_is_already_in_force() {
+        let mut app = App::new();
+        app.themes = crate::ui::theme::built_in();
+        app.config.theme = Some("Gruvbox Dark".to_string());
+        app.open_theme_picker();
+
+        let picker = app.theme_picker.as_ref().unwrap();
+        assert_eq!(
+            app.themes[picker.selected].name, "Gruvbox Dark",
+            "it starts where you are, not at the top of a list of nineteen"
         );
     }
 

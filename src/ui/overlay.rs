@@ -328,3 +328,93 @@ pub fn diff(frame: &mut Frame, area: Rect, view: &crate::diff::View, theme: Them
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
+
+/// The theme picker: every theme, grouped, previewing as you move.
+///
+/// Sized to the list where it fits and windowed where it does not, because a
+/// short terminal is not a reason to hide half the themes.
+pub fn themes(
+    frame: &mut Frame,
+    area: Rect,
+    picker: &crate::app::ThemePicker,
+    available: &[crate::ui::theme::Named],
+    theme: Theme,
+) {
+    use crate::ui::theme::Entry;
+
+    let entries = crate::ui::theme::picker_entries(available);
+    let width = 40.min(area.width);
+    let height = (u16::try_from(entries.len()).unwrap_or(10) + 2).min(area.height);
+
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .style(Style::default().bg(theme.raised))
+        .title(Span::styled(
+            " theme ",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            " ↑↓ preview · ↵ keep · esc revert ",
+            Style::default().fg(theme.dim),
+        ));
+
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    // Keep the selected row on screen. The window follows the selection rather
+    // than the other way round, so the list never jumps under a held key.
+    let rows = inner.height as usize;
+    let chosen = entries
+        .iter()
+        .position(|entry| matches!(entry, Entry::Theme(index) if *index == picker.selected))
+        .unwrap_or(0);
+    let start = chosen.saturating_sub(rows / 2).min(entries.len().saturating_sub(rows));
+
+    let lines: Vec<Line> = entries
+        .iter()
+        .skip(start)
+        .take(rows)
+        .map(|entry| match entry {
+            Entry::Heading(kind) => Line::from(Span::styled(
+                format!("  {}", kind.heading()),
+                Style::default().fg(theme.dim).add_modifier(Modifier::BOLD),
+            )),
+            Entry::Theme(index) => {
+                let named = &available[*index];
+                let chosen = *index == picker.selected;
+
+                // A swatch of the theme's own accent, so the list shows what
+                // it is offering rather than only naming it.
+                let swatch = Span::styled("  ██ ", Style::default().fg(named.theme.accent));
+                let name = Span::styled(
+                    named.name.clone(),
+                    if chosen {
+                        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text)
+                    },
+                );
+
+                let line = Line::from(vec![
+                    Span::styled(if chosen { "▸" } else { " " }, Style::default().fg(theme.accent)),
+                    swatch,
+                    name,
+                ]);
+                if chosen { line.style(keycap::selected_row(theme)) } else { line }
+            }
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}

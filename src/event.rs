@@ -558,6 +558,14 @@ fn on_key_form(app: &mut App, key: KeyEvent) {
         KeyCode::Tab | KeyCode::BackTab if !modal => on_key_browsing(app, key),
         KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => form.move_focus(true),
         KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => form.move_focus(false),
+        // The Theme row opens a picker rather than cycling a hidden value.
+        // Nineteen themes cycled one keypress at a time is not a choice, it is
+        // an endurance test.
+        KeyCode::Enter | KeyCode::Char(' ')
+            if !modal && form.focused().is_some_and(|f| f.label == fields::THEME) =>
+        {
+            app.open_theme_picker();
+        }
         KeyCode::Enter | KeyCode::Char(' ') => {
             let activation = form.activate();
             sync_form_visibility(app, modal);
@@ -824,6 +832,27 @@ fn remove_worktree(app: &mut App, force: bool) {
     }
 }
 
+/// Choosing a theme, with the app repainting as you move.
+fn on_key_theme_picker(app: &mut App, key: KeyEvent) {
+    app.dirty = true;
+
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => app.move_theme_picker(true),
+        KeyCode::Char('k') | KeyCode::Up => app.move_theme_picker(false),
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            if app.accept_theme_picker().is_some() {
+                // Saved on accept, not on preview. Scrolling past a theme
+                // should not survive a crash as your setting.
+                if let Err(error) = app.config.save_to(&app.config_path) {
+                    app.notify(format!("could not save settings: {error}"));
+                }
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => app.cancel_theme_picker(),
+        _ => {}
+    }
+}
+
 /// Reading a diff.
 ///
 /// The page height is not known here — only the renderer knows how tall the
@@ -852,6 +881,9 @@ fn on_key_diff(app: &mut App, key: KeyEvent, page: usize) {
 
 /// The modal session chooser.
 fn on_key_picker(app: &mut App, key: KeyEvent) {
+    if app.theme_picker.is_some() {
+        return on_key_theme_picker(app, key);
+    }
     if app.diff.is_some() {
         return on_key_diff(app, key, 20);
     }

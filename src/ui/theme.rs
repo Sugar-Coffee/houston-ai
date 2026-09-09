@@ -103,115 +103,101 @@ impl Theme {
     /// which colours happened to be left over.
     #[must_use]
     pub const fn dracula() -> Self {
-        Self {
-            surface: Color::Rgb(0x28, 0x2A, 0x36),
-            raised: Color::Rgb(0x34, 0x37, 0x46),
-            highlight: Color::Rgb(0x44, 0x47, 0x5A),
-            text: Color::Rgb(0xF8, 0xF8, 0xF2),
-            dim: Color::Rgb(0x62, 0x72, 0xA4),
-            accent: Color::Rgb(0xBD, 0x93, 0xF9),
-            attention: Color::Rgb(0xFF, 0xB8, 0x6C),
-            running: Color::Rgb(0x50, 0xFA, 0x7B),
-            danger: Color::Rgb(0xFF, 0x55, 0x55),
-            heading: Color::Rgb(0xFF, 0x79, 0xC6),
-            link: Color::Rgb(0x8B, 0xE9, 0xFD),
-            code: Color::Rgb(0xF1, 0xFA, 0x8C),
-            added: Color::Rgb(0x50, 0xFA, 0x7B),
-            removed: Color::Rgb(0xFF, 0x55, 0x55),
-            terminal_background: Color::Rgb(0x28, 0x2A, 0x36),
+        super::palettes::default_theme()
+    }
+}
+
+/// Whether a theme is meant for a dark terminal or a light one.
+///
+/// Categorising the picker rather than decorating it: with nineteen built-ins
+/// an ungrouped list is a wall, and the first question anyone asks of a theme
+/// is which half of that list it is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dark,
+    Light,
+    /// Loaded from `~/.houston/themes`. Kept separate so your own work is
+    /// findable rather than filed among nineteen strangers.
+    Yours,
+}
+
+impl Kind {
+    #[must_use]
+    pub const fn heading(self) -> &'static str {
+        match self {
+            Self::Dark => "Dark",
+            Self::Light => "Light",
+            Self::Yours => "Yours",
         }
     }
 
-    #[must_use]
-    pub const fn monokai() -> Self {
-        Self {
-            surface: Color::Rgb(0x27, 0x28, 0x22),
-            raised: Color::Rgb(0x33, 0x34, 0x2C),
-            highlight: Color::Rgb(0x49, 0x48, 0x3E),
-            text: Color::Rgb(0xF8, 0xF8, 0xF2),
-            dim: Color::Rgb(0x75, 0x71, 0x5E),
-            accent: Color::Rgb(0xAE, 0x81, 0xFF),
-            attention: Color::Rgb(0xFD, 0x97, 0x1F),
-            running: Color::Rgb(0xA6, 0xE2, 0x2E),
-            danger: Color::Rgb(0xF9, 0x26, 0x72),
-            heading: Color::Rgb(0xF9, 0x26, 0x72),
-            link: Color::Rgb(0x66, 0xD9, 0xEF),
-            code: Color::Rgb(0xE6, 0xDB, 0x74),
-            added: Color::Rgb(0xA6, 0xE2, 0x2E),
-            removed: Color::Rgb(0xF9, 0x26, 0x72),
-            terminal_background: Color::Rgb(0x27, 0x28, 0x22),
-        }
-    }
+    /// The order the picker shows the groups in.
+    pub const ALL: [Self; 3] = [Self::Dark, Self::Light, Self::Yours];
+}
 
-    #[must_use]
-    pub const fn nord() -> Self {
-        Self {
-            surface: Color::Rgb(0x2E, 0x34, 0x40),
-            raised: Color::Rgb(0x3B, 0x42, 0x52),
-            highlight: Color::Rgb(0x4C, 0x56, 0x6A),
-            text: Color::Rgb(0xEC, 0xEF, 0xF4),
-            dim: Color::Rgb(0x61, 0x6E, 0x88),
-            accent: Color::Rgb(0x88, 0xC0, 0xD0),
-            attention: Color::Rgb(0xEB, 0xCB, 0x8B),
-            running: Color::Rgb(0xA3, 0xBE, 0x8C),
-            danger: Color::Rgb(0xBF, 0x61, 0x6A),
-            heading: Color::Rgb(0xB4, 0x8E, 0xAD),
-            link: Color::Rgb(0x81, 0xA1, 0xC1),
-            code: Color::Rgb(0xD0, 0x87, 0x70),
-            added: Color::Rgb(0xA3, 0xBE, 0x8C),
-            removed: Color::Rgb(0xBF, 0x61, 0x6A),
-            terminal_background: Color::Rgb(0x2E, 0x34, 0x40),
-        }
-    }
+/// One line of the theme picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Entry {
+    /// A group heading. Only emitted for groups that have members.
+    Heading(Kind),
+    /// The theme at this index in the list the entries were built from.
+    Theme(usize),
+}
 
-    /// For a light terminal. The roles keep their meanings; only the values
-    /// change, which is the point of naming roles rather than colours.
-    #[must_use]
-    pub const fn light() -> Self {
-        Self {
-            surface: Color::Rgb(0xFD, 0xF6, 0xE3),
-            raised: Color::Rgb(0xEE, 0xE8, 0xD5),
-            highlight: Color::Rgb(0xDC, 0xD6, 0xC3),
-            text: Color::Rgb(0x24, 0x2B, 0x33),
-            dim: Color::Rgb(0x7A, 0x82, 0x8A),
-            accent: Color::Rgb(0x6C, 0x3F, 0xB8),
-            attention: Color::Rgb(0xB5, 0x62, 0x00),
-            running: Color::Rgb(0x1F, 0x7A, 0x38),
-            danger: Color::Rgb(0xC0, 0x28, 0x28),
-            heading: Color::Rgb(0xA6, 0x22, 0x7E),
-            link: Color::Rgb(0x1D, 0x66, 0x92),
-            code: Color::Rgb(0x8A, 0x63, 0x00),
-            added: Color::Rgb(0x1F, 0x7A, 0x38),
-            removed: Color::Rgb(0xC0, 0x28, 0x28),
-            terminal_background: Color::Rgb(0xFD, 0xF6, 0xE3),
-        }
-    }
+/// Lays the picker out: themes in order, with a heading wherever the kind
+/// changes.
+///
+/// Relies on `available` keeping built-ins in their declared order and
+/// appending files after them, which puts the groups in `Kind::ALL` order
+/// without a sort. If that ever stops being true this produces repeated
+/// headings rather than wrong ones, which is the right way round to fail.
+#[must_use]
+pub fn picker_entries(themes: &[Named]) -> Vec<Entry> {
+    let mut entries = Vec::with_capacity(themes.len() + Kind::ALL.len());
+    let mut group = None;
 
-    /// Greys plus a single accent.
-    ///
-    /// Deliberately breaks the one-hue-one-meaning rule, because the whole
-    /// point is that there are no hues. State is carried by brightness instead,
-    /// which is weaker — that is the trade you are choosing.
-    #[must_use]
-    pub const fn mono() -> Self {
-        Self {
-            surface: Color::Rgb(0x14, 0x15, 0x18),
-            raised: Color::Rgb(0x1E, 0x20, 0x24),
-            highlight: Color::Rgb(0x2E, 0x31, 0x36),
-            text: Color::Rgb(0xE6, 0xE8, 0xEA),
-            dim: Color::Rgb(0x6B, 0x70, 0x77),
-            accent: Color::Rgb(0xE6, 0xE8, 0xEA),
-            attention: Color::Rgb(0xFF, 0xFF, 0xFF),
-            running: Color::Rgb(0xA8, 0xAE, 0xB5),
-            danger: Color::Rgb(0x8A, 0x8F, 0x96),
-            heading: Color::Rgb(0xE6, 0xE8, 0xEA),
-            link: Color::Rgb(0xA8, 0xAE, 0xB5),
-            code: Color::Rgb(0x9A, 0xA0, 0xA7),
-            added: Color::Rgb(0xD8, 0xDE, 0xE5),
-            removed: Color::Rgb(0x6A, 0x6F, 0x76),
-            terminal_background: Color::Rgb(0x14, 0x15, 0x18),
+    for (index, named) in themes.iter().enumerate() {
+        if group != Some(named.kind) {
+            entries.push(Entry::Heading(named.kind));
+            group = Some(named.kind);
         }
+        entries.push(Entry::Theme(index));
     }
+    entries
+}
+
+/// The WCAG contrast ratio between two colours, 1.0 to 21.0.
+///
+/// Exists because nineteen palettes are nineteen chances to paste a value into
+/// the wrong row, and the failure mode — text the same brightness as the
+/// surface behind it — is invisible in a diff and obvious the moment somebody
+/// picks that theme. A number can be asserted on; an eye cannot check
+/// nineteen.
+///
+/// `None` for anything that is not a concrete RGB value, since an indexed or
+/// reset colour means whatever the terminal says it means.
+///
+/// Test-only. It exists to check the shipped palettes, and nothing at runtime
+/// has a question that a contrast ratio answers.
+#[cfg(test)]
+#[must_use]
+pub fn contrast(a: Color, b: Color) -> Option<f64> {
+    let luminance = |colour: Color| match colour {
+        Color::Rgb(r, g, b) => {
+            let channel = |value: u8| {
+                let value = f64::from(value) / 255.0;
+                if value <= 0.039_28 { value / 12.92 } else { ((value + 0.055) / 1.055).powf(2.4) }
+            };
+            // The WCAG coefficients, written as `mul_add` because clippy's
+            // `suboptimal_flops` insists. The formula is the standard one.
+            Some(0.0722f64.mul_add(channel(b), 0.7152f64.mul_add(channel(g), 0.2126 * channel(r))))
+        }
+        _ => None,
+    };
+
+    let (a, b) = (luminance(a)?, luminance(b)?);
+    let (lighter, darker) = if a > b { (a, b) } else { (b, a) };
+    Some((lighter + 0.05) / (darker + 0.05))
 }
 
 /// A theme with the name it is chosen by.
@@ -219,22 +205,10 @@ impl Theme {
 pub struct Named {
     pub name: String,
     pub theme: Theme,
+    pub kind: Kind,
 }
 
-/// The themes shipped with Houston, in the order Settings offers them.
-#[must_use]
-pub fn built_in() -> Vec<Named> {
-    [
-        ("Dracula", Theme::dracula()),
-        ("Monokai", Theme::monokai()),
-        ("Nord", Theme::nord()),
-        ("Light", Theme::light()),
-        ("Mono", Theme::mono()),
-    ]
-    .into_iter()
-    .map(|(name, theme)| Named { name: name.to_string(), theme })
-    .collect()
-}
+pub use super::palettes::{built_in, resolve_alias};
 
 /// Every theme available: the built-ins, plus any `.toml` in `directory`.
 ///
@@ -254,7 +228,10 @@ pub fn available(directory: &Path) -> Vec<Named> {
 
     for theme in custom {
         if let Some(existing) = themes.iter_mut().find(|other| other.name == theme.name) {
-            *existing = theme;
+            // Keep the built-in's grouping. A retuned Dracula is still a dark
+            // theme, and filing it under "Yours" would move it out of the
+            // block where you go looking for it.
+            existing.theme = theme.theme;
         } else {
             themes.push(theme);
         }
@@ -273,7 +250,7 @@ pub fn load(path: &Path) -> Result<Named> {
         path.file_stem().map_or_else(|| "custom".to_string(), |s| s.to_string_lossy().into_owned())
     });
 
-    Ok(Named { name, theme: file.into_theme()? })
+    Ok(Named { name, theme: file.into_theme()?, kind: Kind::Yours })
 }
 
 /// A theme as written on disk.
@@ -434,17 +411,19 @@ mod tests {
         assert_eq!(names.len(), count, "theme names must be unique");
 
         // Roles must actually differ, or a theme is only nominally a theme.
-        assert_ne!(Theme::dracula().accent, Theme::nord().accent);
-        assert_ne!(Theme::light().text, Theme::dracula().text);
+        let palette = |wanted: &str| themes.iter().find(|t| t.name == wanted).unwrap().theme;
+        assert_ne!(palette("Dracula").accent, palette("Nord").accent);
+        assert_ne!(palette("Solarized Light").text, palette("Dracula").text);
     }
 
     #[test]
     fn the_light_theme_is_actually_light() {
-        let Color::Rgb(r, g, b) = Theme::light().surface else { panic!("expected rgb") };
+        let light = built_in().into_iter().find(|t| t.name == "Solarized Light").unwrap().theme;
+        let Color::Rgb(r, g, b) = light.surface else { panic!("expected rgb") };
         let brightness = u32::from(r) + u32::from(g) + u32::from(b);
         assert!(brightness > 500, "a light theme needs a light surface");
 
-        let Color::Rgb(r, g, b) = Theme::light().text else { panic!("expected rgb") };
+        let Color::Rgb(r, g, b) = light.text else { panic!("expected rgb") };
         assert!(u32::from(r) + u32::from(g) + u32::from(b) < 300, "and dark text");
     }
 
@@ -548,5 +527,183 @@ mod tests {
         // It is written into the themes directory, so it must load.
         let file: File = toml::from_str(TEMPLATE).expect("the template must parse");
         assert!(file.into_theme().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    /// The one thing a theme cannot get wrong.
+    ///
+    /// 4.5:1 is the WCAG AA threshold for body text. A palette below it is not
+    /// a matter of taste — it is text you cannot read.
+    #[test]
+    fn every_built_in_theme_has_readable_body_text() {
+        for named in built_in() {
+            let ratio = contrast(named.theme.text, named.theme.surface)
+                .expect("built-in themes are all concrete RGB");
+
+            assert!(
+                ratio >= 4.5,
+                "{} puts text on surface at only {ratio:.1}:1 — below the 4.5:1 readable floor",
+                named.name
+            );
+        }
+    }
+
+    /// Dim is *meant* to recede, so it gets a lower floor — but it still has
+    /// to be legible, because paths and branches live there.
+    #[test]
+    fn dim_text_recedes_without_disappearing() {
+        for named in built_in() {
+            let ratio = contrast(named.theme.dim, named.theme.surface).unwrap();
+
+            assert!(
+                ratio >= 3.0,
+                "{} has dim at {ratio:.1}:1, which is gone, not quiet",
+                named.name
+            );
+            assert!(
+                ratio < contrast(named.theme.text, named.theme.surface).unwrap(),
+                "{} has dim no quieter than its body text",
+                named.name
+            );
+        }
+    }
+
+    /// Cards and popups have to read as lifted off the page, and the selected
+    /// row has to read as selected. Both are backgrounds, so both are judged
+    /// against the surface rather than against text.
+    #[test]
+    fn surfaces_are_distinguishable_from_one_another() {
+        for named in built_in() {
+            let theme = named.theme;
+            assert_ne!(theme.raised, theme.surface, "{} cannot lift a popup", named.name);
+            assert_ne!(
+                theme.highlight, theme.surface,
+                "{} cannot show which row is selected",
+                named.name
+            );
+        }
+    }
+
+    /// A diff has to read at a glance, and it reads by the two signs having
+    /// visibly different colours.
+    #[test]
+    fn added_and_removed_are_told_apart() {
+        for named in built_in() {
+            assert_ne!(
+                named.theme.added, named.theme.removed,
+                "{} renders a diff in one colour",
+                named.name
+            );
+        }
+    }
+
+    /// Sessions paint the theme's own surface unless a *file* says otherwise.
+    #[test]
+    fn a_built_in_theme_owns_its_session_background() {
+        for named in built_in() {
+            assert_eq!(
+                named.theme.terminal_background, named.theme.surface,
+                "{} would let the terminal show through",
+                named.name
+            );
+        }
+    }
+
+    #[test]
+    fn there_are_enough_themes_to_be_worth_a_picker_and_they_are_grouped() {
+        let themes = built_in();
+        assert!(themes.len() >= 12, "only {} built-ins", themes.len());
+
+        assert!(themes.iter().any(|t| t.kind == Kind::Light), "there is a light option");
+        assert!(themes.iter().any(|t| t.kind == Kind::Dark));
+
+        let mut names: Vec<_> = themes.iter().map(|t| t.name.clone()).collect();
+        names.sort();
+        let unique = names.len();
+        names.dedup();
+        assert_eq!(names.len(), unique, "two themes share a name, so one is unreachable");
+    }
+
+    #[test]
+    fn the_old_name_for_a_renamed_theme_still_resolves() {
+        assert_eq!(resolve_alias("Light"), Some("Solarized Light"));
+        assert!(resolve_alias("Dracula").is_none(), "a current name needs no alias");
+    }
+
+    #[test]
+    fn contrast_is_measured_the_way_the_standard_defines_it() {
+        let white = Color::Rgb(0xFF, 0xFF, 0xFF);
+        let black = Color::Rgb(0x00, 0x00, 0x00);
+
+        assert!((contrast(white, black).unwrap() - 21.0).abs() < 0.01, "the extreme is 21:1");
+        assert!((contrast(white, white).unwrap() - 1.0).abs() < 0.01, "a colour on itself is 1:1");
+        assert!(contrast(Color::Reset, black).is_none(), "an unresolved colour has no ratio");
+    }
+}
+
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+
+    fn named(name: &str, kind: Kind) -> Named {
+        Named { name: name.to_string(), theme: Theme::default(), kind }
+    }
+
+    #[test]
+    fn the_picker_heads_each_group_once() {
+        let themes = vec![
+            named("Dracula", Kind::Dark),
+            named("Nord", Kind::Dark),
+            named("GitHub Light", Kind::Light),
+            named("Mine", Kind::Yours),
+        ];
+
+        let entries = picker_entries(&themes);
+
+        assert_eq!(
+            entries,
+            vec![
+                Entry::Heading(Kind::Dark),
+                Entry::Theme(0),
+                Entry::Theme(1),
+                Entry::Heading(Kind::Light),
+                Entry::Theme(2),
+                Entry::Heading(Kind::Yours),
+                Entry::Theme(3),
+            ],
+            "two dark themes share one heading, and every group gets its own"
+        );
+    }
+
+    #[test]
+    fn a_group_nobody_is_in_gets_no_heading() {
+        let themes = vec![named("Dracula", Kind::Dark)];
+        let entries = picker_entries(&themes);
+
+        assert!(
+            !entries.contains(&Entry::Heading(Kind::Yours)),
+            "an empty 'Yours' heading would advertise a feature as a blank line"
+        );
+        assert_eq!(entries.len(), 2, "one heading, one theme");
+    }
+
+    #[test]
+    fn the_real_built_ins_lay_out_as_dark_then_light() {
+        let themes = built_in();
+        let entries = picker_entries(&themes);
+
+        let headings: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Heading(kind) => Some(*kind),
+                Entry::Theme(_) => None,
+            })
+            .collect();
+
+        assert_eq!(headings, vec![Kind::Dark, Kind::Light], "grouped, and each group once");
     }
 }

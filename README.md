@@ -238,8 +238,20 @@ memorise anything.
 
 ## Themes
 
-Five ship — Dracula, Monokai, Nord, Light and Mono — and Settings switches
-between them live.
+Nineteen ship. Press `↵` on the Theme row in Settings and the app repaints as
+you move through the list, so you pick by looking rather than by reading a
+name and hoping. `esc` puts back what you had.
+
+Dark: Dracula, Monokai, Nord, One Dark, Tokyo Night, Catppuccin Mocha, Gruvbox
+Dark, Solarized Dark, Rosé Pine, Kanagawa, Everforest, Ayu Dark, Night Owl,
+GitHub Dark, Mono. Light: Solarized Light, Catppuccin Latte, GitHub Light,
+Gruvbox Light.
+
+These are homages rather than ports — Houston has fifteen colour roles and a
+syntax theme has hundreds of scopes, so each one is a reading of a familiar
+palette against *our* meanings. A few are nudged for legibility, and a test
+enforces a contrast floor so no palette ships with text you cannot read.
+[`ATTRIBUTIONS.md`](ATTRIBUTIONS.md) has the credits and the details.
 
 Every hue means exactly one thing, everywhere: purple is *you are here*, orange
 is *this wants you*, green is *live*, cyan is *followable*. That is what stops
@@ -248,7 +260,9 @@ than a redesign.
 
 Your own themes are `.toml` files in `~/.houston/themes/`, and a documented
 template is written there on first run. Every field is optional, so overriding
-three colours takes three lines.
+three colours takes three lines. A file named after a built-in replaces it, so
+if you want one of the palettes above exactly as its authors made it, that is
+where to put it.
 
 ## Status
 

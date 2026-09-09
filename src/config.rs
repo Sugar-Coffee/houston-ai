@@ -120,7 +120,11 @@ impl Config {
         let chosen = self
             .theme
             .as_deref()
-            .and_then(|name| available.iter().find(|theme| theme.name == name))
+            .and_then(|name| {
+                let named = |wanted: &str| available.iter().find(|theme| theme.name == wanted);
+                // A theme that has been renamed is still the theme you chose.
+                named(name).or_else(|| crate::ui::theme::resolve_alias(name).and_then(named))
+            })
             .or_else(|| available.first())
             .map_or_else(crate::ui::Theme::default, |named| named.theme);
 

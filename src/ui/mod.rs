@@ -10,6 +10,7 @@ pub mod editor;
 pub mod form;
 pub mod keycap;
 pub mod overlay;
+pub mod palettes;
 pub mod sessions;
 pub mod settings;
 pub mod terminal;
@@ -74,6 +75,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Above everything, in the order they stack.
     if let Some(open) = &app.form {
         overlay::form(frame, body, open, theme);
+    }
+    if let Some(picker) = &app.theme_picker {
+        overlay::themes(frame, body, picker, &app.themes, theme);
     }
     if let Some(view) = &app.diff {
         overlay::diff(frame, body, view, theme);
