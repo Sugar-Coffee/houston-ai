@@ -332,14 +332,16 @@ impl Buffer {
     /// Refuses if the file changed underneath us unless `force`. The vault is
     /// open in Obsidian at the same time — see `docs/research/vault-profile.md`
     /// — so this is a real hazard, not a theoretical one.
+    ///
+    /// Callers are expected to ask before passing `force`. The editor uses
+    /// [`Self::changed_on_disk`] to raise the question up front rather than
+    /// letting this fail and telling you which key to press instead — that
+    /// only helps somebody who already knew.
     pub fn save(&mut self, force: bool) -> Result<PathBuf> {
         let path = self.path.clone().context("this buffer has no file to save to")?;
 
         if !force && self.changed_on_disk() {
-            anyhow::bail!(
-                "{} changed on disk since you opened it — press S to overwrite",
-                path.display()
-            );
+            anyhow::bail!("{} changed on disk since you opened it", path.display());
         }
 
         write_atomically(&path, &self.text())?;

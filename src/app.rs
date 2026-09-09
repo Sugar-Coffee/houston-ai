@@ -124,6 +124,8 @@ pub struct App {
     /// milliseconds. Blocking the loop would freeze the whole app on what is
     /// meant to be a convenience.
     pub font_install: Option<std::sync::mpsc::Receiver<anyhow::Result<std::path::PathBuf>>>,
+    /// A pending question. Nothing destructive happens while this is set.
+    pub confirm: Option<Confirm>,
     /// The open theme picker, if any.
     pub theme_picker: Option<ThemePicker>,
     /// The open diff, if any. Captured once on open; see [`crate::diff::View`].
@@ -157,6 +159,36 @@ pub enum FormPurpose {
     NewSession,
     /// Land the named worktree: commit, push, open a PR, remove.
     Land(String),
+}
+
+/// A question standing between you and something irreversible.
+///
+/// **Replaces the shift-variant idiom.** Destructive actions used to hide
+/// behind a second, capitalised key — `D` to remove a worktree with
+/// uncommitted work in it, `S` to save over a file that changed on disk. That
+/// has two problems. You have to already know the capital exists, so the first
+/// time you meet the situation the app tells you no and stops; and the safety
+/// of it rests on your shift finger rather than on your having read what is at
+/// stake.
+///
+/// A confirmation says what will be lost and asks. It works the first time,
+/// and it is the same shape everywhere.
+#[derive(Debug, Clone)]
+pub struct Confirm {
+    /// The question, phrased so that "yes" is unambiguous.
+    pub question: String,
+    /// What is at stake, in the user's terms.
+    pub detail: String,
+    pub action: Pending,
+}
+
+/// What happens if the answer is yes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pending {
+    /// Remove the named worktree, uncommitted work and all.
+    RemoveWorktree(String),
+    /// Save the open note over a file that has changed on disk.
+    OverwriteNote,
 }
 
 /// The theme picker's state.
@@ -388,6 +420,19 @@ impl App {
         }
     }
 
+    /// Raises a question. Nothing happens until it is answered.
+    pub fn ask(&mut self, question: impl Into<String>, detail: impl Into<String>, action: Pending) {
+        self.confirm = Some(Confirm { question: question.into(), detail: detail.into(), action });
+        self.dirty = true;
+    }
+
+    /// Takes the pending action, and returns it only if the answer was yes.
+    pub fn answer(&mut self, yes: bool) -> Option<Pending> {
+        let confirm = self.confirm.take()?;
+        self.dirty = true;
+        yes.then_some(confirm.action)
+    }
+
     /// What the powerline row says about your fonts.
     fn font_hint(&self) -> String {
         if self.font_install.is_some() {
@@ -582,6 +627,7 @@ impl App {
             form: None,
             form_purpose: FormPurpose::None,
             settings: Form::new(Vec::new()),
+            confirm: None,
             font_detection: crate::fonts::Detection::Unknown,
             font_install: None,
             theme_picker: None,
@@ -626,6 +672,11 @@ impl App {
     /// Order matters: an overlay sits above everything, then Houston's own
     /// text fields, then an attached child, then commands.
     pub fn focus(&self) -> InputFocus {
+        // Before the form check below: a confirmation can be raised from
+        // Settings, and the form would otherwise eat the answer.
+        if self.confirm.is_some() {
+            return InputFocus::Overlay;
+        }
         if self.picker.is_some() {
             return InputFocus::Overlay;
         }
@@ -797,6 +848,9 @@ impl App {
                 ("", "all other keys go to the session"),
             ]),
             InputFocus::Text => Some(vec![("\u{21b5}", "accept"), ("esc", "cancel")]),
+            InputFocus::Overlay if self.confirm.is_some() => {
+                Some(vec![("y", "yes"), ("n", "no"), ("esc", "no")])
+            }
             InputFocus::Overlay if self.theme_picker.is_some() => {
                 Some(vec![("j/k", "preview"), ("\u{21b5}", "keep"), ("esc", "revert")])
             }
@@ -804,14 +858,6 @@ impl App {
                 ("j/k", "scroll"),
                 ("u/d", "page"),
                 ("g/G", "top/bottom"),
-                ("esc", "close"),
-            ]),
-            InputFocus::Overlay if self.worktrees.is_some() => Some(vec![
-                ("j/k", "select"),
-                ("l", "land"),
-                ("d", "remove"),
-                ("D", "force remove"),
-                ("r", "refresh"),
                 ("esc", "close"),
             ]),
             InputFocus::Overlay => Some(vec![
@@ -880,7 +926,6 @@ impl App {
                         ("v", "review"),
                         ("l", "land"),
                         ("d", "remove"),
-                        ("D", "force"),
                     ]);
                 }
                 binds.push(("r", "refresh"));

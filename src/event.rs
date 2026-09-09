@@ -455,8 +455,8 @@ fn on_key_editor_normal(app: &mut App, key: KeyEvent) {
             }
         }
 
-        KeyCode::Char('s') => save_editor(app, false),
-        KeyCode::Char('S') => save_editor(app, true),
+        KeyCode::Char('s') => save_note(app),
+
         KeyCode::Esc | KeyCode::Char('q') => close_editor(app),
         _ => {}
     }
@@ -500,6 +500,27 @@ fn follow_link(app: &mut App) {
         }
         Err(error) => app.notify(format!("could not open {target}: {error}")),
     }
+}
+
+/// Saves the open note, asking first if the file changed underneath us.
+fn save_note(app: &mut App) {
+    let changed = app.editor.as_ref().is_some_and(|editor| editor.buffer.changed_on_disk());
+    if !changed {
+        return save_editor(app, false);
+    }
+
+    let name = app
+        .editor
+        .as_ref()
+        .and_then(|editor| editor.buffer.path.as_ref())
+        .and_then(|path| path.file_name())
+        .map_or_else(|| "this note".to_string(), |name| name.to_string_lossy().into_owned());
+
+    app.ask(
+        format!("Overwrite {name}?"),
+        "It changed on disk since you opened it — Obsidian, or another agent.".to_string(),
+        crate::app::Pending::OverwriteNote,
+    );
 }
 
 fn save_editor(app: &mut App, force: bool) {
@@ -795,7 +816,7 @@ fn on_key_worktrees(app: &mut App, key: KeyEvent) {
         KeyCode::Char('r') => app.load_worktrees(),
         KeyCode::Char('l') => land_worktree(app),
         KeyCode::Char('v') => open_worktree_diff(app),
-        KeyCode::Char(force @ ('d' | 'D')) => remove_worktree(app, force == 'D'),
+        KeyCode::Char('d') => remove_worktree(app),
         // Enter goes to whoever is working in it, which is the question you
         // ask of a worktree marked "in use".
         KeyCode::Enter => attach_to_worktree(app),
@@ -834,24 +855,63 @@ fn open_worktree_diff(app: &mut App) {
 ///
 /// Refuses while a live session is using it, however forceful you are — the
 /// agent would lose its working directory out from under it.
-fn remove_worktree(app: &mut App, force: bool) {
-    let Some(worktree) =
-        app.worktrees.as_ref().and_then(|list| list.get(app.worktree_selected)).cloned()
-    else {
-        return;
-    };
+fn remove_worktree(app: &mut App) {
+    let Some(worktree) = app.selected_worktree().cloned() else { return };
 
     if app.sessions.uses_worktree(&worktree.name) {
         app.notify(format!("{} is in use — close its session first", worktree.name));
         return;
     }
 
-    match crate::worktree::remove(&worktree, force) {
+    // A clean worktree is a directory git can recreate from the branch. There
+    // is nothing to lose, so there is nothing to ask about.
+    if !worktree.dirty {
+        return remove_worktree_now(app, &worktree.name);
+    }
+
+    let lost = worktree.changes.filter(|changes| !changes.is_empty()).map_or_else(
+        || "It has uncommitted changes.".to_string(),
+        |changes| format!("{} will be lost.", changes.describe()),
+    );
+
+    app.ask(
+        format!("Remove {}?", worktree.name),
+        lost,
+        crate::app::Pending::RemoveWorktree(worktree.name.clone()),
+    );
+}
+
+/// Removes a worktree, past the point of asking.
+fn remove_worktree_now(app: &mut App, name: &str) {
+    let Some(worktree) =
+        app.worktrees.as_ref().and_then(|list| list.iter().find(|item| item.name == name)).cloned()
+    else {
+        return app.notify(format!("{name} is gone"));
+    };
+
+    // `force` is true because the question has already been asked. A clean
+    // worktree does not care either way.
+    match crate::worktree::remove(&worktree, true) {
         Ok(()) => {
             app.notify(format!("removed {}", worktree.name));
             app.load_worktrees();
         }
         Err(error) => app.notify(error.to_string()),
+    }
+}
+
+/// Answering a question.
+///
+/// Anything that is not clearly yes is no. There is no default-to-yes here and
+/// no Return-means-yes either: the whole point is that the destructive answer
+/// takes a deliberate keystroke that means only that.
+fn on_key_confirm(app: &mut App, key: KeyEvent) {
+    let yes = matches!(key.code, KeyCode::Char('y' | 'Y'));
+    let Some(action) = app.answer(yes) else { return };
+
+    match action {
+        crate::app::Pending::RemoveWorktree(name) => remove_worktree_now(app, &name),
+        crate::app::Pending::OverwriteNote => save_editor(app, true),
     }
 }
 
@@ -904,6 +964,9 @@ fn on_key_diff(app: &mut App, key: KeyEvent, page: usize) {
 
 /// The modal session chooser.
 fn on_key_picker(app: &mut App, key: KeyEvent) {
+    if app.confirm.is_some() {
+        return on_key_confirm(app, key);
+    }
     if app.theme_picker.is_some() {
         return on_key_theme_picker(app, key);
     }
@@ -1607,6 +1670,88 @@ mod tests {
 
         on_key(&mut app, press(KeyCode::Tab));
         assert_ne!(app.tab, Tab::Worktrees, "and Tab leaves it like any other view");
+    }
+
+    fn spare_worktree(name: &str, dirty: bool) -> crate::worktree::Worktree {
+        crate::worktree::Worktree {
+            name: name.to_string(),
+            path: std::env::temp_dir().join(format!("houston-confirm-{name}")),
+            repository: std::env::temp_dir(),
+            branch: None,
+            dirty,
+            ahead: 0,
+            behind: 0,
+            changes: Some(crate::diff::Changes { files: 3, insertions: 40, deletions: 2 }),
+        }
+    }
+
+    /// The whole point of the change: work you have not committed is not
+    /// deleted because you pressed one key.
+    #[test]
+    fn removing_a_worktree_with_uncommitted_work_asks_first() {
+        let mut app = App::new();
+        app.tab = Tab::Worktrees;
+        app.worktrees = Some(vec![spare_worktree("dirty", true)]);
+
+        on_key(&mut app, press(KeyCode::Char('d')));
+
+        let question = app.confirm.as_ref().expect("it asked rather than acting");
+        assert!(question.question.contains("dirty"), "the question names what is at stake");
+        assert!(
+            question.detail.contains("3 files"),
+            "and says what would be lost: {}",
+            question.detail
+        );
+        assert_eq!(app.worktrees.as_ref().unwrap().len(), 1, "nothing has happened yet");
+    }
+
+    /// A clean worktree is a directory git can recreate. Asking about it would
+    /// train you to answer yes without reading.
+    #[test]
+    fn removing_a_clean_worktree_does_not_ask() {
+        let mut app = App::new();
+        app.tab = Tab::Worktrees;
+        app.worktrees = Some(vec![spare_worktree("clean", false)]);
+
+        on_key(&mut app, press(KeyCode::Char('d')));
+
+        assert!(app.confirm.is_none(), "there is nothing to lose, so nothing to ask");
+    }
+
+    #[test]
+    fn anything_that_is_not_yes_is_no() {
+        for key in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Enter, KeyCode::Char('x')] {
+            let mut app = App::new();
+            app.tab = Tab::Worktrees;
+            app.worktrees = Some(vec![spare_worktree("dirty", true)]);
+            on_key(&mut app, press(KeyCode::Char('d')));
+
+            on_key(&mut app, press(key));
+
+            assert!(app.confirm.is_none(), "{key:?} answered the question");
+            assert_eq!(
+                app.worktrees.as_ref().unwrap().len(),
+                1,
+                "{key:?} must not have destroyed anything — Return especially, since it is what \
+                 you press to dismiss things"
+            );
+        }
+    }
+
+    /// A question takes the keyboard whole, or the view underneath would act
+    /// on the answer as well.
+    #[test]
+    fn a_pending_question_owns_the_keyboard() {
+        let mut app = App::new();
+        app.tab = Tab::Worktrees;
+        app.worktrees = Some(vec![spare_worktree("dirty", true)]);
+        on_key(&mut app, press(KeyCode::Char('d')));
+
+        assert_eq!(app.focus(), InputFocus::Overlay);
+
+        let before = app.tab;
+        on_key(&mut app, press(KeyCode::Tab));
+        assert_eq!(app.tab, before, "Tab does not switch view while a question is open");
     }
 
     #[test]

@@ -311,3 +311,58 @@ pub fn themes(
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
+
+/// A question that has to be answered before something irreversible happens.
+///
+/// Deliberately small and central. It is the only thing on screen that is not
+/// a view, and the one moment where reading before pressing matters.
+pub fn confirm(frame: &mut Frame, area: Rect, confirm: &crate::app::Confirm, theme: Theme) {
+    let width = 62.min(area.width);
+    let height = 7.min(area.height);
+
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, popup);
+
+    // Attention, not danger. Danger means something failed; nothing has failed
+    // here, and colouring a question as an error would be crying wolf.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.attention))
+        .style(Style::default().bg(theme.raised));
+
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!("  {}", confirm.question),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+
+    if !confirm.detail.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", confirm.detail),
+            Style::default().fg(theme.attention),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    let mut keys = keycap::row(
+        &[("y", "yes"), ("n", "no")],
+        keycap::Caps { glyphs: crate::ui::powerline::PLAIN, background: theme.raised },
+        theme,
+    );
+    keys.spans.insert(0, Span::raw("  "));
+    lines.push(keys);
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}

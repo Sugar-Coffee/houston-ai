@@ -102,6 +102,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         overlay::inspector(frame, body, &app.input_log, theme);
     }
 
+    if let Some(question) = &app.confirm {
+        overlay::confirm(frame, body, question, theme);
+    }
+
     chrome::keybind_bar(frame, footer, app, theme);
 }
 
