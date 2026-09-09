@@ -261,3 +261,60 @@ pub fn inspector(frame: &mut Frame, area: Rect, log: &VecDeque<String>, theme: T
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
+
+/// A session's uncommitted work, read-only.
+///
+/// Nearly full-screen rather than a small popup: a diff you have to scroll
+/// three lines at a time is a diff you will read in another window instead,
+/// which is the exact problem this exists to remove.
+pub fn diff(frame: &mut Frame, area: Rect, view: &crate::diff::View, theme: Theme) {
+    let width = area.width.saturating_sub(4).max(20);
+    let height = area.height.saturating_sub(2).max(6);
+
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .style(Style::default().bg(theme.raised))
+        .title(Span::styled(
+            format!(" {} · {} ", truncate(&view.title, 40), view.changes.describe()),
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            format!(" {} of {} ", view.scroll + 1, view.lines.len()),
+            Style::default().fg(theme.dim),
+        ));
+
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let lines: Vec<Line> = view
+        .visible(inner.height as usize)
+        .iter()
+        .map(|line| {
+            let style = match crate::diff::classify(line) {
+                crate::diff::Row::Added => Style::default().fg(theme.added),
+                crate::diff::Row::Removed => Style::default().fg(theme.removed),
+                // The hunk header is the only navigational aid in a long diff,
+                // so it takes the accent to be findable while scrolling fast.
+                crate::diff::Row::Hunk => Style::default().fg(theme.accent),
+                crate::diff::Row::File => {
+                    Style::default().fg(theme.heading).add_modifier(Modifier::BOLD)
+                }
+                crate::diff::Row::Context => Style::default().fg(theme.dim),
+            };
+            Line::from(Span::styled(line.clone(), style))
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}

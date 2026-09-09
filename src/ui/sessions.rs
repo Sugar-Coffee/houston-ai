@@ -218,6 +218,27 @@ fn render_card<'a>(
         (None, None) => Line::from(""),
     };
 
+    // The answer to "what did this one actually do?", on the row you are
+    // already reading. A clean tree says nothing rather than "+0 −0": the
+    // absence of a number is the fastest way to read "nothing yet".
+    //
+    // **Dim, not green and red.** The card's colour already answers a more
+    // urgent question — whether this session wants you — and a green number
+    // beside an attention-coloured spine competes with it. The diff view
+    // colours its lines properly; a card is a summary, and a summary reads
+    // better as text.
+    let branch = match &session.changes {
+        Some(changes) if !changes.is_empty() => {
+            let mut spans = branch.spans;
+            spans.push(Span::styled(
+                format!("  {}", changes.compact()),
+                Style::default().fg(theme.dim),
+            ));
+            Line::from(spans)
+        }
+        _ => branch,
+    };
+
     [name, where_it_runs, branch]
 }
 

@@ -101,6 +101,16 @@ pub struct Session {
     /// Cached rather than read per frame: it is a file read, but sixty of them
     /// a second per session for something that changes hourly is waste.
     pub branch: Option<String>,
+    /// How much has changed in its directory. `None` outside a repository.
+    ///
+    /// **Not on the branch timer.** Reading `.git/HEAD` is a file read; this
+    /// is two git subprocesses, so refreshing every session every three
+    /// seconds would scale the cost with how busy you are. It is refreshed on
+    /// the two occasions the number can have moved: a hook firing, which means
+    /// the agent just did something, and the selected session's own tick, so
+    /// the card you are looking at stays live even for a shell that fires no
+    /// hooks at all.
+    pub changes: Option<crate::diff::Changes>,
     pty: PtySession,
 }
 
@@ -134,6 +144,11 @@ impl Session {
     /// Re-reads the branch. Cheap, but not free — call on a timer, not a frame.
     pub fn refresh_branch(&mut self) {
         self.branch = crate::worktree::branch_of(&self.spec.cwd);
+    }
+
+    /// Re-counts what has changed in its directory.
+    pub fn refresh_changes(&mut self) {
+        self.changes = crate::diff::changes_in(&self.spec.cwd);
     }
 
     /// Sets a name the user chose, or clears it back to the default.
@@ -410,6 +425,11 @@ impl Sessions {
         })
     }
 
+    /// The session with this id, if it is still live.
+    pub fn by_id_mut(&mut self, id: u64) -> Option<&mut Session> {
+        self.items.iter_mut().find(|item| item.id.0 == id)
+    }
+
     /// Routes a hook notification to the session that raised it.
     ///
     /// Returns `true` if it matched a live session.
@@ -561,6 +581,7 @@ impl Sessions {
             conversation: None,
             hooks_live: true,
             branch: crate::worktree::branch_of(&spec.cwd),
+            changes: crate::diff::changes_in(&spec.cwd),
             spec,
             worktree: None,
             pty,
@@ -640,6 +661,17 @@ impl Sessions {
     pub fn refresh_branches(&mut self) {
         for session in &mut self.items {
             session.refresh_branch();
+        }
+    }
+
+    /// Re-counts changes for the selected session only.
+    ///
+    /// One session rather than all of them, so the cost is a constant two git
+    /// subprocesses per tick however many agents are running. The others are
+    /// kept current by their hooks; see [`Session::changes`].
+    pub fn refresh_selected_changes(&mut self) {
+        if let Some(session) = self.selected_mut() {
+            session.refresh_changes();
         }
     }
 
@@ -1045,6 +1077,7 @@ mod collision_tests {
             hooks_live: true,
             started_at: std::time::SystemTime::now(),
             conversation: None,
+            changes: None,
             branch: None,
             spec: LaunchSpec::command("claude", Vec::new(), directory.clone()),
             worktree: None,
@@ -1077,6 +1110,7 @@ mod collision_tests {
             hooks_live: true,
             started_at: std::time::SystemTime::now(),
             conversation: None,
+            changes: None,
             branch: None,
             spec: LaunchSpec::command("claude", Vec::new(), directory.clone()),
             worktree: None,

@@ -116,6 +116,20 @@ Three things that have already caught people out:
   the pipe.** Houston will not see it, and your test will silently run against
   the real vault.
 
+**And a pty run is not a test, so none of the `$HOME` guards apply to it.**
+`cfg!(test)` branches keep the suite away from `~/.houston`; the release
+binary you drive through a pty has no such branch, because for it that
+directory *is* the real one. A verification run that spawned two demo sessions
+wrote both into the live session list, alongside work that was actually
+running. Point it somewhere harmless:
+
+```sh
+export HOUSTON_STATE_DIR=$(mktemp -d)   # config, state.json, worktrees, socket
+```
+
+Set it in the environment *before* the pipe, not in front of the producer —
+see the trap directly above this one.
+
 **A slow command is not a hang.** `cargo clippy --all-targets` recompiles the
 crate and takes minutes from cold. **Do not chain clippy and tests in one timed
 command** — the rebuild eats the budget and the timeout looks like a deadlock.

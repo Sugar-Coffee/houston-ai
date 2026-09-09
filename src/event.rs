@@ -84,6 +84,7 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
 
             _ = branches.tick() => {
                 app.sessions.refresh_branches();
+                app.sessions.refresh_selected_changes();
                 app.dirty = true;
             }
 
@@ -153,6 +154,11 @@ fn on_hook(app: &mut App, notification: &Notification) {
         notification.conversation.as_deref(),
     ) {
         app.dirty = true;
+        // The agent just did something, so its diff may have moved. This is
+        // the cheap half of keeping the number current — see `Session::changes`.
+        if let Some(session) = app.sessions.by_id_mut(notification.session) {
+            session.refresh_changes();
+        }
         // A newly-learned conversation id is worth persisting straight away:
         // it is the difference between resuming and starting over.
         app.remember_sessions();
@@ -697,6 +703,27 @@ fn open_worktrees(app: &mut App) {
     }
 }
 
+/// Opens the selected session's diff.
+///
+/// Refreshes the count first, so the header agrees with the body. The card's
+/// number can be a few seconds stale by design; the view you deliberately
+/// opened should not be.
+fn open_diff(app: &mut App) {
+    let Some(session) = app.sessions.selected_mut() else {
+        return app.notify("no session to review");
+    };
+    session.refresh_changes();
+
+    let (name, cwd) = (session.name.clone(), session.spec.cwd.clone());
+    match crate::diff::View::open(name, &cwd) {
+        Ok(view) => {
+            app.diff = Some(view);
+            app.dirty = true;
+        }
+        Err(error) => app.notify(error.to_string()),
+    }
+}
+
 /// The worktree manager.
 fn on_key_worktrees(app: &mut App, key: KeyEvent) {
     app.dirty = true;
@@ -741,8 +768,37 @@ fn remove_worktree(app: &mut App, force: bool) {
     }
 }
 
+/// Reading a diff.
+///
+/// The page height is not known here — only the renderer knows how tall the
+/// pane ended up — so paging uses the terminal height less the border and
+/// title rows. Being a line or two out when you press `G` is invisible;
+/// threading the real geometry through the key handler to fix it would not be.
+fn on_key_diff(app: &mut App, key: KeyEvent, page: usize) {
+    app.dirty = true;
+    let Some(view) = app.diff.as_mut() else { return };
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q' | 'v') => app.diff = None,
+        KeyCode::Char('j') | KeyCode::Down => view.scroll_by(1),
+        KeyCode::Char('k') | KeyCode::Up => view.scroll_by(-1),
+        KeyCode::Char('d') | KeyCode::PageDown => {
+            view.scroll_by(isize::try_from(page).unwrap_or(20));
+        }
+        KeyCode::Char('u') | KeyCode::PageUp => {
+            view.scroll_by(-isize::try_from(page).unwrap_or(20));
+        }
+        KeyCode::Char('g') | KeyCode::Home => view.scroll_to_top(),
+        KeyCode::Char('G') | KeyCode::End => view.scroll_to_bottom(page),
+        _ => {}
+    }
+}
+
 /// The modal session chooser.
 fn on_key_picker(app: &mut App, key: KeyEvent) {
+    if app.diff.is_some() {
+        return on_key_diff(app, key, 20);
+    }
     if app.worktrees.is_some() {
         return on_key_worktrees(app, key);
     }
@@ -918,6 +974,9 @@ fn on_key_board(app: &mut App, key: KeyEvent) {
                 app.notify("that session has exited — press x on the Sessions view to close it");
             }
         }
+        // The board is where you notice a card has gone quiet, so it is where
+        // you want to ask what it did. Same key, same selected session.
+        KeyCode::Char('v') => open_diff(app),
         _ => {}
     }
 }
@@ -1149,6 +1208,9 @@ fn on_key_sessions(app: &mut App, key: KeyEvent) {
         KeyCode::Char('n') => app.open_new_session_form(),
         KeyCode::Char('s') => spawn(app, true),
         KeyCode::Char('W') => open_worktrees(app),
+        // `v` for review. `d` would be the better mnemonic and is long since
+        // spoken for by half-page scrolling.
+        KeyCode::Char('v') => open_diff(app),
         // Reading back through an agent's output is a normal thing to want,
         // and it must not depend on the terminal reporting the mouse.
         KeyCode::PageUp

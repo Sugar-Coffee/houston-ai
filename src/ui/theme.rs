@@ -14,10 +14,20 @@
 //! | link | *you can follow this* | wikilinks and links |
 //! | heading | *this is structure* | markdown headings |
 //! | code | *this is literal* | code spans and fences |
+//! | added | *this arrived* | added diff lines |
+//! | removed | *this went* | removed diff lines |
 //!
 //! The rule that keeps it honest: **if adding colour somewhere would need a
 //! new hue, the answer is usually that it does not need colour.** Reach for
 //! `dim` first.
+//!
+//! `added` and `removed` were added under that rule rather than around it. A
+//! diff is the one place where two opposed colours *are* the notation, and the
+//! obvious shortcut — reusing `running` and `danger`, which are already green
+//! and red — would have given both a second meaning. A pane full of green
+//! lines where green elsewhere means "an agent is working" is precisely the
+//! confusion the rule exists to prevent. The session card takes the other
+//! branch of the same rule and shows its `+12 −4` in `dim`.
 //!
 //! A theme fills these roles in. Views never name a colour — they name a role
 //! — so a new theme is a remap rather than an audit of every call site.
@@ -61,6 +71,10 @@ pub struct Theme {
     pub link: Color,
     /// Code spans and fences.
     pub code: Color,
+    /// Lines a diff added.
+    pub added: Color,
+    /// Lines a diff removed.
+    pub removed: Color,
 
     /// What a child process's *default* background paints as.
     ///
@@ -102,6 +116,8 @@ impl Theme {
             heading: Color::Rgb(0xFF, 0x79, 0xC6),
             link: Color::Rgb(0x8B, 0xE9, 0xFD),
             code: Color::Rgb(0xF1, 0xFA, 0x8C),
+            added: Color::Rgb(0x50, 0xFA, 0x7B),
+            removed: Color::Rgb(0xFF, 0x55, 0x55),
             terminal_background: Color::Rgb(0x28, 0x2A, 0x36),
         }
     }
@@ -121,6 +137,8 @@ impl Theme {
             heading: Color::Rgb(0xF9, 0x26, 0x72),
             link: Color::Rgb(0x66, 0xD9, 0xEF),
             code: Color::Rgb(0xE6, 0xDB, 0x74),
+            added: Color::Rgb(0xA6, 0xE2, 0x2E),
+            removed: Color::Rgb(0xF9, 0x26, 0x72),
             terminal_background: Color::Rgb(0x27, 0x28, 0x22),
         }
     }
@@ -140,6 +158,8 @@ impl Theme {
             heading: Color::Rgb(0xB4, 0x8E, 0xAD),
             link: Color::Rgb(0x81, 0xA1, 0xC1),
             code: Color::Rgb(0xD0, 0x87, 0x70),
+            added: Color::Rgb(0xA3, 0xBE, 0x8C),
+            removed: Color::Rgb(0xBF, 0x61, 0x6A),
             terminal_background: Color::Rgb(0x2E, 0x34, 0x40),
         }
     }
@@ -161,6 +181,8 @@ impl Theme {
             heading: Color::Rgb(0xA6, 0x22, 0x7E),
             link: Color::Rgb(0x1D, 0x66, 0x92),
             code: Color::Rgb(0x8A, 0x63, 0x00),
+            added: Color::Rgb(0x1F, 0x7A, 0x38),
+            removed: Color::Rgb(0xC0, 0x28, 0x28),
             terminal_background: Color::Rgb(0xFD, 0xF6, 0xE3),
         }
     }
@@ -185,6 +207,8 @@ impl Theme {
             heading: Color::Rgb(0xE6, 0xE8, 0xEA),
             link: Color::Rgb(0xA8, 0xAE, 0xB5),
             code: Color::Rgb(0x9A, 0xA0, 0xA7),
+            added: Color::Rgb(0xD8, 0xDE, 0xE5),
+            removed: Color::Rgb(0x6A, 0x6F, 0x76),
             terminal_background: Color::Rgb(0x14, 0x15, 0x18),
         }
     }
@@ -272,6 +296,8 @@ struct File {
     heading: Option<String>,
     link: Option<String>,
     code: Option<String>,
+    added: Option<String>,
+    removed: Option<String>,
     terminal_background: Option<String>,
 }
 
@@ -300,6 +326,8 @@ impl File {
             heading: pick(self.heading, base.heading)?,
             link: pick(self.link, base.link)?,
             code: pick(self.code, base.code)?,
+            added: pick(self.added, base.added)?,
+            removed: pick(self.removed, base.removed)?,
             terminal_background: pick(self.terminal_background, surface)?,
         })
     }
@@ -364,6 +392,8 @@ danger    = "#FF5555"   # failed
 heading   = "#FF79C6"   # markdown structure
 link      = "#8BE9FD"   # followable
 code      = "#F1FA8C"   # literal
+added     = "#50FA7B"   # a diff added this line
+removed   = "#FF5555"   # a diff removed this line
 
 # What a session's default background paints as. Defaults to `surface` above,
 # so sessions match the rest of the app. Set it to "default" if you would

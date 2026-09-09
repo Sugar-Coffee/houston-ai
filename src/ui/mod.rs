@@ -75,6 +75,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let Some(open) = &app.form {
         overlay::form(frame, body, open, theme);
     }
+    if let Some(view) = &app.diff {
+        overlay::diff(frame, body, view, theme);
+    }
     if let Some(list) = &app.worktrees {
         overlay::worktrees(frame, body, list, app.worktree_selected, &app.sessions, theme);
     }

@@ -118,7 +118,22 @@ pub fn conversation_from(mut reader: impl std::io::Read) -> Option<String> {
 }
 
 /// Houston's own directory, created on demand.
+///
+/// `HOUSTON_STATE_DIR` overrides it. That exists for one reason: verifying a
+/// change in a real terminal means running the real binary, and the real
+/// binary keeps your sessions, worktrees and config in `~/.houston`. A
+/// verification run that spawned two demo sessions duly wrote them into the
+/// live session list, next to work that was actually running. `CLAUDE.md`
+/// records this trap for tests; a pty run walks straight past that guard,
+/// because nothing about it is a test.
 pub fn state_dir() -> Result<PathBuf> {
+    if let Some(override_path) = std::env::var_os("HOUSTON_STATE_DIR") {
+        let directory = PathBuf::from(override_path);
+        std::fs::create_dir_all(&directory)
+            .with_context(|| format!("could not create {}", directory.display()))?;
+        return Ok(directory);
+    }
+
     let home = std::env::var_os("HOME").context("HOME is not set")?;
     let directory = Path::new(&home).join(".houston");
     std::fs::create_dir_all(&directory)

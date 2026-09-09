@@ -110,6 +110,8 @@ pub struct App {
     /// The Settings view, which *is* a form — a menu of fields you move
     /// through and press Return to edit.
     pub settings: Form,
+    /// The open diff, if any. Captured once on open; see [`crate::diff::View`].
+    pub diff: Option<crate::diff::View>,
     /// The worktree manager's contents, loaded when it opens.
     pub worktrees: Option<Vec<Worktree>>,
     pub worktree_selected: usize,
@@ -154,7 +156,17 @@ pub mod fields {
 
 impl App {
     pub fn new() -> Self {
-        let (config, config_error) = Config::load();
+        // **A test must never read the developer's own config.** `config_path`
+        // and `state_path` below were already pointed somewhere harmless, but
+        // the *load* was not, so the suite quietly depended on a file outside
+        // the repository. It went unnoticed until the theme in
+        // `~/.houston/config.toml` was set to Monokai, at which point two
+        // board tests started failing on that one machine and passing on
+        // every other. The same `$HOME` trap `CLAUDE.md` records, in read form
+        // rather than write form.
+        let (config, config_error) =
+            if cfg!(test) { (Config::default(), None) } else { Config::load() };
+
         let mut app = Self::with_config(config);
         app.notice = config_error;
         app.reload_theme();
@@ -206,6 +218,13 @@ impl App {
     /// Called when the setting changes, so a theme file you have just edited
     /// takes effect without a restart.
     pub fn reload_theme(&mut self) {
+        // `themes()` also scans `~/.houston/themes/`, so a user theme file
+        // could redefine a built-in out from under the suite. See `new`.
+        if cfg!(test) {
+            self.theme = Theme::default();
+            self.themes = Vec::new();
+            return;
+        }
         let (theme, available) = self.config.themes();
         self.theme = theme;
         self.themes = available;
@@ -287,6 +306,7 @@ impl App {
             form: None,
             form_purpose: FormPurpose::None,
             settings: Form::new(Vec::new()),
+            diff: None,
             worktrees: None,
             worktree_selected: 0,
             input_log: VecDeque::new(),
@@ -338,7 +358,7 @@ impl App {
         if self.tab == Tab::Settings {
             return InputFocus::Form;
         }
-        if self.worktrees.is_some() {
+        if self.worktrees.is_some() || self.diff.is_some() {
             return InputFocus::Overlay;
         }
         if self.renaming.is_some() || self.is_vault_query() {
@@ -482,6 +502,12 @@ impl App {
                 ("", "all other keys go to the session"),
             ]),
             InputFocus::Text => Some(vec![("\u{21b5}", "accept"), ("esc", "cancel")]),
+            InputFocus::Overlay if self.diff.is_some() => Some(vec![
+                ("j/k", "scroll"),
+                ("u/d", "page"),
+                ("g/G", "top/bottom"),
+                ("esc", "close"),
+            ]),
             InputFocus::Overlay if self.worktrees.is_some() => Some(vec![
                 ("j/k", "select"),
                 ("d", "remove"),
@@ -536,6 +562,7 @@ impl App {
                     binds.extend([
                         ("j/k", "select"),
                         ("↵", "attach"),
+                        ("v", "review"),
                         ("u/d", "scroll"),
                         ("r", "rename"),
                         ("x", "close"),
@@ -544,7 +571,7 @@ impl App {
                 binds.push(("W", "worktrees"));
             }
             Tab::Board if !self.sessions.is_empty() => {
-                binds.extend([("hjkl", "move"), ("↵", "open session")]);
+                binds.extend([("hjkl", "move"), ("↵", "open session"), ("v", "review")]);
             }
 
             Tab::Vault if self.browser.is_some() => {
@@ -598,6 +625,20 @@ mod tests {
 
         app.select_tab(Tab::Board);
         assert!(app.dirty, "changing tab should force a redraw");
+    }
+
+    /// Guards the trap in `App::new`: the suite must not vary with whatever
+    /// is in the developer's `~/.houston/config.toml`.
+    #[test]
+    fn a_test_app_is_built_from_defaults_not_from_the_real_config() {
+        let app = App::new();
+
+        assert_eq!(
+            app.theme,
+            Theme::default(),
+            "a theme set in the user's own config must not reach the suite"
+        );
+        assert!(app.themes.is_empty(), "nor may theme files in ~/.houston/themes");
     }
 
     #[test]
