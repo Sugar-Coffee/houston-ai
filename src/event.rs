@@ -624,6 +624,11 @@ fn apply_form_field(app: &mut App, modal: bool) {
         app.config.powerline = Some(powerline);
     }
 
+    let icons = app.settings.is_on(fields::ICONS);
+    if Some(icons) != app.config.icons {
+        app.config.icons = Some(icons);
+    }
+
     let vault = app.settings.value(fields::VAULT);
     let agent = app.settings.value(fields::AGENT_DIRECTORY);
 

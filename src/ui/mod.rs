@@ -60,7 +60,8 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     let [tabs, body, footer] = layout(frame.area());
 
-    let glyphs = powerline::Glyphs::for_setting(app.config.powerline_enabled());
+    let glyphs =
+        powerline::Glyphs::for_setting(app.config.powerline_enabled(), app.config.icons_enabled());
 
     chrome::tab_strip(frame, tabs, app, theme);
 
@@ -269,7 +270,7 @@ mod tests {
     fn a_shell_session_is_marked_and_an_agent_is_not() {
         let mut app = App::new();
         app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
-        app.config.powerline = Some(true);
+        app.config.icons = Some(true);
 
         assert!(draw(&app, 110, 20).contains('\u{f120}'), "the terminal glyph marks a shell");
 
@@ -300,6 +301,30 @@ mod tests {
         let flowing = draw(&app, 110, 20);
         assert!(flowing.contains("+42"), "and so does the segmented form");
         assert!(flowing.contains("2 files"), "the count is not lost to decoration");
+    }
+
+    /// The bug the split exists to prevent, at the level that shipped it.
+    ///
+    /// A powerline-patched font has the separator block and not the icon
+    /// block. Turning on separators used to turn on icons too, which put a row
+    /// of replacement boxes in the vault list of anyone whose tabs looked
+    /// perfect.
+    #[test]
+    fn separators_alone_never_draw_an_icon_the_font_may_not_have() {
+        let mut app = App::new();
+        app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+        app.config.powerline = Some(true);
+        app.config.icons = Some(false);
+
+        let rendered = draw(&app, 110, 20);
+
+        assert!(rendered.contains('\u{e0b0}'), "the separators the font does have are drawn");
+        for icon in ['\u{f07b}', '\u{f15c}', '\u{f120}', '\u{f0e7}'] {
+            assert!(
+                !rendered.contains(icon),
+                "{icon:?} needs a Nerd Font, which a powerline-patched font is not"
+            );
+        }
     }
 
     /// The branch marker follows the same setting, so a terminal without the

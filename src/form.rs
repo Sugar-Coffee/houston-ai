@@ -41,7 +41,11 @@ pub enum Activation {
 pub struct Field {
     pub label: &'static str,
     /// Shown dim beside the field when it is empty or focused.
-    pub hint: &'static str,
+    ///
+    /// Owned rather than `&'static str` so a hint can carry a live sample —
+    /// the font settings put their actual glyphs here, which is the only
+    /// honest way to tell somebody whether their terminal can draw them.
+    pub hint: String,
     pub kind: FieldKind,
     pub value: String,
     pub on: bool,
@@ -55,10 +59,10 @@ pub struct Field {
 }
 
 impl Field {
-    pub fn text(label: &'static str, hint: &'static str, value: impl Into<String>) -> Self {
+    pub fn text(label: &'static str, hint: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             label,
-            hint,
+            hint: hint.into(),
             kind: FieldKind::Text,
             value: value.into(),
             on: false,
@@ -68,21 +72,25 @@ impl Field {
         }
     }
 
-    pub fn directory(label: &'static str, hint: &'static str, value: impl Into<String>) -> Self {
+    pub fn directory(
+        label: &'static str,
+        hint: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         Self { kind: FieldKind::Directory, ..Self::text(label, hint, value) }
     }
 
-    pub fn toggle(label: &'static str, hint: &'static str, on: bool) -> Self {
+    pub fn toggle(label: &'static str, hint: impl Into<String>, on: bool) -> Self {
         Self { kind: FieldKind::Toggle, on, ..Self::text(label, hint, "") }
     }
 
-    pub fn action(label: &'static str, hint: &'static str) -> Self {
+    pub fn action(label: &'static str, hint: impl Into<String>) -> Self {
         Self { kind: FieldKind::Action, ..Self::text(label, hint, "") }
     }
 
     pub fn choice(
         label: &'static str,
-        hint: &'static str,
+        hint: impl Into<String>,
         options: Vec<String>,
         current: &str,
     ) -> Self {
@@ -113,9 +121,9 @@ impl Field {
     pub fn display(&self) -> String {
         match self.kind {
             FieldKind::Toggle => if self.on { "yes" } else { "no" }.to_string(),
-            FieldKind::Action => self.hint.to_string(),
+            FieldKind::Action => self.hint.clone(),
             FieldKind::Choice => self.value.clone(),
-            _ if self.value.is_empty() => self.hint.to_string(),
+            _ if self.value.is_empty() => self.hint.clone(),
             _ => self.value.clone(),
         }
     }

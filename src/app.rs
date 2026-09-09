@@ -171,6 +171,7 @@ pub mod fields {
     pub const CREATE: &str = "Create";
     pub const MOUSE: &str = "Capture the mouse";
     pub const POWERLINE: &str = "Powerline separators";
+    pub const ICONS: &str = "Nerd Font icons";
     pub const MESSAGE: &str = "Commit message";
     pub const PUSH: &str = "Push to origin";
     pub const PULL_REQUEST: &str = "Open a pull request";
@@ -280,10 +281,18 @@ impl App {
                 "wheel scrolls sessions; off restores text selection",
                 self.config.mouse_enabled(),
             ),
+            // The hints carry the glyphs themselves, so the row you are about
+            // to switch on shows you whether your font can draw it. Boxes here
+            // mean the answer is no, before you turn anything on.
             Field::toggle(
                 fields::POWERLINE,
-                "arrow-shaped tabs; needs a Nerd Font",
+                format!("arrow-shaped tabs — {}", crate::ui::powerline::SEPARATOR_SAMPLE),
                 self.config.powerline_enabled(),
+            ),
+            Field::toggle(
+                fields::ICONS,
+                format!("needs a Nerd Font — {}", crate::ui::powerline::ICON_SAMPLE),
+                self.config.icons_enabled(),
             ),
         ]);
     }

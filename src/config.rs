@@ -60,12 +60,18 @@ pub struct Config {
     pub mouse: Option<bool>,
     /// The theme by name. `None` means the default.
     pub theme: Option<String>,
-    /// Draw powerline separators. Needs a Nerd Font; see `ui::powerline`.
+    /// Draw powerline separators. Needs a powerline-patched font.
     ///
     /// Defaults to off, and stays off unless somebody says otherwise. A
     /// terminal without the glyphs draws boxes, and a first run that looks
     /// broken is worse than a first run that looks plain.
     pub powerline: Option<bool>,
+    /// Draw file, folder and session icons. Needs a **Nerd Font** specifically.
+    ///
+    /// Separate from `powerline` because it is a separate font. The
+    /// powerline/fonts collection patches the separator block and nothing
+    /// else, so plenty of people have working separators and no icons at all.
+    pub icons: Option<bool>,
 }
 
 impl Config {
@@ -141,6 +147,15 @@ impl Config {
     #[must_use]
     pub const fn powerline_enabled(&self) -> bool {
         match self.powerline {
+            Some(enabled) => enabled,
+            None => false,
+        }
+    }
+
+    /// Whether to draw Nerd Font icons.
+    #[must_use]
+    pub const fn icons_enabled(&self) -> bool {
+        match self.icons {
             Some(enabled) => enabled,
             None => false,
         }

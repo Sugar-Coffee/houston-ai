@@ -287,16 +287,24 @@ than a redesign.
 
 ### Powerline separators
 
-If you run a [Nerd Font](https://www.nerdfonts.com/) — and if you use one of
-the Claude Code statusline addons, you already do — turn on **Powerline
-separators** in Settings. The tab strip becomes flowing arrow-shaped segments
-and branch names take the [powerline](https://github.com/powerline/powerline)
-branch glyph.
+Two settings in Settings, and they are deliberately separate because they need
+two different fonts:
 
-It is off by default and it has to be. A terminal without those glyphs draws
-them as replacement boxes, which does not degrade into "plain", it degrades
-into "broken". Nothing needs installing for Houston itself; this is about the
-font your terminal already has.
+- **Powerline separators** — arrow-shaped tab segments and the branch glyph.
+  Needs a powerline-patched font; the old
+  [powerline/fonts](https://github.com/powerline/fonts) collection is enough.
+- **Nerd Font icons** — folder, note, shell and agent markers. Needs a
+  [Nerd Font](https://www.nerdfonts.com/) specifically.
+
+A powerline-patched font has the first and not the second, which is why they
+are not one switch. Each hint in Settings prints its own glyphs, so you can see
+whether your font can draw them before you turn the row on — boxes there mean
+no.
+
+Both default to off. A terminal without the glyphs renders replacement boxes,
+and that does not degrade into "plain", it degrades into "broken". Nothing
+needs installing for Houston itself; this is about the font your terminal is
+already using.
 
 Your own themes are `.toml` files in `~/.houston/themes/`, and a documented
 template is written there on first run. Every field is optional, so overriding
