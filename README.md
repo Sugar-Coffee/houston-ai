@@ -241,7 +241,6 @@ memorise anything.
 | `↵` · `ctrl-\` | attach · detach |
 | `r` · `x` | rename · close |
 | `u` `d` `g` `G` | scroll a session's output |
-| `W` | the worktree manager |
 
 **Vault**
 

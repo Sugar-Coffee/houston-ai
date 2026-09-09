@@ -1382,7 +1382,6 @@ fn on_key_sessions(app: &mut App, key: KeyEvent) {
         // `n` asks where and how; `s` is the quick shell you want immediately.
         KeyCode::Char('n') => app.open_new_session_form(),
         KeyCode::Char('s') => spawn(app, true),
-        KeyCode::Char('W') => app.select_tab(Tab::Worktrees),
         // `v` for review. `d` would be the better mnemonic and is long since
         // spoken for by half-page scrolling.
         KeyCode::Char('v') => open_diff(app),
@@ -1658,14 +1657,21 @@ mod tests {
         assert_eq!(app.sessions.len(), 1);
     }
 
-    /// `W` used to open a popup. It now goes to the view, because the list
-    /// grew five facts per row and a modal box is the wrong size for that.
+    /// Worktrees is reached the way every other view is reached.
+    ///
+    /// It had a dedicated `W` for as long as it was a popup you opened from
+    /// the Sessions view. Once it became a tab that shortcut was a second way
+    /// to do something the tab strip already does, and the only capital in the
+    /// app that was not vim vocabulary.
     #[test]
-    fn w_goes_to_the_worktrees_view_and_tab_leaves_it() {
+    fn worktrees_is_reached_by_its_tab_and_not_by_a_shortcut() {
         let mut app = App::new();
-        on_key(&mut app, KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
 
-        assert_eq!(app.tab, Tab::Worktrees, "W selects the view");
+        on_key(&mut app, KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
+        assert_eq!(app.tab, Tab::Sessions, "shift-W is not a binding any more");
+
+        on_key(&mut app, press(KeyCode::Char('4')));
+        assert_eq!(app.tab, Tab::Worktrees, "the digit does it, like every other view");
         assert_eq!(app.focus(), InputFocus::Commands, "a view is not a modal");
 
         on_key(&mut app, press(KeyCode::Tab));

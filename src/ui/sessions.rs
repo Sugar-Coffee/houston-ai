@@ -371,11 +371,9 @@ fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme)
                 keycap::Caps::plain(theme),
                 theme,
             ),
-            Line::from(""),
-            keycap::row(&[("W", "worktrees")], keycap::Caps::plain(theme), theme),
         ];
-        let padding = inner.height.saturating_sub(5) / 2;
-        let centred = Rect { y: inner.y + padding, height: 5.min(inner.height), ..inner };
+        let padding = inner.height.saturating_sub(3) / 2;
+        let centred = Rect { y: inner.y + padding, height: 3.min(inner.height), ..inner };
         frame.render_widget(Paragraph::new(hint).alignment(Alignment::Center), centred);
         return;
     };

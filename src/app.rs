@@ -913,7 +913,6 @@ impl App {
                         ("x", "close"),
                     ]);
                 }
-                binds.push(("W", "worktrees"));
             }
             Tab::Board if !self.sessions.is_empty() => {
                 binds.extend([("hjkl", "move"), ("↵", "open session"), ("v", "review")]);
@@ -1080,6 +1079,40 @@ mod tests {
             app.themes[picker.selected].name, "Gruvbox Dark",
             "it starts where you are, not at the top of a list of nineteen"
         );
+    }
+
+    /// A lone capital in the footer is a bad smell, and this is the rule that
+    /// came out of removing the two that were there.
+    ///
+    /// `D` (force-remove a worktree) and `W` (jump to worktrees) were both
+    /// single capitals standing alone. The first hid a destructive action
+    /// behind a key you had to already know about; the second was a second way
+    /// to do what the tab strip does. Both are gone.
+    ///
+    /// What is still allowed is a capital shown *beside its lower-case pair* —
+    /// `g/G` for top and bottom. That is vim vocabulary, it is not destructive,
+    /// and showing both halves is what makes the case meaningful rather than
+    /// hidden.
+    #[test]
+    fn no_view_advertises_a_lone_capital() {
+        let mut app = App::new();
+        app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+        app.worktrees = Some(vec![spare_worktree("wt")]);
+
+        for tab in Tab::ALL {
+            app.tab = tab;
+            for (key, action) in app.keybinds() {
+                let lone_capital =
+                    key.len() == 1 && key.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+
+                assert!(
+                    !lone_capital,
+                    "{tab:?} offers {key:?} for {action:?}. A capital on its own is either a \
+                     destructive action hiding behind shift, or a shortcut for something the \
+                     tab strip already does. Show it as `x/X` if the pair is the point."
+                );
+            }
+        }
     }
 
     /// The scan can only ever prove absence, so the wording has to be honest
