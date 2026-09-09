@@ -38,7 +38,11 @@ fn render_missing(frame: &mut Frame, area: Rect, theme: Theme) {
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        keycap::row(&[("4", "open Settings and point Houston at a folder")], theme),
+        keycap::row(
+            &[("5", "open Settings and point Houston at a folder")],
+            keycap::Caps::plain(theme),
+            theme,
+        ),
         Line::from(""),
         Line::from(Span::styled(
             "or set HOUSTON_VAULT",
@@ -165,9 +169,17 @@ fn render_note(frame: &mut Frame, area: Rect, browser: &Browser, theme: Theme) {
                 Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            keycap::row(&[("↵", "open"), ("/", "find"), ("f", "search"), ("e", "edit")], theme),
+            keycap::row(
+                &[("↵", "open"), ("/", "find"), ("f", "search"), ("e", "edit")],
+                keycap::Caps::plain(theme),
+                theme,
+            ),
             Line::from(""),
-            keycap::row(&[("y", "yank path"), ("i", "send to session"), ("w", "wrap")], theme),
+            keycap::row(
+                &[("y", "yank path"), ("i", "send to session"), ("w", "wrap")],
+                keycap::Caps::plain(theme),
+                theme,
+            ),
         ];
         let padding = inner.height.saturating_sub(5) / 2;
         let centred = Rect { y: inner.y + padding, height: 5.min(inner.height), ..inner };

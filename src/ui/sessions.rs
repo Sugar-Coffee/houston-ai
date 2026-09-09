@@ -366,9 +366,13 @@ fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme)
                 Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            keycap::row(&[("n", "start an agent"), ("s", "start a shell")], theme),
+            keycap::row(
+                &[("n", "start an agent"), ("s", "start a shell")],
+                keycap::Caps::plain(theme),
+                theme,
+            ),
             Line::from(""),
-            keycap::row(&[("W", "worktrees")], theme),
+            keycap::row(&[("W", "worktrees")], keycap::Caps::plain(theme), theme),
         ];
         let padding = inner.height.saturating_sub(5) / 2;
         let centred = Rect { y: inner.y + padding, height: 5.min(inner.height), ..inner };

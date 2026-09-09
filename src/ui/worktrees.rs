@@ -104,6 +104,7 @@ fn empty_state<'a>(unread: bool, theme: Theme) -> Vec<Line<'a>> {
         {
             let mut row = keycap::row(
                 &[("n", "start a session on the Sessions view and tick Worktree")],
+                keycap::Caps::plain(theme),
                 theme,
             );
             row.spans.insert(0, Span::raw("  "));

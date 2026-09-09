@@ -133,14 +133,14 @@ pub fn keybind_bar(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     if app.quit_armed {
         let warning = Line::from(vec![
             Span::styled(
-                " q ",
+                format!(" {} ", keycap::label("q")),
                 Style::default().fg(theme.surface).bg(theme.attention).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "  press again to quit  ",
                 Style::default().fg(theme.attention).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("esc", Style::default().fg(theme.dim)),
+            Span::styled(keycap::label("esc"), Style::default().fg(theme.dim)),
             Span::styled("  stay", Style::default().fg(theme.dim)),
         ]);
         frame.render_widget(Paragraph::new(warning).style(Style::default().bg(theme.raised)), area);
@@ -150,7 +150,13 @@ pub fn keybind_bar(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let line = app.notice.as_ref().map_or_else(
         || {
             let binds = app.keybinds();
-            let mut line = keycap::row(&binds, theme);
+            // The footer sits on the raised bar, so that is what a separator
+            // has to flow into.
+            let caps = keycap::Caps {
+                glyphs: crate::ui::powerline::Glyphs::for_setting(app.config.powerline_enabled()),
+                background: theme.raised,
+            };
+            let mut line = keycap::row(&binds, caps, theme);
             // A leading space so the first cap is not flush against the edge.
             line.spans.insert(0, Span::raw(" "));
             line

@@ -75,7 +75,11 @@ pub fn render(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme) 
                 Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            keycap::row(&[("1", "go to Sessions and start one")], theme),
+            keycap::row(
+                &[("1", "go to Sessions and start one")],
+                keycap::Caps::plain(theme),
+                theme,
+            ),
         ];
         let padding = area.height.saturating_sub(3) / 2;
         let centred = Rect { y: area.y + padding, height: 3.min(area.height), ..area };

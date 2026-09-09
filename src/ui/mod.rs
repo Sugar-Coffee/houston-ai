@@ -198,8 +198,9 @@ mod tests {
         let rendered = draw(&App::new(), 100, 24);
         assert!(rendered.contains("No sessions yet"));
         assert!(rendered.contains("start an agent"));
-        // The key is drawn as a key, not as a letter in a sentence.
-        assert!(rendered.contains(" n "), "the shortcut is capped");
+        // The key is drawn as a key, not as a letter in a sentence — and in
+        // upper case, because that is what the key on the keyboard says.
+        assert!(rendered.contains(" N "), "the shortcut is capped");
     }
 
     #[test]
@@ -293,6 +294,19 @@ mod tests {
         let flowing = draw(&app, 110, 20);
         assert!(flowing.contains("+42"), "and so does the segmented form");
         assert!(flowing.contains("2 files"), "the count is not lost to decoration");
+    }
+
+    /// The footer's caps follow the same setting as everything else.
+    #[test]
+    fn the_keybind_footer_flows_when_powerline_is_on() {
+        let mut app = App::new();
+
+        assert!(!draw(&app, 110, 20).contains('\u{e0b0}'), "plain caps sit beside their labels");
+
+        app.config.powerline = Some(true);
+        let flowing = draw(&app, 110, 20);
+        assert!(flowing.contains('\u{e0b0}'), "and flow into them with the setting on");
+        assert!(flowing.contains(" N "), "without losing the key itself");
     }
 
     /// Nothing Houston draws may be a private use codepoint.
