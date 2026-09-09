@@ -27,17 +27,49 @@ pub struct Glyphs {
     pub notch: &'static str,
     /// Precedes a branch name. U+E0A0.
     pub branch: &'static str,
+    /// A directory.
+    pub folder: &'static str,
+    /// A note in the vault.
+    pub note: &'static str,
+    /// A session running an AI agent.
+    pub agent: &'static str,
+    /// A session running a shell.
+    pub shell: &'static str,
     /// Whether segments should be drawn as flowing blocks at all.
     pub segmented: bool,
 }
 
 /// The plain style: no glyph outside the ASCII-and-common-symbols range that
 /// every terminal already draws.
-pub const PLAIN: Glyphs = Glyphs { cap: "", notch: "", branch: "⑂", segmented: false };
+pub const PLAIN: Glyphs = Glyphs {
+    cap: "",
+    notch: "",
+    branch: "⑂",
+    folder: "▪",
+    note: "·",
+    agent: "",
+    shell: "$",
+    segmented: false,
+};
 
 /// The powerline style. Needs a Nerd Font.
-pub const POWERLINE: Glyphs =
-    Glyphs { cap: "\u{e0b0}", notch: "\u{e0b2}", branch: "\u{e0a0}", segmented: true };
+///
+/// **Deliberately conservative codepoints.** Every glyph here is from the
+/// Font Awesome 4 block that Nerd Fonts have carried since the beginning,
+/// rather than the Material or Octicon ranges that moved between v2 and v3.
+/// A glyph that is only in the newest patch set draws a box for anyone on an
+/// older font, which is exactly the failure this whole style is trying to keep
+/// behind an opt-in.
+pub const POWERLINE: Glyphs = Glyphs {
+    cap: "\u{e0b0}",
+    notch: "\u{e0b2}",
+    branch: "\u{e0a0}",
+    folder: "\u{f07b}",
+    note: "\u{f15c}",
+    agent: "\u{f0e7}",
+    shell: "\u{f120}",
+    segmented: true,
+};
 
 impl Glyphs {
     /// The style for a setting.
@@ -63,7 +95,16 @@ mod tests {
 
     #[test]
     fn the_plain_style_uses_nothing_a_terminal_might_not_have() {
-        for glyph in [PLAIN.cap, PLAIN.notch, PLAIN.branch] {
+        let plain = [
+            PLAIN.cap,
+            PLAIN.notch,
+            PLAIN.branch,
+            PLAIN.folder,
+            PLAIN.note,
+            PLAIN.agent,
+            PLAIN.shell,
+        ];
+        for glyph in plain {
             for character in glyph.chars() {
                 assert!(
                     (character as u32) < 0xE000 || (character as u32) > 0xF8FF,
@@ -79,6 +120,37 @@ mod tests {
         assert_eq!(POWERLINE.cap, "\u{e0b0}", "the right-pointing solid triangle");
         assert_eq!(POWERLINE.notch, "\u{e0b2}", "and its mirror");
         assert_eq!(POWERLINE.branch, "\u{e0a0}", "the branch glyph");
+    }
+
+    /// Nerd Fonts moved several ranges between v2 and v3. Everything here is
+    /// from blocks that survived, so an older patched font still draws them.
+    #[test]
+    fn every_icon_comes_from_a_range_older_nerd_fonts_also_carry() {
+        for glyph in [POWERLINE.folder, POWERLINE.note, POWERLINE.agent, POWERLINE.shell] {
+            let point = glyph.chars().next().unwrap() as u32;
+            assert!(
+                (0xF000..=0xF2FF).contains(&point),
+                "{glyph:?} at U+{point:X} is outside the Font Awesome 4 block"
+            );
+        }
+
+        for glyph in [POWERLINE.cap, POWERLINE.notch, POWERLINE.branch] {
+            let point = glyph.chars().next().unwrap() as u32;
+            assert!((0xE0A0..=0xE0D4).contains(&point), "{glyph:?} is not a powerline glyph");
+        }
+    }
+
+    /// Every icon has to have a plain counterpart, or turning the setting off
+    /// would silently lose information rather than only losing decoration.
+    #[test]
+    fn nothing_is_only_expressible_with_a_nerd_font() {
+        assert!(!PLAIN.folder.is_empty(), "a folder still reads as a folder without the font");
+        assert!(!PLAIN.note.is_empty());
+        assert!(!PLAIN.shell.is_empty(), "a shell is still marked as one");
+        assert!(
+            PLAIN.agent.is_empty(),
+            "an agent is the unmarked default, which is what makes the shell marker mean something"
+        );
     }
 
     #[test]

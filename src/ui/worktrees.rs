@@ -144,13 +144,36 @@ fn entry<'a>(
         (ahead, behind) => format!("↑{ahead} ↓{behind}"),
     };
 
-    let first = Line::from(vec![
+    // The status is the whole reason for the row, so with powerline on it
+    // takes the shape that says "this is a badge" rather than sitting in the
+    // same weight as the name beside it.
+    let status_spans = if glyphs.is_flowing() {
+        vec![
+            Span::styled(glyphs.notch, Style::default().fg(colour)),
+            Span::styled(
+                format!("{} {} ", status.marker(), status.label()),
+                Style::default().fg(theme.surface).bg(colour).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(glyphs.cap, Style::default().fg(colour)),
+            Span::styled(
+                " ".repeat(18usize.saturating_sub(status.label().chars().count())),
+                Style::default(),
+            ),
+        ]
+    } else {
+        vec![
+            Span::styled(format!("{} ", status.marker()), Style::default().fg(colour)),
+            Span::styled(format!("{:<20}", status.label()), Style::default().fg(colour)),
+        ]
+    };
+
+    let mut first = vec![
         Span::styled(if chosen { " ▸ " } else { "   " }, Style::default().fg(theme.accent)),
         Span::styled(format!("{:<28}", truncate(&worktree.name, 27)), name_style),
-        Span::styled(format!("{} ", status.marker()), Style::default().fg(colour)),
-        Span::styled(format!("{:<18}", status.label()), Style::default().fg(colour)),
-        Span::styled(tracking, Style::default().fg(theme.dim)),
-    ]);
+    ];
+    first.extend(status_spans);
+    first.push(Span::styled(tracking, Style::default().fg(theme.dim)));
+    let first = Line::from(first);
 
     let repository = worktree
         .repository

@@ -183,9 +183,18 @@ fn name_row<'a>(
         }
     };
 
+    // An agent is the unmarked default and a shell is marked, rather than both
+    // carrying a badge. Most sessions here are agents; marking the majority
+    // would be a column of the same glyph.
     let kind = match session.kind {
-        Kind::Agent { .. } => "",
-        Kind::Shell => " $",
+        Kind::Agent { .. } => {
+            if chrome.glyphs.agent.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", chrome.glyphs.agent)
+            }
+        }
+        Kind::Shell => format!(" {}", chrome.glyphs.shell),
     };
 
     let ordinal = if index < 9 { format!("{} ", index + 1) } else { "  ".to_string() };
@@ -210,6 +219,53 @@ fn name_row<'a>(
             badge,
         ])
     }
+}
+
+/// The card's last row: what the agent has done to the working tree.
+///
+/// Two shapes for the same fact. Plain, it is coloured text. With powerline
+/// on, the two halves become flowing segments — which is the one place in
+/// Houston where a filled shape earns its keep on a card, because the numbers
+/// are a *pair* and the segments say so.
+fn changes_row<'a>(changes: crate::diff::Changes, chrome: Chrome) -> Line<'a> {
+    let Chrome { glyphs, theme, .. } = chrome;
+
+    let files =
+        if changes.files == 1 { "1 file".to_string() } else { format!("{} files", changes.files) };
+
+    if !glyphs.is_flowing() {
+        return Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                format!("+{}", changes.insertions),
+                Style::default().fg(theme.added).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("−{}", changes.deletions),
+                Style::default().fg(theme.removed).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  {files}"), Style::default().fg(theme.dim)),
+        ]);
+    }
+
+    // Green flows into red flows into the page. Each separator is drawn in the
+    // outgoing colour on the incoming one, which is what makes the boundary a
+    // single shape rather than two halves meeting.
+    Line::from(vec![
+        Span::raw("    "),
+        Span::styled(
+            format!(" +{} ", changes.insertions),
+            Style::default().fg(theme.surface).bg(theme.added).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(glyphs.cap, Style::default().fg(theme.added).bg(theme.removed)),
+        Span::styled(
+            format!(" −{} ", changes.deletions),
+            Style::default().fg(theme.surface).bg(theme.removed).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(glyphs.cap, Style::default().fg(theme.removed)),
+        Span::styled(format!(" {files}"), Style::default().fg(theme.dim)),
+    ])
 }
 
 /// One session as four rows: what it is, where it runs, what branch it is on,
@@ -268,29 +324,7 @@ fn render_card<'a>(
     // A clean tree still says nothing rather than "+0 −0". The absence of a
     // number is the fastest way to read "nothing yet".
     let changes = match &session.changes {
-        Some(changes) if !changes.is_empty() => Line::from(vec![
-            Span::raw("    "),
-            Span::styled(
-                format!("+{}", changes.insertions),
-                Style::default().fg(theme.added).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                format!("−{}", changes.deletions),
-                Style::default().fg(theme.removed).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "  {}",
-                    if changes.files == 1 {
-                        "1 file".to_string()
-                    } else {
-                        format!("{} files", changes.files)
-                    }
-                ),
-                Style::default().fg(theme.dim),
-            ),
-        ]),
+        Some(changes) if !changes.is_empty() => changes_row(*changes, chrome),
         _ => Line::from(""),
     };
 

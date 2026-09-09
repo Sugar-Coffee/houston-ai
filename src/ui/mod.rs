@@ -70,7 +70,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
         Tab::Vault => match &app.editor {
             Some(open) => editor::render(frame, body, open, theme),
-            None => vault::render(frame, body, app.browser.as_ref(), theme),
+            None => vault::render(frame, body, app.browser.as_ref(), glyphs, theme),
         },
         Tab::Board => board::render(frame, body, &app.sessions, theme),
         Tab::Worktrees => worktrees::render(
@@ -261,6 +261,45 @@ mod tests {
         let flowing = draw(&app, 110, 20);
         assert!(flowing.contains('\u{e0b0}'), "with the setting on, the tabs get their arrows");
         assert!(flowing.contains("Worktrees"), "and still say what they are");
+    }
+
+    /// A shell is marked and an agent is not, which is what makes the marker
+    /// carry information rather than being on every row.
+    #[test]
+    fn a_shell_session_is_marked_and_an_agent_is_not() {
+        let mut app = App::new();
+        app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+        app.config.powerline = Some(true);
+
+        assert!(draw(&app, 110, 20).contains('\u{f120}'), "the terminal glyph marks a shell");
+
+        // The same session as an agent takes the other marker. Flipped rather
+        // than spawned: launching a real agent to check a glyph would be an
+        // absurd thing for a unit test to do.
+        app.sessions.selected_mut().unwrap().kind =
+            crate::session::Kind::Agent { provider: "claude" };
+
+        let agent = draw(&app, 110, 20);
+        assert!(agent.contains('\u{f0e7}'), "an agent takes the agent marker");
+        assert!(!agent.contains('\u{f120}'), "and stops being marked as a shell");
+    }
+
+    /// The diff row changes shape with the setting but never loses the numbers.
+    #[test]
+    fn the_diff_row_keeps_its_numbers_in_both_styles() {
+        let mut app = App::new();
+        app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+        app.sessions.selected_mut().unwrap().changes =
+            Some(crate::diff::Changes { files: 2, insertions: 42, deletions: 7 });
+
+        let plain = draw(&app, 110, 20);
+        assert!(plain.contains("+42"), "plain shows the additions");
+        assert!(plain.contains("2 files"));
+
+        app.config.powerline = Some(true);
+        let flowing = draw(&app, 110, 20);
+        assert!(flowing.contains("+42"), "and so does the segmented form");
+        assert!(flowing.contains("2 files"), "the count is not lost to decoration");
     }
 
     /// The branch marker follows the same setting, so a terminal without the
