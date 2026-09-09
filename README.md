@@ -5,11 +5,31 @@
 **A workspace for developing with AI agents — in your terminal.**
 
 Run several coding agents at once, see at a glance which one is waiting on you,
-and keep the knowledge base they build in the same window.
+review what each of them changed, and keep the knowledge base they build in the
+same window.
+
+[![CI](https://github.com/Sugar-Coffee/houston-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/Sugar-Coffee/houston-ai/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Sugar-Coffee/houston-ai?color=blue&label=release)](https://github.com/Sugar-Coffee/houston-ai/releases/latest)
+[![Licence](https://img.shields.io/github/license/Sugar-Coffee/houston-ai?color=blue)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#install)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Sugar-Coffee/houston-ai/main/install.sh | sh
+```
 
 </div>
 
-<!-- Screenshots: sessions view, board, vault, editor. -->
+<!--
+  Screenshots to add, in this order. Each wants a 120×40 terminal or wider,
+  a dark theme, and at least three sessions so the board has something to say.
+
+  1. docs/media/sessions.png  — the sidebar with two agents and a shell, one of
+     them in the "needs you" state, and the diff line showing on a card.
+  2. docs/media/board.png     — all four columns populated.
+  3. docs/media/worktrees.png — a few worktrees, ideally one orphaned.
+  4. docs/media/vault.png     — a note open beside the list.
+-->
 
 ---
 
@@ -68,6 +88,17 @@ That distinction is the whole point. A hook is a fact; a screen-scrape is a
 guess. Shell sessions get no agent states at all rather than invented ones, and
 if Houston loses its hooks it says **status frozen** rather than showing you a
 value that stopped being true an hour ago.
+
+### Close it, reopen it, carry on
+
+Quit Houston and every session comes back: the names you gave them, the
+directories they ran in, the worktrees they were using — and, for agents that
+support it, **the conversation itself**. Claude Code sessions return via
+`--resume`, Codex via its rollout files.
+
+The honest part: a shell cannot be resumed, so shells come back as a fresh
+shell in the right directory. Houston does not pretend otherwise, and does not
+try to replay scrollback it would only be guessing at.
 
 ### Review what an agent actually changed
 
@@ -208,9 +239,40 @@ argument that lost as well as the one that won.
 Adjust the paths and the rules to taste. The point is that the vault stops
 being somewhere *you* file things and becomes somewhere your agents work.
 
-## Getting started
+## Install
 
-Needs a Rust 2024 toolchain.
+```sh
+curl -fsSL https://raw.githubusercontent.com/Sugar-Coffee/houston-ai/main/install.sh | sh
+```
+
+Detects your platform, downloads the matching build from the latest release,
+**verifies its checksum**, and installs to `~/.local/bin`. macOS on Apple
+silicon or Intel, and Linux on x86-64.
+
+<details>
+<summary>Other ways</summary>
+
+Somewhere else on disk:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Sugar-Coffee/houston-ai/main/install.sh \
+  | HOUSTON_INSTALL_DIR=/usr/local/bin sh
+```
+
+A specific version:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Sugar-Coffee/houston-ai/main/install.sh \
+  | HOUSTON_VERSION=v0.1.0 sh
+```
+
+From source, which needs a Rust 2024 toolchain:
+
+```sh
+cargo install --git https://github.com/Sugar-Coffee/houston-ai
+```
+
+Or to hack on it:
 
 ```sh
 git clone https://github.com/Sugar-Coffee/houston-ai
@@ -218,7 +280,15 @@ cd houston-ai
 cargo run --release
 ```
 
-`tab` moves between views, `1`–`4` jump to one, and **the bar along the bottom
+**Piping a script into a shell is a thing worth being suspicious of.**
+[Read it first](install.sh) — it is a hundred lines of POSIX sh, and it is
+short on purpose so that reading it is realistic.
+
+</details>
+
+## Getting started
+
+`tab` moves between views, `1`–`5` jump to one, and **the bar along the bottom
 always shows what the current context accepts**. You should not need to
 memorise anything.
 
@@ -229,7 +299,7 @@ memorise anything.
 
 | | |
 |---|---|
-| `tab` · `1`–`4` | next view · jump to one |
+| `tab` · `1`–`5` | next view · jump to one |
 | `q q` | quit — twice, so one keystroke cannot take down a workspace |
 | `ctrl-g` | show what your terminal is actually sending |
 
@@ -239,8 +309,17 @@ memorise anything.
 |---|---|
 | `n` · `s` | new agent (asks where, and whether to make a worktree) · new shell |
 | `↵` · `ctrl-\` | attach · detach |
+| `v` | review — the diff of what its agent changed |
 | `r` · `x` | rename · close |
 | `u` `d` `g` `G` | scroll a session's output |
+
+**Worktrees**
+
+| | |
+|---|---|
+| `↵` · `v` | go to the session using it · review its diff |
+| `l` | land — commit, push, open a pull request, remove |
+| `d` | remove — asks first if there is uncommitted work in it |
 
 **Vault**
 
@@ -318,7 +397,12 @@ is not finished. Expect rough edges, and expect things to move.
 
 Built with Rust, [ratatui](https://ratatui.rs) and
 [alacritty_terminal](https://github.com/alacritty/alacritty).
-`unsafe_code = "forbid"`, clippy pedantic clean, ~290 tests.
+`unsafe_code = "forbid"`, clippy pedantic and nursery clean, ~390 tests, CI on
+macOS and Linux.
+
+Nothing destructive happens without a question that names what would be lost,
+and no keybinding is a lone capital — a capital on its own is either something
+dangerous hiding behind shift or a shortcut for something already reachable.
 
 ## Credits
 
