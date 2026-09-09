@@ -18,6 +18,7 @@ mod paths;
 mod provider;
 mod pty;
 mod session;
+mod state;
 mod terminal;
 mod ui;
 mod vault;

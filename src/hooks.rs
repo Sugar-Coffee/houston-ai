@@ -83,6 +83,30 @@ pub const END_EVENTS: [(&str, Kind); 1] = [("Stop", Kind::Idle)];
 pub struct Notification {
     pub session: u64,
     pub kind: Kind,
+    /// The agent's own conversation id, lifted from the hook payload.
+    #[serde(default)]
+    pub conversation: Option<String>,
+}
+
+/// Reads `session_id` from a hook payload on stdin.
+///
+/// Claude Code passes JSON to every hook — `session_id`, `cwd`,
+/// `transcript_path`, `hook_event_name`. The id is what
+/// `claude --resume <id>` needs, so capturing it here is what makes a
+/// restored session a continuation rather than a fresh start.
+///
+/// Anything unreadable yields `None`: a hook that fails is worse than a
+/// session that reopens without its history.
+#[must_use]
+pub fn conversation_from_stdin() -> Option<String> {
+    use std::io::Read;
+
+    let mut payload = String::new();
+    std::io::stdin().read_to_string(&mut payload).ok()?;
+
+    let value: serde_json::Value = serde_json::from_str(&payload).ok()?;
+    let id = value.get("session_id")?.as_str()?.trim();
+    (!id.is_empty()).then(|| id.to_string())
 }
 
 /// Houston's own directory, created on demand.
@@ -385,7 +409,15 @@ mod tests {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let _listener = Listener::start_at(socket.clone(), sender).unwrap();
 
-        notify(&socket, &Notification { session: 12, kind: Kind::Attention }).unwrap();
+        notify(
+            &socket,
+            &Notification {
+                session: 12,
+                kind: Kind::Attention,
+                conversation: Some("conv-7".to_string()),
+            },
+        )
+        .unwrap();
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
             .await
@@ -394,6 +426,11 @@ mod tests {
 
         assert_eq!(event.session, 12);
         assert_eq!(event.kind, Kind::Attention);
+        assert_eq!(
+            event.conversation.as_deref(),
+            Some("conv-7"),
+            "the conversation id must survive the socket, or resume cannot work"
+        );
     }
 
     #[test]
@@ -401,14 +438,14 @@ mod tests {
         // Normal when Houston has been quit but an agent is still running.
         let result = notify(
             Path::new("/tmp/houston-definitely-not-listening.sock"),
-            &Notification { session: 1, kind: Kind::Idle },
+            &Notification { session: 1, kind: Kind::Idle, conversation: None },
         );
         assert!(result.is_err());
     }
 
     #[test]
     fn notifications_round_trip_as_json() {
-        let notification = Notification { session: 42, kind: Kind::Attention };
+        let notification = Notification { session: 42, kind: Kind::Attention, conversation: None };
         let encoded = serde_json::to_string(&notification).unwrap();
         let decoded: Notification = serde_json::from_str(&encoded).unwrap();
 

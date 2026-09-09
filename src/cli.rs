@@ -72,7 +72,11 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Command> {
     let Some(session) = session else { bail!("notify needs --session") };
     let Some(socket) = socket else { bail!("notify needs --socket") };
 
-    Ok(Command::Notify { notification: Notification { session, kind }, socket })
+    // Read the payload the agent piped in. A hook that cannot parse its input
+    // still has a job to do, so this is best-effort.
+    let conversation = hooks::conversation_from_stdin();
+
+    Ok(Command::Notify { notification: Notification { session, kind, conversation }, socket })
 }
 
 /// Runs everything that is not the TUI. `true` means we are done.
@@ -88,9 +92,17 @@ pub fn dispatch(command: &Command) -> bool {
             true
         }
         Command::Notify { notification, socket } => {
+            // The agent pipes its hook payload in on stdin; `session_id` is
+            // what `--resume` needs later. Best-effort: a hook that cannot
+            // read its input still has a job to do.
+            let notification = Notification {
+                conversation: hooks::conversation_from_stdin(),
+                ..notification.clone()
+            };
+
             // A hook firing when Houston is not running is normal — the user
             // may have quit. Fail quietly rather than disrupting the agent.
-            let _ = hooks::notify(socket, notification);
+            let _ = hooks::notify(socket, &notification);
             true
         }
     }

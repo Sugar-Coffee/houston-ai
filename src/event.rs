@@ -53,6 +53,13 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
     // The setting decides; ignoring a failure here costs the wheel, not the app.
     let _ = crate::terminal::set_mouse(app.config.mouse_enabled());
 
+    // Reopen last time's sessions before the first frame, sized from the real
+    // layout rather than a guess — a child that starts at 24x80 and is resized
+    // a moment later redraws itself, which is visible.
+    let restore_size = session_area(terminal)
+        .map_or_else(|_| Size::new(24, 80), |area| Size::new(area.height, area.width));
+    app.restore_sessions(restore_size);
+
     let (hook_sender, mut hook_events) = tokio::sync::mpsc::unbounded_channel();
     let _listener = match hooks::Listener::start(hook_sender) {
         Ok(listener) => Some(listener),
@@ -96,6 +103,10 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
         }
 
         if app.should_quit {
+            app.remember_sessions();
+            // Signalled and detached, so restoring the terminal is never held
+            // up by a child that is slow to die.
+            app.sessions.shutdown();
             return Ok(());
         }
     }
@@ -136,8 +147,15 @@ fn sync_session_size(terminal: &Terminal<Backend>, app: &mut App) -> Result<()> 
 
 /// Applies an agent lifecycle event reported by a hook.
 fn on_hook(app: &mut App, notification: &Notification) {
-    if app.sessions.apply_hook(notification.session, notification.kind) {
+    if app.sessions.apply_hook(
+        notification.session,
+        notification.kind,
+        notification.conversation.as_deref(),
+    ) {
         app.dirty = true;
+        // A newly-learned conversation id is worth persisting straight away:
+        // it is the difference between resuming and starting over.
+        app.remember_sessions();
     }
 }
 
@@ -654,6 +672,7 @@ fn accept_form(app: &mut App) {
             }
             app.sessions.attach();
             app.select_tab(Tab::Sessions);
+            app.remember_sessions();
             if let Some(warning) = app.sessions.take_hook_warning() {
                 app.notify(warning);
             }
@@ -1147,6 +1166,7 @@ fn on_key_sessions(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('x') => {
             app.sessions.close_selected();
+            app.remember_sessions();
             app.dirty = true;
         }
         KeyCode::Enter => {
@@ -1194,6 +1214,7 @@ fn spawn(app: &mut App, shell: bool) {
     match result {
         Ok(_) => {
             app.sessions.attach();
+            app.remember_sessions();
             app.dirty = true;
             // Hook installation is best-effort, but a silent failure would
             // leave the board quietly wrong for the rest of the session.

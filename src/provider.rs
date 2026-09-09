@@ -14,14 +14,22 @@ pub struct Provider {
     pub label: &'static str,
     /// The executable to look for on `PATH`.
     pub command: &'static str,
+    /// The flag that reopens a previous conversation by id, if the agent has
+    /// one.
+    ///
+    /// Only Claude Code is wired up, because it is the only one whose resume
+    /// contract has been checked. The others restore their directory and name
+    /// and start a fresh conversation — which is honest, rather than guessing
+    /// at a flag and failing to launch.
+    pub resume_flag: Option<&'static str>,
 }
 
 /// Ordered by preference: the first one found on `PATH` becomes the default.
 pub const KNOWN: [Provider; 4] = [
-    Provider { label: "Claude Code", command: "claude" },
-    Provider { label: "Codex", command: "codex" },
-    Provider { label: "Gemini", command: "gemini" },
-    Provider { label: "opencode", command: "opencode" },
+    Provider { label: "Claude Code", command: "claude", resume_flag: Some("--resume") },
+    Provider { label: "Codex", command: "codex", resume_flag: None },
+    Provider { label: "Gemini", command: "gemini", resume_flag: None },
+    Provider { label: "opencode", command: "opencode", resume_flag: None },
 ];
 
 impl Provider {
@@ -34,6 +42,12 @@ impl Provider {
 #[must_use]
 pub fn available() -> Vec<Provider> {
     KNOWN.into_iter().filter(|provider| which(provider.command).is_some()).collect()
+}
+
+/// The known provider for an executable name, if there is one.
+#[must_use]
+pub fn by_command(command: &str) -> Option<Provider> {
+    KNOWN.into_iter().find(|provider| provider.command == command)
 }
 
 /// The provider to use when the user does not pick one.
@@ -82,6 +96,18 @@ pub fn login_shell() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_providers_with_a_checked_resume_contract_claim_one() {
+        let claude = by_command("claude").unwrap();
+        assert_eq!(claude.resume_flag, Some("--resume"));
+
+        // Guessing a flag and failing to launch is worse than a fresh session.
+        for command in ["codex", "gemini", "opencode"] {
+            assert!(by_command(command).unwrap().resume_flag.is_none(), "{command}");
+        }
+        assert!(by_command("not-an-agent").is_none());
+    }
 
     #[test]
     fn finds_a_binary_that_certainly_exists() {

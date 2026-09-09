@@ -11,7 +11,7 @@ use crate::{
     pty::{LaunchSpec, PtySession, Size},
 };
 use alacritty_terminal::{term::TermMode, tty::ChildEvent};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use std::path::Path;
 
@@ -85,6 +85,12 @@ pub struct Session {
     /// whatever it last said. Recording that lets the board admit the status is
     /// stale rather than showing a stale value as though it were current.
     pub hooks_live: bool,
+    /// The agent's own conversation id, reported by its hooks.
+    ///
+    /// Claude Code passes `session_id` in every hook payload, and
+    /// `claude --resume <id>` reopens that conversation. Capturing it is what
+    /// lets a restored session continue rather than start again.
+    pub conversation: Option<String>,
     /// The branch its directory is on, refreshed periodically.
     ///
     /// Cached rather than read per frame: it is a file read, but sixty of them
@@ -96,6 +102,16 @@ pub struct Session {
 impl Session {
     pub const fn pty(&self) -> &PtySession {
         &self.pty
+    }
+
+    /// Whether the session has finished. Not worth reopening.
+    pub const fn has_exited(&self) -> bool {
+        matches!(self.state, State::Exited(_))
+    }
+
+    /// Whether the name was chosen rather than derived.
+    pub const fn named_by_user(&self) -> bool {
+        self.named_by_user
     }
 
     /// Whether this session's board status can still be trusted.
@@ -241,6 +257,15 @@ impl Session {
         self.pty.write(&bytes)
     }
 
+    /// Records the agent's conversation id, the first time it reports one.
+    pub fn remember_conversation(&mut self, id: &str) -> bool {
+        if id.is_empty() || self.conversation.as_deref() == Some(id) {
+            return false;
+        }
+        self.conversation = Some(id.to_string());
+        true
+    }
+
     /// Applies a lifecycle event reported by an agent hook.
     pub const fn apply_hook(&mut self, kind: HookKind) {
         // A hook from a session that has already exited is stale; the exit is
@@ -364,12 +389,40 @@ impl Sessions {
     /// Routes a hook notification to the session that raised it.
     ///
     /// Returns `true` if it matched a live session.
-    pub fn apply_hook(&mut self, session: u64, kind: HookKind) -> bool {
+    pub fn apply_hook(&mut self, session: u64, kind: HookKind, conversation: Option<&str>) -> bool {
         let Some(target) = self.items.iter_mut().find(|item| item.id.0 == session) else {
             return false;
         };
         target.apply_hook(kind);
+        if let Some(id) = conversation {
+            target.remember_conversation(id);
+        }
         true
+    }
+
+    /// Reopens a session Houston remembered from last time.
+    ///
+    /// An agent with a recorded conversation, whose provider supports it,
+    /// comes back as a continuation. Everything else comes back in the right
+    /// directory with the right name, which is the honest remainder.
+    pub fn restore(&mut self, remembered: &crate::state::Remembered, size: Size) -> Result<()> {
+        let (kind, spec) = restore_spec(remembered)?;
+        let id = self.spawn(remembered.name.clone(), kind, spec, size)?;
+
+        if let Some(session) = self.items.iter_mut().find(|item| item.id == id) {
+            session.worktree.clone_from(&remembered.worktree);
+            session.conversation.clone_from(&remembered.conversation);
+            if remembered.named_by_user {
+                session.rename(Some(remembered.name.clone()));
+            }
+        }
+
+        // Restored agents get their hooks back, or the board would never hear
+        // from them again.
+        if remembered.agent {
+            let _ = install_hooks(&remembered.cwd, id);
+        }
+        Ok(())
     }
 
     /// Starts an agent session using the first available provider.
@@ -480,6 +533,7 @@ impl Sessions {
             named_by_user: false,
             kind,
             state,
+            conversation: None,
             hooks_live: true,
             branch: crate::worktree::branch_of(&spec.cwd),
             spec,
@@ -493,13 +547,14 @@ impl Sessions {
     /// Closes the selected session.
     ///
     /// Dropping the `PtySession` is what kills the child: `alacritty_terminal`'s
-    /// `Pty::drop` sends SIGHUP and reaps. There is deliberately no explicit
-    /// kill call here — adding one would double up on that.
+    /// `Pty::drop` sends SIGHUP and then **blocks in `child.wait()`**. A child
+    /// that is slow to die — or ignores SIGHUP — would therefore freeze the
+    /// whole interface, so the drop happens on its own thread.
     pub fn close_selected(&mut self) {
         if self.items.is_empty() {
             return;
         }
-        self.items.remove(self.selected);
+        reap(self.items.remove(self.selected));
         self.selected = self.selected.min(self.items.len().saturating_sub(1));
         if self.items.is_empty() {
             self.focus = Focus::Browsing;
@@ -537,6 +592,17 @@ impl Sessions {
         self.focus = Focus::Browsing;
     }
 
+    /// Tears every session down without blocking.
+    ///
+    /// Called on the way out. Dropping these inline would block the exit path
+    /// *before* the terminal is restored, so a stuck child would leave the
+    /// user in raw mode with no prompt.
+    pub fn shutdown(&mut self) {
+        for session in self.items.drain(..) {
+            reap(session);
+        }
+    }
+
     /// Keeps every child's grid sized to the area it is drawn into.
     pub fn resize_all(&mut self, size: Size) {
         for session in &mut self.items {
@@ -568,6 +634,55 @@ impl Default for Sessions {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Builds what a remembered session should be launched as.
+///
+/// Separate from `restore` so the resume logic can be tested without spawning
+/// a real agent — a test that launches `claude` leaves a live process behind,
+/// and tearing it down means killing by name, which is a good way to kill
+/// somebody's actual work.
+pub fn restore_spec(remembered: &crate::state::Remembered) -> Result<(Kind, LaunchSpec)> {
+    if !remembered.cwd.is_dir() {
+        anyhow::bail!("{} is gone", remembered.cwd.display());
+    }
+
+    if !remembered.agent {
+        return Ok((
+            Kind::Shell,
+            LaunchSpec::command(provider::login_shell(), Vec::new(), remembered.cwd.clone()),
+        ));
+    }
+
+    let command = remembered
+        .command
+        .clone()
+        .or_else(|| provider::default().map(|p| p.command.to_string()))
+        .context("no agent available to restore into")?;
+
+    let provider = provider::by_command(&command);
+    let label = provider.map_or("agent", |p| p.label);
+
+    // Only resume when the provider has a checked contract for it. Guessing a
+    // flag would make the agent fail to launch at all.
+    let args = match (provider.and_then(|p| p.resume_flag), &remembered.conversation) {
+        (Some(flag), Some(id)) => vec![flag.to_string(), id.clone()],
+        _ => Vec::new(),
+    };
+
+    Ok((
+        Kind::Agent { provider: label },
+        LaunchSpec::command(command, args, remembered.cwd.clone()),
+    ))
+}
+
+/// Drops a session off the interface thread.
+///
+/// The thread is detached deliberately: the child has been signalled, and
+/// whether it takes a millisecond or a minute to go is not something the user
+/// should have to wait through.
+fn reap(session: Session) {
+    let _ = std::thread::Builder::new().name("houston-reaper".into()).spawn(move || drop(session));
 }
 
 /// Wires Houston's hooks into a project's Claude Code settings.
@@ -680,21 +795,21 @@ mod hook_tests {
         let id = sessions.selected().unwrap().id;
 
         // You send a prompt.
-        assert!(sessions.apply_hook(id.0, HookKind::Working));
+        assert!(sessions.apply_hook(id.0, HookKind::Working, None));
         assert_eq!(sessions.selected().unwrap().state, State::Running);
 
         // It asks permission and stops dead.
-        assert!(sessions.apply_hook(id.0, HookKind::Attention));
+        assert!(sessions.apply_hook(id.0, HookKind::Attention, None));
         assert_eq!(sessions.selected().unwrap().state, State::AwaitingInput);
 
         // You approve; the tool runs and reports back. Without this the
         // session would sit on "needs you" for the whole of the work.
-        assert!(sessions.apply_hook(id.0, HookKind::Working));
+        assert!(sessions.apply_hook(id.0, HookKind::Working, None));
         assert_eq!(sessions.selected().unwrap().state, State::Running);
 
         // The turn ends. This is the one that used to say "running" and pin
         // the board on busy until you next typed.
-        assert!(sessions.apply_hook(id.0, HookKind::Idle));
+        assert!(sessions.apply_hook(id.0, HookKind::Idle, None));
         assert_eq!(sessions.selected().unwrap().state, State::Idle);
     }
 
@@ -704,10 +819,10 @@ mod hook_tests {
         let id = sessions.selected().unwrap().id;
 
         for _ in 0..5 {
-            sessions.apply_hook(id.0, HookKind::Working);
-            sessions.apply_hook(id.0, HookKind::Attention);
-            sessions.apply_hook(id.0, HookKind::Working);
-            sessions.apply_hook(id.0, HookKind::Idle);
+            sessions.apply_hook(id.0, HookKind::Working, None);
+            sessions.apply_hook(id.0, HookKind::Attention, None);
+            sessions.apply_hook(id.0, HookKind::Working, None);
+            sessions.apply_hook(id.0, HookKind::Idle, None);
             assert_eq!(
                 sessions.selected().unwrap().state,
                 State::Idle,
@@ -719,7 +834,7 @@ mod hook_tests {
     #[test]
     fn a_hook_for_an_unknown_session_is_ignored() {
         let mut sessions = sessions_with_one_shell();
-        assert!(!sessions.apply_hook(9999, HookKind::Attention));
+        assert!(!sessions.apply_hook(9999, HookKind::Attention, None));
         assert_eq!(sessions.selected().unwrap().state, State::Running);
     }
 
@@ -729,12 +844,117 @@ mod hook_tests {
         let id = sessions.selected().unwrap().id;
         sessions.selected_mut().unwrap().state = State::Exited(Some(0));
 
-        sessions.apply_hook(id.0, HookKind::Attention);
+        sessions.apply_hook(id.0, HookKind::Attention, None);
         assert_eq!(
             sessions.selected().unwrap().state,
             State::Exited(Some(0)),
             "exit is the more truthful state; a late hook must not override it"
         );
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+    use crate::state::Remembered;
+
+    fn remembered(cwd: &Path) -> Remembered {
+        Remembered {
+            name: "notes".to_string(),
+            named_by_user: false,
+            cwd: cwd.to_path_buf(),
+            agent: false,
+            command: None,
+            worktree: None,
+            conversation: None,
+        }
+    }
+
+    #[test]
+    fn a_shell_comes_back_in_the_directory_it_was_in() {
+        let mut sessions = Sessions::new();
+        let cwd = std::env::temp_dir();
+
+        sessions.restore(&remembered(&cwd), Size::new(24, 80)).unwrap();
+
+        let session = sessions.selected().unwrap();
+        assert_eq!(session.directory(), cwd);
+        assert!(matches!(session.kind, Kind::Shell));
+    }
+
+    #[test]
+    fn a_name_you_chose_survives_but_a_derived_one_is_recomputed() {
+        let mut sessions = Sessions::new();
+        let cwd = std::env::temp_dir();
+
+        let mut named = remembered(&cwd);
+        named.name = "queue runner".to_string();
+        named.named_by_user = true;
+        sessions.restore(&named, Size::new(24, 80)).unwrap();
+
+        assert_eq!(sessions.selected().unwrap().display_name(), "queue runner");
+    }
+
+    #[test]
+    fn a_directory_that_has_gone_is_reported_rather_than_silently_skipped() {
+        let mut sessions = Sessions::new();
+        let mut gone = remembered(Path::new("/tmp/houston-definitely-removed"));
+        gone.name = "old work".to_string();
+
+        assert!(restore_spec(&gone).is_err());
+        assert!(sessions.restore(&gone, Size::new(24, 80)).is_err());
+        assert!(sessions.is_empty(), "nothing half-created");
+    }
+
+    /// The whole point: a remembered conversation becomes `--resume <id>`.
+    ///
+    /// Checked on the launch spec rather than by launching, so no real agent
+    /// is started and nothing has to be killed afterwards.
+    #[test]
+    fn an_agent_with_a_conversation_is_resumed_rather_than_restarted() {
+        let mut agent = remembered(&std::env::temp_dir());
+        agent.agent = true;
+        agent.command = Some("claude".to_string());
+        agent.conversation = Some("conv-abc".to_string());
+
+        let (kind, spec) = restore_spec(&agent).unwrap();
+        assert!(matches!(kind, Kind::Agent { .. }));
+        assert_eq!(spec.args, vec!["--resume".to_string(), "conv-abc".to_string()]);
+    }
+
+    #[test]
+    fn an_agent_without_a_conversation_starts_fresh() {
+        let mut agent = remembered(&std::env::temp_dir());
+        agent.agent = true;
+        agent.command = Some("claude".to_string());
+
+        let (_, spec) = restore_spec(&agent).unwrap();
+        assert!(spec.args.is_empty(), "nothing to resume into");
+    }
+
+    /// Guessing a resume flag for an agent whose contract has not been checked
+    /// would make it fail to launch at all.
+    #[test]
+    fn a_provider_without_a_resume_contract_starts_fresh_even_with_an_id() {
+        let mut agent = remembered(&std::env::temp_dir());
+        agent.agent = true;
+        agent.command = Some("gemini".to_string());
+        agent.conversation = Some("conv-abc".to_string());
+
+        let (_, spec) = restore_spec(&agent).unwrap();
+        assert!(spec.args.is_empty(), "no guessed flags");
+    }
+
+    #[test]
+    fn a_conversation_id_is_recorded_once_and_not_churned() {
+        let mut sessions = Sessions::new();
+        sessions.spawn_shell(&std::env::temp_dir(), Size::new(24, 80)).unwrap();
+        let session = sessions.selected_mut().unwrap();
+
+        assert!(session.remember_conversation("abc"));
+        assert!(!session.remember_conversation("abc"), "the same id is not a change");
+        assert!(!session.remember_conversation(""), "an empty id is not an id");
+        assert_eq!(session.conversation.as_deref(), Some("abc"));
     }
 }
 
@@ -759,6 +979,7 @@ mod collision_tests {
             kind: Kind::Agent { provider: "Claude Code" },
             state: State::Idle,
             hooks_live: true,
+            conversation: None,
             branch: None,
             spec: LaunchSpec::command("claude", Vec::new(), directory.clone()),
             worktree: None,
@@ -789,6 +1010,7 @@ mod collision_tests {
             kind: Kind::Agent { provider: "Claude Code" },
             state: State::Running,
             hooks_live: true,
+            conversation: None,
             branch: None,
             spec: LaunchSpec::command("claude", Vec::new(), directory.clone()),
             worktree: None,

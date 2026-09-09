@@ -120,6 +120,8 @@ pub struct App {
     /// app — and guessing at it cost a whole round of work.
     pub input_log: VecDeque<String>,
     pub show_inspector: bool,
+    /// Where the remembered session list is persisted.
+    pub state_path: PathBuf,
     /// The theme in force. Resolved once, not per frame.
     pub theme: Theme,
     /// Every theme available, for the Settings row.
@@ -159,6 +161,41 @@ impl App {
         app.load_vault();
         app.rebuild_settings();
         app
+    }
+
+    /// Writes the current session list, so quitting does not lose it.
+    ///
+    /// Cheap and called on any change worth keeping. A failure is swallowed:
+    /// losing your session list at the next launch is a nuisance, but refusing
+    /// to carry on working now would be worse.
+    pub fn remember_sessions(&self) {
+        let _ = crate::state::State::capture(&self.sessions).save_to(&self.state_path);
+    }
+
+    /// Reopens whatever was running last time.
+    ///
+    /// Restored sessions come back detached and idle. Attaching to one of
+    /// several on launch would be a guess about which you meant.
+    pub fn restore_sessions(&mut self, size: Size) {
+        let remembered = crate::state::State::load_from(&self.state_path);
+        if remembered.sessions.is_empty() {
+            return;
+        }
+
+        let mut lost = Vec::new();
+        for session in &remembered.sessions {
+            if self.sessions.restore(session, size).is_err() {
+                lost.push(session.name.clone());
+            }
+        }
+
+        self.sessions.detach();
+        self.sessions.select(0);
+        self.dirty = true;
+
+        if !lost.is_empty() {
+            self.notify(format!("could not reopen: {}", lost.join(", ")));
+        }
     }
 
     /// Re-resolves the theme from config and disk.
@@ -229,8 +266,12 @@ impl App {
             sessions: Sessions::new(),
             browser: None,
             config,
-            config_path: crate::config::config_path()
-                .unwrap_or_else(|_| PathBuf::from("houston-config.toml")),
+            config_path: if cfg!(test) {
+                std::env::temp_dir().join("houston-test-config.toml")
+            } else {
+                crate::config::config_path()
+                    .unwrap_or_else(|_| PathBuf::from("houston-config.toml"))
+            },
             vault_error: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             should_quit: false,
@@ -247,6 +288,15 @@ impl App {
             worktree_selected: 0,
             input_log: VecDeque::new(),
             show_inspector: false,
+            // Never the real file under test. `remember_sessions` is called
+            // from half a dozen places, and a test that spawns a shell would
+            // otherwise write it into the user's actual session list — the
+            // same trap `Config::save_to` exists to avoid.
+            state_path: if cfg!(test) {
+                std::env::temp_dir().join("houston-test-state.json")
+            } else {
+                crate::state::path().unwrap_or_else(|_| PathBuf::from("houston-state.json"))
+            },
             theme: Theme::default(),
             themes: Vec::new(),
         }
