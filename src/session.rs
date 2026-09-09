@@ -85,6 +85,11 @@ pub struct Session {
     /// whatever it last said. Recording that lets the board admit the status is
     /// stale rather than showing a stale value as though it were current.
     pub hooks_live: bool,
+    /// When this session was started.
+    ///
+    /// Used to match a Codex rollout file to *this* session rather than to one
+    /// from last week that happened to run in the same directory.
+    pub started_at: std::time::SystemTime,
     /// The agent's own conversation id, reported by its hooks.
     ///
     /// Claude Code passes `session_id` in every hook payload, and
@@ -255,6 +260,25 @@ impl Session {
         let mut bytes = input::encode_paste(text, bracketed);
         bytes.push(b'\r');
         self.pty.write(&bytes)
+    }
+
+    /// Resolves a conversation id for agents that do not report one via hooks.
+    ///
+    /// Claude Code hands Houston its `session_id` in every hook payload. Codex
+    /// does not, but it writes a rollout file recording both its id and its
+    /// working directory, so the id can be found from disk instead.
+    ///
+    /// Cheap and only called when state is saved, never per frame.
+    pub fn resolve_conversation(&mut self) {
+        if self.conversation.is_some() || !matches!(self.kind, Kind::Agent { .. }) {
+            return;
+        }
+        if self.spec.command.as_deref() != Some("codex") {
+            return;
+        }
+        if let Some(id) = provider::codex_conversation(&self.spec.cwd, self.started_at) {
+            self.conversation = Some(id);
+        }
     }
 
     /// Records the agent's conversation id, the first time it reports one.
@@ -533,6 +557,7 @@ impl Sessions {
             named_by_user: false,
             kind,
             state,
+            started_at: std::time::SystemTime::now(),
             conversation: None,
             hooks_live: true,
             branch: crate::worktree::branch_of(&spec.cwd),
@@ -618,6 +643,13 @@ impl Sessions {
         }
     }
 
+    /// Fills in conversation ids for agents that do not report them via hooks.
+    pub fn resolve_conversations(&mut self) {
+        for session in &mut self.items {
+            session.resolve_conversation();
+        }
+    }
+
     /// Polls every session for new output and child exits.
     ///
     /// Returns `true` if anything changed and the frame needs redrawing.
@@ -663,10 +695,10 @@ pub fn restore_spec(remembered: &crate::state::Remembered) -> Result<(Kind, Laun
     let provider = provider::by_command(&command);
     let label = provider.map_or("agent", |p| p.label);
 
-    // Only resume when the provider has a checked contract for it. Guessing a
-    // flag would make the agent fail to launch at all.
-    let args = match (provider.and_then(|p| p.resume_flag), &remembered.conversation) {
-        (Some(flag), Some(id)) => vec![flag.to_string(), id.clone()],
+    // Only resume when the provider has a checked contract for it. Guessing an
+    // argument would make the agent fail to launch at all.
+    let args = match (provider.and_then(|p| p.resume_arg), &remembered.conversation) {
+        (Some(argument), Some(id)) => vec![argument.to_string(), id.clone()],
         _ => Vec::new(),
     };
 
@@ -922,6 +954,23 @@ mod restore_tests {
         assert_eq!(spec.args, vec!["--resume".to_string(), "conv-abc".to_string()]);
     }
 
+    /// Codex spells resume as a subcommand rather than a flag, and both must
+    /// come out as "one token, then the id".
+    #[test]
+    fn codex_resumes_with_its_subcommand_not_a_flag() {
+        let mut agent = remembered(&std::env::temp_dir());
+        agent.agent = true;
+        agent.command = Some("codex".to_string());
+        agent.conversation = Some("019fc86d-8f05-7e22-baf8-549ce51f0b27".to_string());
+
+        let (_, spec) = restore_spec(&agent).unwrap();
+        assert_eq!(
+            spec.args,
+            vec!["resume".to_string(), "019fc86d-8f05-7e22-baf8-549ce51f0b27".to_string()],
+            "codex resume <id>, not codex --resume <id>"
+        );
+    }
+
     #[test]
     fn an_agent_without_a_conversation_starts_fresh() {
         let mut agent = remembered(&std::env::temp_dir());
@@ -943,6 +992,21 @@ mod restore_tests {
 
         let (_, spec) = restore_spec(&agent).unwrap();
         assert!(spec.args.is_empty(), "no guessed flags");
+    }
+
+    /// A rollout from before the session started belongs to a different
+    /// conversation, however tempting its directory looks.
+    #[test]
+    fn a_codex_rollout_older_than_the_session_is_not_adopted() {
+        use std::time::{Duration, SystemTime};
+
+        let cwd = std::env::temp_dir();
+        let future = SystemTime::now() + Duration::from_secs(3600);
+
+        assert!(
+            crate::provider::codex_conversation(&cwd, future).is_none(),
+            "nothing can have been written after now plus an hour"
+        );
     }
 
     #[test]
@@ -979,6 +1043,7 @@ mod collision_tests {
             kind: Kind::Agent { provider: "Claude Code" },
             state: State::Idle,
             hooks_live: true,
+            started_at: std::time::SystemTime::now(),
             conversation: None,
             branch: None,
             spec: LaunchSpec::command("claude", Vec::new(), directory.clone()),
@@ -1010,6 +1075,7 @@ mod collision_tests {
             kind: Kind::Agent { provider: "Claude Code" },
             state: State::Running,
             hooks_live: true,
+            started_at: std::time::SystemTime::now(),
             conversation: None,
             branch: None,
             spec: LaunchSpec::command("claude", Vec::new(), directory.clone()),

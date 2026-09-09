@@ -168,7 +168,10 @@ impl App {
     /// Cheap and called on any change worth keeping. A failure is swallowed:
     /// losing your session list at the next launch is a nuisance, but refusing
     /// to carry on working now would be worse.
-    pub fn remember_sessions(&self) {
+    pub fn remember_sessions(&mut self) {
+        // Codex reports no id, so it is looked up from its rollout files here
+        // rather than continuously.
+        self.sessions.resolve_conversations();
         let _ = crate::state::State::capture(&self.sessions).save_to(&self.state_path);
     }
 

@@ -78,6 +78,23 @@ to need a new hue, it almost certainly does not need colour. Reach for `dim`.
   `~/.houston/config.toml`, and repointed a live install at a temp directory it
   then deleted. Pass paths in — see `Config::save_to` and `worktree::create_in`.
 
+## Never kill by name
+
+`pkill -f claude`, `killall node`, `pkill -f houston` — none of these. This
+machine is somebody's workstation, and those patterns match their running work,
+not just yours. It has already happened once here: cleaning up agents a test
+had spawned killed every Claude Code session the user had open.
+
+Kill by pid, from a list you collected yourself:
+
+```sh
+# The pids this command started, and nothing else.
+kill $MY_PID
+```
+
+If a test spawns a process, prefer not spawning it: `session::restore_spec`
+exists so the resume logic can be checked without launching a real agent.
+
 ## Verifying in a real terminal
 
 Unit tests cannot see what a terminal does. For anything decoding input or
@@ -98,6 +115,17 @@ Three things that have already caught people out:
 - **`FOO=bar keygen | script -c houston` sets the variable on the wrong side of
   the pipe.** Houston will not see it, and your test will silently run against
   the real vault.
+
+**A slow command is not a hang.** `cargo clippy --all-targets` recompiles the
+crate and takes minutes from cold. **Do not chain clippy and tests in one timed
+command** — the rebuild eats the budget and the timeout looks like a deadlock.
+Run them separately, and before calling anything stuck, check the *elapsed time
+of the process itself* and whether `rustc` is running. A wrong diagnosis here
+sends you rewriting code that works.
+
+**But a test that only hangs with more than one thread is a real concurrency
+bug**, not a flaky harness. Both mistakes were made here in the same hour, in
+opposite directions.
 
 **Never verify a rendering bug through the state that drives the render.** A
 scrollback bug shipped twice because the indicator — which reads the state

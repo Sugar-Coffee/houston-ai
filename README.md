@@ -54,10 +54,10 @@ repository without treading on each other. Houston keeps every worktree it
 creates in one place and gives you a manager to clean them up.
 
 **Sessions survive a restart.** Quit Houston and reopen it, and your sessions
-come back — same names, same directories, same worktrees. Claude Code sessions
-resume the actual conversation. Scrollback is deliberately not restored: the
-process is gone either way, and a shell that reopens in the right directory is
-honest about that.
+come back — same names, same directories, same worktrees. Claude Code and Codex
+sessions resume the actual conversation. Scrollback is deliberately not
+restored: the process is gone either way, and a shell that reopens in the right
+directory is honest about that.
 
 ### A board that tells the truth
 

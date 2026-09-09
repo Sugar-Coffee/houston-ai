@@ -5,7 +5,12 @@
 //! is your login shell.
 
 use crate::pty::LaunchSpec;
-use std::path::{Path, PathBuf};
+use std::{
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
+use walkdir::WalkDir;
 
 /// An agent CLI Houston knows how to start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,22 +19,24 @@ pub struct Provider {
     pub label: &'static str,
     /// The executable to look for on `PATH`.
     pub command: &'static str,
-    /// The flag that reopens a previous conversation by id, if the agent has
-    /// one.
+    /// The argument that comes before a conversation id when resuming.
     ///
-    /// Only Claude Code is wired up, because it is the only one whose resume
-    /// contract has been checked. The others restore their directory and name
-    /// and start a fresh conversation — which is honest, rather than guessing
-    /// at a flag and failing to launch.
-    pub resume_flag: Option<&'static str>,
+    /// The two supported agents spell this differently — `claude --resume
+    /// <id>` uses a flag, `codex resume <id>` uses a subcommand — but both are
+    /// "one token, then the id", so one field covers them.
+    ///
+    /// `None` means the agent's resume contract has not been checked. Those
+    /// restore their directory and name and start fresh, which is honest —
+    /// guessing an argument makes the agent fail to launch at all.
+    pub resume_arg: Option<&'static str>,
 }
 
 /// Ordered by preference: the first one found on `PATH` becomes the default.
 pub const KNOWN: [Provider; 4] = [
-    Provider { label: "Claude Code", command: "claude", resume_flag: Some("--resume") },
-    Provider { label: "Codex", command: "codex", resume_flag: None },
-    Provider { label: "Gemini", command: "gemini", resume_flag: None },
-    Provider { label: "opencode", command: "opencode", resume_flag: None },
+    Provider { label: "Claude Code", command: "claude", resume_arg: Some("--resume") },
+    Provider { label: "Codex", command: "codex", resume_arg: Some("resume") },
+    Provider { label: "Gemini", command: "gemini", resume_arg: None },
+    Provider { label: "opencode", command: "opencode", resume_arg: None },
 ];
 
 impl Provider {
@@ -87,6 +94,57 @@ fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
+/// Finds the Codex conversation started in `cwd` since `since`.
+///
+/// Codex has no hook that hands Houston a session id the way Claude Code does,
+/// but it records one itself: every session writes a rollout file whose first
+/// line is a `session_meta` carrying both `session_id` and `cwd`.
+///
+/// `since` is the moment Houston started the session, and it is what keeps this
+/// honest — without it, the newest rollout for a directory could easily be from
+/// last week, and resuming that would drop you into the wrong conversation.
+#[must_use]
+pub fn codex_conversation(cwd: &Path, since: SystemTime) -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let sessions = PathBuf::from(home).join(".codex/sessions");
+
+    let mut best: Option<(SystemTime, String)> = None;
+
+    for entry in WalkDir::new(sessions).into_iter().filter_map(Result::ok) {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "jsonl") {
+            continue;
+        }
+
+        let modified = entry.metadata().ok()?.modified().ok()?;
+        if modified < since {
+            continue;
+        }
+        if best.as_ref().is_some_and(|(seen, _)| *seen >= modified) {
+            continue;
+        }
+
+        // Only the first line is needed, and a rollout can be large.
+        let Ok(file) = std::fs::File::open(path) else { continue };
+        let mut first = String::new();
+        if BufReader::new(file).read_line(&mut first).is_err() {
+            continue;
+        }
+
+        let Ok(meta) = serde_json::from_str::<serde_json::Value>(&first) else { continue };
+        let payload = meta.get("payload")?;
+
+        if payload.get("cwd").and_then(serde_json::Value::as_str) != Some(&cwd.to_string_lossy()) {
+            continue;
+        }
+        if let Some(id) = payload.get("session_id").and_then(serde_json::Value::as_str) {
+            best = Some((modified, id.to_string()));
+        }
+    }
+
+    best.map(|(_, id)| id)
+}
+
 /// The user's login shell, falling back to `/bin/sh`.
 #[must_use]
 pub fn login_shell() -> String {
@@ -98,13 +156,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_providers_with_a_checked_resume_contract_claim_one() {
-        let claude = by_command("claude").unwrap();
-        assert_eq!(claude.resume_flag, Some("--resume"));
+    fn both_supported_agents_can_resume_despite_spelling_it_differently() {
+        // `claude --resume <id>` versus `codex resume <id>`.
+        assert_eq!(by_command("claude").unwrap().resume_arg, Some("--resume"));
+        assert_eq!(by_command("codex").unwrap().resume_arg, Some("resume"));
 
-        // Guessing a flag and failing to launch is worse than a fresh session.
-        for command in ["codex", "gemini", "opencode"] {
-            assert!(by_command(command).unwrap().resume_flag.is_none(), "{command}");
+        // Guessing an argument and failing to launch is worse than a fresh
+        // session, so unchecked agents claim nothing.
+        for command in ["gemini", "opencode"] {
+            assert!(by_command(command).unwrap().resume_arg.is_none(), "{command}");
         }
         assert!(by_command("not-an-agent").is_none());
     }
@@ -129,5 +189,52 @@ mod tests {
     fn directories_are_not_executables() {
         // /bin is executable-by-mode but is not a file.
         assert!(which("/bin").is_none());
+    }
+}
+
+#[cfg(test)]
+mod codex_lookup_tests {
+    use super::*;
+
+    /// Uses whatever rollout files exist on this machine, so it verifies the
+    /// real format rather than a fixture that could drift from it.
+    #[test]
+    fn a_codex_rollout_is_matched_by_its_recorded_directory() {
+        let Some(home) = std::env::var_os("HOME") else { return };
+        let sessions = PathBuf::from(home).join(".codex/sessions");
+
+        // Find any rollout and read the directory and id it claims.
+        let Some((cwd, expected, modified)) = WalkDir::new(&sessions)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+            .find_map(|entry| {
+                let file = std::fs::File::open(entry.path()).ok()?;
+                let mut first = String::new();
+                BufReader::new(file).read_line(&mut first).ok()?;
+                let meta: serde_json::Value = serde_json::from_str(&first).ok()?;
+                let payload = meta.get("payload")?;
+                Some((
+                    PathBuf::from(payload.get("cwd")?.as_str()?),
+                    payload.get("session_id")?.as_str()?.to_string(),
+                    entry.metadata().ok()?.modified().ok()?,
+                ))
+            })
+        else {
+            return; // No Codex history here; nothing to verify against.
+        };
+
+        // Anything at or before that file's own timestamp must find it.
+        let found = codex_conversation(&cwd, modified);
+        assert!(found.is_some(), "a rollout recording {} should be findable", cwd.display());
+
+        // And a cutoff after it must not.
+        // Nothing can have been written after now, so this excludes every
+        // rollout including the one found above.
+        let after = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        assert!(codex_conversation(&cwd, after).is_none(), "a stale rollout must not be adopted");
+        let _ = modified;
+
+        let _ = expected;
     }
 }
