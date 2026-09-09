@@ -463,6 +463,13 @@ impl App {
     /// Called when Settings is opened rather than at startup: it reads font
     /// files, and somebody who never opens Settings should never pay for it.
     pub fn detect_fonts(&mut self) {
+        // Never in the suite. It reads every font on the machine, which makes
+        // the tests slow, machine-dependent and — on a CI runner with no
+        // powerline font — a full scan of `/usr/share/fonts` every time
+        // anything selects Settings. The same `$HOME` rule as `App::new`.
+        if cfg!(test) {
+            return;
+        }
         if self.font_detection == crate::fonts::Detection::Unknown {
             self.font_detection = crate::fonts::detect();
             self.rebuild_settings();
