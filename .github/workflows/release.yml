@@ -22,7 +22,12 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-13
+          # Cross-compiled from the arm64 runner rather than built on an Intel
+          # one. macos-13 is the last Intel image and it is being retired: a
+          # dispatch of this workflow sat queued for ten minutes waiting for
+          # one while both other targets finished. The macOS SDK carries both
+          # architectures, so this needs a target and nothing else.
+          - os: macos-latest
             target: x86_64-apple-darwin
           # 22.04 rather than latest: the binary is linked against that
           # runner's glibc, and building on the newest Ubuntu produces
