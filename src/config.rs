@@ -60,6 +60,12 @@ pub struct Config {
     pub mouse: Option<bool>,
     /// The theme by name. `None` means the default.
     pub theme: Option<String>,
+    /// Draw powerline separators. Needs a Nerd Font; see `ui::powerline`.
+    ///
+    /// Defaults to off, and stays off unless somebody says otherwise. A
+    /// terminal without the glyphs draws boxes, and a first run that looks
+    /// broken is worse than a first run that looks plain.
+    pub powerline: Option<bool>,
 }
 
 impl Config {
@@ -129,6 +135,15 @@ impl Config {
             .map_or_else(crate::ui::Theme::default, |named| named.theme);
 
         (chosen, available)
+    }
+
+    /// Whether to draw powerline separators.
+    #[must_use]
+    pub const fn powerline_enabled(&self) -> bool {
+        match self.powerline {
+            Some(enabled) => enabled,
+            None => false,
+        }
     }
 
     /// Whether to capture the mouse.

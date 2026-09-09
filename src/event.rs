@@ -250,6 +250,7 @@ fn on_mouse(app: &mut App, mouse: MouseEvent, area: Option<Rect>) {
                 browser.scroll(scroll * 3);
             }
         }
+        Tab::Worktrees => app.scroll_worktrees(scroll),
         Tab::Board | Tab::Settings => {}
     }
 }
@@ -618,6 +619,11 @@ fn apply_form_field(app: &mut App, modal: bool) {
         app.reload_theme();
     }
 
+    let powerline = app.settings.is_on(fields::POWERLINE);
+    if Some(powerline) != app.config.powerline {
+        app.config.powerline = Some(powerline);
+    }
+
     let vault = app.settings.value(fields::VAULT);
     let agent = app.settings.value(fields::AGENT_DIRECTORY);
 
@@ -703,18 +709,6 @@ fn accept_form(app: &mut App) {
     }
 }
 
-/// Loads the worktree manager.
-fn open_worktrees(app: &mut App) {
-    match crate::worktree::list() {
-        Ok(worktrees) => {
-            app.worktree_selected = 0;
-            app.worktrees = Some(worktrees);
-            app.dirty = true;
-        }
-        Err(error) => app.notify(format!("could not read worktrees: {error}")),
-    }
-}
-
 /// Carries out a landing, and says what happened either way.
 ///
 /// The worktree is re-read rather than taken from the manager's list: the
@@ -745,7 +739,7 @@ fn accept_land(app: &mut App, name: &str) {
         Ok(report) => {
             app.close_form();
             app.notify(report);
-            open_worktrees(app);
+            app.load_worktrees();
         }
         // The form stays open on failure. A rejected push usually needs one
         // toggle changed, and reopening it from the manager to change that
@@ -777,33 +771,54 @@ fn open_diff(app: &mut App) {
 
 /// Opens the landing form for the selected worktree.
 fn land_worktree(app: &mut App) {
-    let selected = app.worktrees.as_ref().and_then(|list| list.get(app.worktree_selected)).cloned();
-
-    let Some(worktree) = selected else { return app.notify("no worktree to land") };
-
-    // The manager is a list; landing is a form. Closing it first means one
-    // overlay is open at a time, which is what the focus enum expects.
-    app.worktrees = None;
+    let Some(worktree) = app.selected_worktree().cloned() else {
+        return app.notify("no worktree to land");
+    };
     app.open_land_form(&worktree);
 }
 
-/// The worktree manager.
+/// The worktrees view.
 fn on_key_worktrees(app: &mut App, key: KeyEvent) {
     app.dirty = true;
-    let count = app.worktrees.as_ref().map_or(0, Vec::len);
 
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q' | 'W') => app.worktrees = None,
-        KeyCode::Char('j') | KeyCode::Down if count > 0 => {
-            app.worktree_selected = (app.worktree_selected + 1) % count;
-        }
-        KeyCode::Char('k') | KeyCode::Up if count > 0 => {
-            app.worktree_selected = (app.worktree_selected + count - 1) % count;
-        }
-        KeyCode::Char('r') => open_worktrees(app),
+        KeyCode::Char('j') | KeyCode::Down => app.move_worktree_selection(true),
+        KeyCode::Char('k') | KeyCode::Up => app.move_worktree_selection(false),
+        KeyCode::Char('r') => app.load_worktrees(),
         KeyCode::Char('l') => land_worktree(app),
+        KeyCode::Char('v') => open_worktree_diff(app),
         KeyCode::Char(force @ ('d' | 'D')) => remove_worktree(app, force == 'D'),
+        // Enter goes to whoever is working in it, which is the question you
+        // ask of a worktree marked "in use".
+        KeyCode::Enter => attach_to_worktree(app),
         _ => {}
+    }
+}
+
+/// Jumps to the session running in the selected worktree.
+fn attach_to_worktree(app: &mut App) {
+    let Some(name) = app.selected_worktree().map(|worktree| worktree.name.clone()) else { return };
+
+    if !app.sessions.select_by_worktree(&name) {
+        return app.notify(format!("no session is using {name}"));
+    }
+    app.select_tab(Tab::Sessions);
+    if !app.sessions.attach() {
+        app.notify("that session has exited");
+    }
+}
+
+/// Reviews a worktree's uncommitted work without needing a session in it.
+fn open_worktree_diff(app: &mut App) {
+    let Some(worktree) = app.selected_worktree() else { return };
+    let (name, path) = (worktree.name.clone(), worktree.path.clone());
+
+    match crate::diff::View::open(name, &path) {
+        Ok(view) => {
+            app.diff = Some(view);
+            app.dirty = true;
+        }
+        Err(error) => app.notify(error.to_string()),
     }
 }
 
@@ -826,7 +841,7 @@ fn remove_worktree(app: &mut App, force: bool) {
     match crate::worktree::remove(&worktree, force) {
         Ok(()) => {
             app.notify(format!("removed {}", worktree.name));
-            open_worktrees(app);
+            app.load_worktrees();
         }
         Err(error) => app.notify(error.to_string()),
     }
@@ -1027,13 +1042,14 @@ fn on_key_browsing(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') if ctrl => app.quit(),
         KeyCode::Tab => app.cycle_tab(true),
         KeyCode::BackTab => app.cycle_tab(false),
-        KeyCode::Char(digit @ '1'..='4') => {
+        KeyCode::Char(digit @ '1'..='5') => {
             let index = digit as usize - '1' as usize;
             app.select_tab(Tab::ALL[index]);
         }
         _ if app.tab == Tab::Sessions => on_key_sessions(app, key),
         _ if app.tab == Tab::Vault => on_key_vault(app, key),
         _ if app.tab == Tab::Board => on_key_board(app, key),
+        _ if app.tab == Tab::Worktrees => on_key_worktrees(app, key),
         _ => {}
     }
 }
@@ -1295,7 +1311,7 @@ fn on_key_sessions(app: &mut App, key: KeyEvent) {
         // `n` asks where and how; `s` is the quick shell you want immediately.
         KeyCode::Char('n') => app.open_new_session_form(),
         KeyCode::Char('s') => spawn(app, true),
-        KeyCode::Char('W') => open_worktrees(app),
+        KeyCode::Char('W') => app.select_tab(Tab::Worktrees),
         // `v` for review. `d` would be the better mnemonic and is long since
         // spoken for by half-page scrolling.
         KeyCode::Char('v') => open_diff(app),
@@ -1571,16 +1587,18 @@ mod tests {
         assert_eq!(app.sessions.len(), 1);
     }
 
+    /// `W` used to open a popup. It now goes to the view, because the list
+    /// grew five facts per row and a modal box is the wrong size for that.
     #[test]
-    fn the_worktree_manager_opens_and_closes() {
+    fn w_goes_to_the_worktrees_view_and_tab_leaves_it() {
         let mut app = App::new();
         on_key(&mut app, KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
 
-        assert!(app.worktrees.is_some(), "W opens the manager");
-        assert_eq!(app.focus(), InputFocus::Overlay);
+        assert_eq!(app.tab, Tab::Worktrees, "W selects the view");
+        assert_eq!(app.focus(), InputFocus::Commands, "a view is not a modal");
 
-        on_key(&mut app, press(KeyCode::Esc));
-        assert!(app.worktrees.is_none());
+        on_key(&mut app, press(KeyCode::Tab));
+        assert_ne!(app.tab, Tab::Worktrees, "and Tab leaves it like any other view");
     }
 
     #[test]
@@ -1589,6 +1607,7 @@ mod tests {
         on_key(&mut app, press(KeyCode::Char('s')));
         app.sessions.detach();
         app.sessions.selected_mut().unwrap().worktree = Some("busy".to_string());
+        app.tab = Tab::Worktrees;
 
         app.worktrees = Some(vec![crate::worktree::Worktree {
             name: "busy".to_string(),
@@ -1598,6 +1617,7 @@ mod tests {
             dirty: false,
             ahead: 0,
             behind: 0,
+            changes: None,
         }]);
         app.worktree_selected = 0;
 

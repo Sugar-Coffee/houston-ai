@@ -425,6 +425,21 @@ impl Sessions {
         })
     }
 
+    /// Selects the live session working in a worktree.
+    ///
+    /// Returns `false` if nothing is, which is the common case for a worktree
+    /// somebody has finished with.
+    pub fn select_by_worktree(&mut self, name: &str) -> bool {
+        let found = self.items.iter().position(|session| {
+            session.worktree.as_deref() == Some(name) && !matches!(session.state, State::Exited(_))
+        });
+
+        if let Some(index) = found {
+            self.selected = index;
+        }
+        found.is_some()
+    }
+
     /// The session with this id, if it is still live.
     pub fn by_id_mut(&mut self, id: u64) -> Option<&mut Session> {
         self.items.iter_mut().find(|item| item.id.0 == id)

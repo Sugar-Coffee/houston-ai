@@ -26,15 +26,6 @@ impl Changes {
         self.files == 0
     }
 
-    /// The compact form for a session card: `+42 −8`.
-    ///
-    /// A real minus sign, not a hyphen — it sits next to a `+` at the same
-    /// optical weight, which a hyphen does not.
-    #[must_use]
-    pub fn compact(&self) -> String {
-        format!("+{} −{}", self.insertions, self.deletions)
-    }
-
     /// The long form for a header.
     #[must_use]
     pub fn describe(&self) -> String {
@@ -394,7 +385,6 @@ mod tests {
 
         let many = Changes { files: 4, insertions: 12, deletions: 9 };
         assert_eq!(many.describe(), "4 files, +12 −9");
-        assert_eq!(many.compact(), "+12 −9");
     }
 }
 

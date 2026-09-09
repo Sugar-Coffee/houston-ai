@@ -50,6 +50,44 @@ pub fn tab_strip(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     }
 }
 
+/// Tabs as powerline segments: no gaps, each one flowing into the next.
+///
+/// The separator is drawn in the *outgoing* segment's background on the
+/// *incoming* segment's background, which is what makes the triangle read as
+/// one shape crossing a boundary rather than two half-shapes meeting. Getting
+/// those two colours the wrong way round is the classic seam.
+fn push_flowing_tabs(
+    spans: &mut Vec<Span<'_>>,
+    app: &App,
+    glyphs: crate::ui::powerline::Glyphs,
+    theme: Theme,
+) {
+    let background = |selected: bool| if selected { theme.accent } else { theme.highlight };
+
+    for (index, tab) in Tab::ALL.iter().enumerate() {
+        let selected = *tab == app.tab;
+        let here = background(selected);
+
+        // The separator between the previous segment and this one. The bar's
+        // own background stands in for a segment that is not there.
+        let before = index
+            .checked_sub(1)
+            .map_or(theme.raised, |previous| background(Tab::ALL[previous] == app.tab));
+        spans.push(Span::styled(glyphs.cap, Style::default().fg(before).bg(here)));
+
+        let style = if selected {
+            Style::default().fg(theme.surface).bg(here).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text).bg(here)
+        };
+        spans.push(Span::styled(format!(" {}·{} ", index + 1, tab.title()), style));
+    }
+
+    // Close the run against the bar.
+    let last = if Tab::ALL.last() == Some(&app.tab) { theme.accent } else { theme.highlight };
+    spans.push(Span::styled(glyphs.cap, Style::default().fg(last).bg(theme.raised)));
+}
+
 fn tab_line<'a>(app: &App, theme: Theme) -> Line<'a> {
     // The wordmark is deliberately quiet. It is the one thing on screen you
     // never need to find, so it does not get a fill — the active tab does.
@@ -58,18 +96,24 @@ fn tab_line<'a>(app: &App, theme: Theme) -> Line<'a> {
         Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
     )];
 
-    for (index, tab) in Tab::ALL.iter().enumerate() {
-        let selected = *tab == app.tab;
-        let label = format!("  {}·{}  ", index + 1, tab.title());
+    let glyphs = crate::ui::powerline::Glyphs::for_setting(app.config.powerline_enabled());
 
-        // A filled pill, so "where am I" is answered by shape before colour.
-        let style = if selected {
-            Style::default().fg(theme.surface).bg(theme.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.dim)
-        };
-        spans.push(Span::styled(label, style));
-        spans.push(Span::raw(" "));
+    if glyphs.is_flowing() {
+        push_flowing_tabs(&mut spans, app, glyphs, theme);
+    } else {
+        for (index, tab) in Tab::ALL.iter().enumerate() {
+            let selected = *tab == app.tab;
+            let label = format!("  {}·{}  ", index + 1, tab.title());
+
+            // A filled pill, so "where am I" is answered by shape before colour.
+            let style = if selected {
+                Style::default().fg(theme.surface).bg(theme.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.dim)
+            };
+            spans.push(Span::styled(label, style));
+            spans.push(Span::raw(" "));
+        }
     }
 
     if app.is_attached() {

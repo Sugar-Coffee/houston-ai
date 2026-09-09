@@ -45,21 +45,41 @@ pub fn render(
     area: Rect,
     sessions: &Sessions,
     renaming: Option<&str>,
+    glyphs: crate::ui::powerline::Glyphs,
     theme: Theme,
 ) {
     let (list_area, pane_area) = split(area);
-    render_list(frame, list_area, sessions, renaming, theme);
+    render_list(frame, list_area, sessions, renaming, glyphs, theme);
     render_pane(frame, pane_area, sessions, theme);
 }
 
-/// Rows each session card occupies: name, directory, and branch.
-const CARD_HEIGHT: usize = 3;
+/// What a card needs to know that is not the session.
+///
+/// A struct rather than four more parameters: `render_card` reached eight,
+/// which is past the point where a call site tells you anything about what is
+/// being passed.
+#[derive(Clone, Copy)]
+struct Chrome {
+    glyphs: crate::ui::powerline::Glyphs,
+    theme: Theme,
+    /// Columns available to the card.
+    width: usize,
+}
+
+/// Rows each session card occupies: name, directory, branch, and changes.
+///
+/// Fixed rather than varying with whether a session has uncommitted work. A
+/// card that grew and shrank as its agent wrote files would make the whole
+/// list jump under the cursor, and the windowing below divides by this to
+/// decide what fits — two good reasons to pay one blank row for a clean tree.
+const CARD_HEIGHT: usize = 4;
 
 fn render_list(
     frame: &mut Frame,
     area: Rect,
     sessions: &Sessions,
     renaming: Option<&str>,
+    glyphs: crate::ui::powerline::Glyphs,
     theme: Theme,
 ) {
     let heading = match sessions.len() {
@@ -88,10 +108,10 @@ fn render_list(
     }
 
     let attached = sessions.focus() == Focus::Attached;
-    let width = inner.width as usize;
+    let chrome = Chrome { glyphs, theme, width: inner.width as usize };
 
-    // Window around the selection so a long list stays usable. Three rows per
-    // card means a full-screen terminal shows roughly fifteen.
+    // Window around the selection so a long list stays usable. Four rows per
+    // card means a full-screen terminal shows roughly ten.
     let visible = (inner.height as usize / CARD_HEIGHT).max(1);
     let selected = sessions.selected_index();
     let start = selected.saturating_sub(visible.saturating_sub(1) / 2);
@@ -101,7 +121,7 @@ fn render_list(
 
     for (index, session) in sessions.iter().enumerate().skip(start).take(visible) {
         let chosen = index == selected;
-        let card = render_card(session, index, chosen, attached, renaming, width, theme);
+        let card = render_card(session, index, chosen, attached, renaming, chrome);
 
         for line in card {
             lines.push(if chosen {
@@ -115,16 +135,20 @@ fn render_list(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// One session as three rows: what it is, where it runs, and on what branch.
-fn render_card<'a>(
+/// The card's first row: which session this is, and how it is doing.
+///
+/// Split out because the card was over a hundred lines, and this is the half
+/// with all the branching in it.
+fn name_row<'a>(
     session: &Session,
     index: usize,
     chosen: bool,
     attached: bool,
     renaming: Option<&str>,
-    width: usize,
-    theme: Theme,
-) -> [Line<'a>; CARD_HEIGHT] {
+    chrome: Chrome,
+) -> Line<'a> {
+    let Chrome { theme, width, .. } = chrome;
+
     // The marker distinguishes "this is where the cursor is" from "your
     // keystrokes are going here", which are not the same thing.
     let marker = match (chosen, attached) {
@@ -168,7 +192,7 @@ fn render_card<'a>(
 
     // While renaming, the row itself becomes the field. No popup, and no
     // guessing which session you are renaming.
-    let name = if chosen && let Some(draft) = renaming {
+    if chosen && let Some(draft) = renaming {
         Line::from(vec![
             Span::styled(marker, Style::default().fg(theme.accent)),
             Span::styled(ordinal, Style::default().fg(theme.dim)),
@@ -185,7 +209,21 @@ fn render_card<'a>(
             Span::styled(kind, Style::default().fg(theme.dim)),
             badge,
         ])
-    };
+    }
+}
+
+/// One session as four rows: what it is, where it runs, what branch it is on,
+/// and what it has changed.
+fn render_card<'a>(
+    session: &Session,
+    index: usize,
+    chosen: bool,
+    attached: bool,
+    renaming: Option<&str>,
+    chrome: Chrome,
+) -> [Line<'a>; CARD_HEIGHT] {
+    let Chrome { glyphs, theme, width } = chrome;
+    let name = name_row(session, index, chosen, attached, renaming, chrome);
 
     // Where it runs. This is why the sidebar is worth three rows: with several
     // agents going, "which one is this" is answered by the path far more often
@@ -203,7 +241,7 @@ fn render_card<'a>(
     let branch = match (&session.worktree, &session.branch) {
         (Some(worktree), _) => Line::from(vec![
             Span::raw("    "),
-            Span::styled("⑂ ", Style::default().fg(theme.link)),
+            Span::styled(format!("{} ", glyphs.branch), Style::default().fg(theme.link)),
             Span::styled(
                 truncate(worktree, width.saturating_sub(15)),
                 Style::default().fg(theme.link),
@@ -212,34 +250,51 @@ fn render_card<'a>(
         ]),
         (None, Some(branch)) => Line::from(vec![
             Span::raw("    "),
-            Span::styled("⑂ ", Style::default().fg(theme.dim)),
+            Span::styled(format!("{} ", glyphs.branch), Style::default().fg(theme.dim)),
             Span::styled(truncate(branch, width.saturating_sub(7)), Style::default().fg(theme.dim)),
         ]),
         (None, None) => Line::from(""),
     };
 
-    // The answer to "what did this one actually do?", on the row you are
-    // already reading. A clean tree says nothing rather than "+0 −0": the
-    // absence of a number is the fastest way to read "nothing yet".
+    // The answer to "what did this one actually do?", on a row of its own.
     //
-    // **Dim, not green and red.** The card's colour already answers a more
-    // urgent question — whether this session wants you — and a green number
-    // beside an attention-coloured spine competes with it. The diff view
-    // colours its lines properly; a card is a summary, and a summary reads
-    // better as text.
-    let branch = match &session.changes {
-        Some(changes) if !changes.is_empty() => {
-            let mut spans = branch.spans;
-            spans.push(Span::styled(
-                format!("  {}", changes.compact()),
+    // This started dim and crammed onto the end of the branch row, on the
+    // argument that green beside an attention-coloured spine would compete
+    // with it. Given its own line that argument weakens: the number is no
+    // longer fighting the branch for the same few columns, and `added` and
+    // `removed` are already roles in their own right for the diff view. So it
+    // reads the way a diff reads everywhere else.
+    //
+    // A clean tree still says nothing rather than "+0 −0". The absence of a
+    // number is the fastest way to read "nothing yet".
+    let changes = match &session.changes {
+        Some(changes) if !changes.is_empty() => Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                format!("+{}", changes.insertions),
+                Style::default().fg(theme.added).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("−{}", changes.deletions),
+                Style::default().fg(theme.removed).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "  {}",
+                    if changes.files == 1 {
+                        "1 file".to_string()
+                    } else {
+                        format!("{} files", changes.files)
+                    }
+                ),
                 Style::default().fg(theme.dim),
-            ));
-            Line::from(spans)
-        }
-        _ => branch,
+            ),
+        ]),
+        _ => Line::from(""),
     };
 
-    [name, where_it_runs, branch]
+    [name, where_it_runs, branch, changes]
 }
 
 fn render_pane(frame: &mut Frame, area: Rect, sessions: &Sessions, theme: Theme) {

@@ -69,6 +69,33 @@ guess. Shell sessions get no agent states at all rather than invented ones, and
 if Houston loses its hooks it says **status frozen** rather than showing you a
 value that stopped being true an hour ago.
 
+### Review what an agent actually changed
+
+Every session card carries what its agent has done to the working tree: `+142`
+in green, `−31` in red, on its own line. `v` opens the full diff in a pane.
+Files the agent created are counted too, which matters more than it sounds —
+writing new files is most of what a coding agent does, and a card reading `+0`
+beside six of them would teach you to distrust the number.
+
+### Worktrees, from first checkout to landed branch
+
+Several agents on one repository need isolation, so Houston makes git worktrees
+and then owns their whole life rather than creating them and walking away. The
+Worktrees view says what each one is for:
+
+- **in use** — a live session is working in it
+- **uncommitted work** — nobody is in it, and there is work in it you have not committed
+- **idle** — nobody is in it, and nothing would be lost by removing it
+- **repository gone** — its repository has moved or been deleted, so git can no longer act on it
+
+That last one is why it is a view rather than a list. An orphaned worktree
+cannot be landed and cannot be removed by git; it just sits on disk.
+
+`l` lands one: commit, push, open a pull request, remove the tree. The form
+names the branch and the remote, because pushing and opening a PR are visible
+to other people. Removing the directory is the one step that does not default
+to on.
+
 ### The knowledge base, as a first-class pane
 
 Fuzzy-find across your notes, search inside them, follow `[[wikilinks]]` and
@@ -257,6 +284,19 @@ Every hue means exactly one thing, everywhere: purple is *you are here*, orange
 is *this wants you*, green is *live*, cyan is *followable*. That is what stops
 seven colours reading as a rainbow, and it is why a new theme is a remap rather
 than a redesign.
+
+### Powerline separators
+
+If you run a [Nerd Font](https://www.nerdfonts.com/) — and if you use one of
+the Claude Code statusline addons, you already do — turn on **Powerline
+separators** in Settings. The tab strip becomes flowing arrow-shaped segments
+and branch names take the [powerline](https://github.com/powerline/powerline)
+branch glyph.
+
+It is off by default and it has to be. A terminal without those glyphs draws
+them as replacement boxes, which does not degrade into "plain", it degrades
+into "broken". Nothing needs installing for Houston itself; this is about the
+font your terminal already has.
 
 Your own themes are `.toml` files in `~/.houston/themes/`, and a documented
 template is written there on first run. Every field is optional, so overriding

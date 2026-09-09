@@ -21,17 +21,20 @@ pub enum Tab {
     Sessions,
     Vault,
     Board,
+    Worktrees,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Self; 4] = [Self::Sessions, Self::Vault, Self::Board, Self::Settings];
+    pub const ALL: [Self; 5] =
+        [Self::Sessions, Self::Vault, Self::Board, Self::Worktrees, Self::Settings];
 
     pub const fn title(self) -> &'static str {
         match self {
             Self::Sessions => "Sessions",
             Self::Vault => "Vault",
             Self::Board => "Board",
+            Self::Worktrees => "Worktrees",
             Self::Settings => "Settings",
         }
     }
@@ -167,6 +170,7 @@ pub mod fields {
     pub const THEME: &str = "Theme";
     pub const CREATE: &str = "Create";
     pub const MOUSE: &str = "Capture the mouse";
+    pub const POWERLINE: &str = "Powerline separators";
     pub const MESSAGE: &str = "Commit message";
     pub const PUSH: &str = "Push to origin";
     pub const PULL_REQUEST: &str = "Open a pull request";
@@ -276,6 +280,11 @@ impl App {
                 "wheel scrolls sessions; off restores text selection",
                 self.config.mouse_enabled(),
             ),
+            Field::toggle(
+                fields::POWERLINE,
+                "arrow-shaped tabs; needs a Nerd Font",
+                self.config.powerline_enabled(),
+            ),
         ]);
     }
 
@@ -308,6 +317,57 @@ impl App {
             .and_then(|name| self.themes.iter().find(|theme| theme.name == name))
             .map_or_else(Theme::default, |named| named.theme);
         self.dirty = true;
+    }
+
+    /// Loads the worktree list, for the view that shows it.
+    ///
+    /// Reads the disk every time rather than caching. It is a handful of git
+    /// calls per worktree and it happens when you open the view or ask for a
+    /// refresh, never per frame — and a stale list here is worse than a slow
+    /// one, because the decisions taken from it delete directories.
+    pub fn load_worktrees(&mut self) {
+        match crate::worktree::list() {
+            Ok(list) => {
+                self.worktree_selected = self.worktree_selected.min(list.len().saturating_sub(1));
+                self.worktrees = Some(list);
+            }
+            Err(error) => {
+                self.worktrees = None;
+                self.notify(format!("could not read worktrees: {error}"));
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// The worktree the cursor is on.
+    #[must_use]
+    pub fn selected_worktree(&self) -> Option<&crate::worktree::Worktree> {
+        self.worktrees.as_ref()?.get(self.worktree_selected)
+    }
+
+    /// Moves the worktree selection, stopping at both ends.
+    pub fn move_worktree_selection(&mut self, forward: bool) {
+        let count = self.worktrees.as_ref().map_or(0, Vec::len);
+        if count == 0 {
+            return;
+        }
+
+        self.worktree_selected = if forward {
+            (self.worktree_selected + 1) % count
+        } else {
+            (self.worktree_selected + count - 1) % count
+        };
+        self.dirty = true;
+    }
+
+    /// Wheel scrolling on the worktrees view moves the selection.
+    ///
+    /// The list is short enough that there is nothing else a wheel could
+    /// usefully do, and moving the selection is what you wanted anyway.
+    pub fn scroll_worktrees(&mut self, scroll: i32) {
+        for _ in 0..scroll.abs().min(20) {
+            self.move_worktree_selection(scroll > 0);
+        }
     }
 
     /// Opens the theme picker, previewing as you move through it.
@@ -490,7 +550,7 @@ impl App {
         if self.tab == Tab::Settings {
             return InputFocus::Form;
         }
-        if self.worktrees.is_some() || self.diff.is_some() || self.theme_picker.is_some() {
+        if self.diff.is_some() || self.theme_picker.is_some() {
             return InputFocus::Overlay;
         }
         if self.renaming.is_some() || self.is_vault_query() {
@@ -553,9 +613,17 @@ impl App {
     }
 
     pub fn select_tab(&mut self, tab: Tab) {
-        if self.tab != tab {
-            self.tab = tab;
-            self.dirty = true;
+        if self.tab == tab {
+            return;
+        }
+        self.tab = tab;
+        self.dirty = true;
+
+        // Arriving is the moment the list has to be right. Loading here rather
+        // than keeping it fresh in the background costs a few git calls when
+        // you switch to the tab, and nothing at all while you are elsewhere.
+        if tab == Tab::Worktrees {
+            self.load_worktrees();
         }
     }
 
@@ -709,6 +777,19 @@ impl App {
             Tab::Board if !self.sessions.is_empty() => {
                 binds.extend([("hjkl", "move"), ("↵", "open session"), ("v", "review")]);
             }
+            Tab::Worktrees => {
+                if self.worktrees.as_ref().is_some_and(|list| !list.is_empty()) {
+                    binds.extend([
+                        ("j/k", "select"),
+                        ("↵", "go to its session"),
+                        ("v", "review"),
+                        ("l", "land"),
+                        ("d", "remove"),
+                        ("D", "force"),
+                    ]);
+                }
+                binds.push(("r", "refresh"));
+            }
 
             Tab::Vault if self.browser.is_some() => {
                 binds.extend([
@@ -772,6 +853,7 @@ mod tests {
             dirty: true,
             ahead: 0,
             behind: 0,
+            changes: None,
         }
     }
 

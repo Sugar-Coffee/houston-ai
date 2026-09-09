@@ -44,6 +44,62 @@ pub struct Worktree {
     /// worth a third state to render.
     pub ahead: usize,
     pub behind: usize,
+    /// What has changed in it. `None` if it could not be read.
+    pub changes: Option<crate::diff::Changes>,
+}
+
+/// What a worktree is *for*, which is the question the manager answers.
+///
+/// Ordered by how much it wants your attention. "Orphaned" is the one worth
+/// naming out loud: a worktree Houston made, whose repository has since been
+/// moved or deleted, cannot be landed or removed by git and will sit on disk
+/// until somebody notices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    /// Its repository is gone. Nothing can be done with it but delete it.
+    Orphaned,
+    /// A live session is working in it.
+    InUse,
+    /// Nobody is in it, and there is work in it that is not committed.
+    Abandoned,
+    /// Nobody is in it, and nothing would be lost by removing it.
+    Idle,
+}
+
+impl Status {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Orphaned => "repository gone",
+            Self::InUse => "in use",
+            Self::Abandoned => "uncommitted work",
+            Self::Idle => "idle",
+        }
+    }
+
+    #[must_use]
+    pub const fn marker(self) -> &'static str {
+        match self {
+            Self::Orphaned => "⚠",
+            Self::InUse => "●",
+            Self::Abandoned => "◆",
+            Self::Idle => "·",
+        }
+    }
+}
+
+impl Worktree {
+    /// Classifies this worktree, given the sessions currently running.
+    #[must_use]
+    pub fn status(&self, in_use: bool) -> Status {
+        if self.repository.as_os_str().is_empty() || !self.repository.exists() {
+            return Status::Orphaned;
+        }
+        if in_use {
+            return Status::InUse;
+        }
+        if self.dirty { Status::Abandoned } else { Status::Idle }
+    }
 }
 
 /// The branch checked out in a directory, by reading `.git/HEAD`.
@@ -144,7 +200,16 @@ pub fn create_in(root: &Path, repository: &Path, requested_name: &str) -> Result
     git(&repository, &["worktree", "add", "-b", &branch, &path.to_string_lossy(), "HEAD"])
         .with_context(|| format!("could not create a worktree at {}", path.display()))?;
 
-    Ok(Worktree { name, path, repository, branch: Some(branch), dirty: false, ahead: 0, behind: 0 })
+    Ok(Worktree {
+        name,
+        path,
+        repository,
+        branch: Some(branch),
+        dirty: false,
+        ahead: 0,
+        behind: 0,
+        changes: None,
+    })
 }
 
 /// A free directory name under `root`, suffixing on collision.
@@ -194,7 +259,11 @@ pub fn list_in(root: &Path) -> Result<Vec<Worktree>> {
             git(&path, &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
                 .map_or((0, 0), |output| parse_ahead_behind(&output));
 
-        worktrees.push(Worktree { name, path, repository, branch, dirty, ahead, behind });
+        // Two more subprocesses per worktree. Affordable because this list is
+        // loaded when you open the view or press `r`, never per frame.
+        let changes = crate::diff::changes_in(&path);
+
+        worktrees.push(Worktree { name, path, repository, branch, dirty, ahead, behind, changes });
     }
 
     worktrees.sort_by(|a, b| a.name.cmp(&b.name));
@@ -412,6 +481,7 @@ mod tests {
             dirty: true,
             ahead: 1,
             behind: 0,
+            changes: None,
         }
     }
 

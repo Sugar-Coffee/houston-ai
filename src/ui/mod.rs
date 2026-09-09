@@ -11,11 +11,13 @@ pub mod form;
 pub mod keycap;
 pub mod overlay;
 pub mod palettes;
+pub mod powerline;
 pub mod sessions;
 pub mod settings;
 pub mod terminal;
 pub mod theme;
 pub mod vault;
+pub mod worktrees;
 
 pub use theme::Theme;
 
@@ -58,17 +60,28 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     let [tabs, body, footer] = layout(frame.area());
 
+    let glyphs = powerline::Glyphs::for_setting(app.config.powerline_enabled());
+
     chrome::tab_strip(frame, tabs, app, theme);
 
     match app.tab {
         Tab::Sessions => {
-            sessions::render(frame, body, &app.sessions, app.renaming.as_deref(), theme);
+            sessions::render(frame, body, &app.sessions, app.renaming.as_deref(), glyphs, theme);
         }
         Tab::Vault => match &app.editor {
             Some(open) => editor::render(frame, body, open, theme),
             None => vault::render(frame, body, app.browser.as_ref(), theme),
         },
         Tab::Board => board::render(frame, body, &app.sessions, theme),
+        Tab::Worktrees => worktrees::render(
+            frame,
+            body,
+            app.worktrees.as_ref(),
+            app.worktree_selected,
+            &app.sessions,
+            glyphs,
+            theme,
+        ),
         Tab::Settings => settings::render(frame, body, app, theme),
     }
 
@@ -81,9 +94,6 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if let Some(view) = &app.diff {
         overlay::diff(frame, body, view, theme);
-    }
-    if let Some(list) = &app.worktrees {
-        overlay::worktrees(frame, body, list, app.worktree_selected, &app.sessions, theme);
     }
     if let Some(picker) = &app.picker {
         overlay::picker(frame, body, picker, &app.sessions, theme);
@@ -224,14 +234,84 @@ mod tests {
     }
 
     #[test]
-    fn the_worktree_manager_says_what_to_do_when_empty() {
+    fn the_worktree_view_says_what_to_do_when_empty() {
         let mut app = App::new();
+        app.tab = Tab::Worktrees;
         app.worktrees = Some(Vec::new());
 
         let rendered = draw(&app, 110, 30);
         assert!(rendered.contains("worktrees"));
-        assert!(rendered.contains("None yet"));
+        assert!(rendered.contains("No worktrees yet"));
         assert!(rendered.contains("tick Worktree"), "an empty state says how to get one");
+    }
+
+    /// The setting has to actually reach the screen, and the plain default has
+    /// to stay free of glyphs an ordinary font cannot draw.
+    #[test]
+    fn powerline_separators_appear_only_when_the_setting_is_on() {
+        let mut app = App::new();
+
+        let plain = draw(&app, 110, 20);
+        assert!(
+            !plain.contains('\u{e0b0}'),
+            "an unpatched font draws that as a box, so it must not appear by default"
+        );
+
+        app.config.powerline = Some(true);
+        let flowing = draw(&app, 110, 20);
+        assert!(flowing.contains('\u{e0b0}'), "with the setting on, the tabs get their arrows");
+        assert!(flowing.contains("Worktrees"), "and still say what they are");
+    }
+
+    /// The branch marker follows the same setting, so a terminal without the
+    /// font never meets it either.
+    #[test]
+    fn the_branch_glyph_follows_the_same_setting() {
+        let mut app = App::new();
+        app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+        app.sessions.selected_mut().unwrap().branch = Some("main".to_string());
+
+        assert!(draw(&app, 110, 20).contains('⑂'), "plain uses a character every font has");
+
+        app.config.powerline = Some(true);
+        assert!(draw(&app, 110, 20).contains('\u{e0a0}'), "powerline uses the Nerd Font branch");
+    }
+
+    /// Failing to read the list is a different thing from there being none,
+    /// and the view has to say which.
+    #[test]
+    fn an_unreadable_worktree_list_is_not_reported_as_an_empty_one() {
+        let mut app = App::new();
+        app.tab = Tab::Worktrees;
+        app.worktrees = None;
+
+        let rendered = draw(&app, 110, 30);
+        assert!(rendered.contains("Could not read"), "a failure says so");
+        assert!(!rendered.contains("No worktrees yet"), "and does not claim there are none");
+    }
+
+    /// The four states are the whole point of the view: what is safe to throw
+    /// away, and what is somebody's unfinished work.
+    #[test]
+    fn a_worktree_whose_repository_is_gone_is_called_orphaned() {
+        let mut app = App::new();
+        app.tab = Tab::Worktrees;
+        app.worktrees = Some(vec![crate::worktree::Worktree {
+            name: "stranded".to_string(),
+            path: std::env::temp_dir().join("houston-stranded"),
+            repository: std::path::PathBuf::from("/definitely/not/here"),
+            branch: Some("feature".to_string()),
+            dirty: false,
+            ahead: 0,
+            behind: 0,
+            changes: None,
+        }]);
+
+        let rendered = draw(&app, 110, 20);
+        assert!(
+            rendered.contains("repository gone"),
+            "a worktree git can no longer act on has to say so, or it sits on disk forever"
+        );
     }
 
     #[test]
