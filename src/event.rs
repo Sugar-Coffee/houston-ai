@@ -9,7 +9,7 @@
 //!    emitting thousands of lines a second must not cost thousands of repaints.
 
 use crate::{
-    app::{App, InputFocus, Picker, Tab, fields},
+    app::{App, FormPurpose, InputFocus, Picker, Tab, fields},
     clipboard,
     editor::Editor,
     form::Activation,
@@ -633,6 +633,10 @@ fn apply_form_field(app: &mut App, modal: bool) {
 
 /// Creates the session the new-session form describes.
 fn accept_form(app: &mut App) {
+    if let FormPurpose::Land(name) = app.form_purpose.clone() {
+        return accept_land(app, &name);
+    }
+
     let Some(form) = app.form.as_ref() else { return };
 
     let name = form.field(fields::NAME).map(|field| field.value.trim().to_string());
@@ -703,6 +707,45 @@ fn open_worktrees(app: &mut App) {
     }
 }
 
+/// Carries out a landing, and says what happened either way.
+///
+/// The worktree is re-read rather than taken from the manager's list: the
+/// list was loaded when the overlay opened, and an agent that has been
+/// working since then will have made it dirty. Committing on a stale `dirty`
+/// flag would skip the commit and push an empty branch.
+fn accept_land(app: &mut App, name: &str) {
+    let Some(form) = app.form.as_ref() else { return };
+
+    let request = crate::worktree::Land {
+        message: form.value(fields::MESSAGE),
+        push: form.is_on(fields::PUSH),
+        pull_request: form.is_on(fields::PULL_REQUEST),
+        remove: form.is_on(fields::REMOVE),
+    };
+
+    let worktree = crate::worktree::list()
+        .ok()
+        .and_then(|list| list.into_iter().find(|item| item.name == name));
+    let Some(worktree) = worktree else {
+        app.close_form();
+        return app.notify(format!("{name} is gone"));
+    };
+
+    match crate::worktree::plan(&worktree, &request)
+        .and_then(|steps| crate::worktree::land(&worktree, &steps))
+    {
+        Ok(report) => {
+            app.close_form();
+            app.notify(report);
+            open_worktrees(app);
+        }
+        // The form stays open on failure. A rejected push usually needs one
+        // toggle changed, and reopening it from the manager to change that
+        // toggle would be the app's idea of a joke.
+        Err(error) => app.notify(error.to_string()),
+    }
+}
+
 /// Opens the selected session's diff.
 ///
 /// Refreshes the count first, so the header agrees with the body. The card's
@@ -724,6 +767,18 @@ fn open_diff(app: &mut App) {
     }
 }
 
+/// Opens the landing form for the selected worktree.
+fn land_worktree(app: &mut App) {
+    let selected = app.worktrees.as_ref().and_then(|list| list.get(app.worktree_selected)).cloned();
+
+    let Some(worktree) = selected else { return app.notify("no worktree to land") };
+
+    // The manager is a list; landing is a form. Closing it first means one
+    // overlay is open at a time, which is what the focus enum expects.
+    app.worktrees = None;
+    app.open_land_form(&worktree);
+}
+
 /// The worktree manager.
 fn on_key_worktrees(app: &mut App, key: KeyEvent) {
     app.dirty = true;
@@ -738,6 +793,7 @@ fn on_key_worktrees(app: &mut App, key: KeyEvent) {
             app.worktree_selected = (app.worktree_selected + count - 1) % count;
         }
         KeyCode::Char('r') => open_worktrees(app),
+        KeyCode::Char('l') => land_worktree(app),
         KeyCode::Char(force @ ('d' | 'D')) => remove_worktree(app, force == 'D'),
         _ => {}
     }
@@ -1508,7 +1564,8 @@ mod tests {
             repository: std::path::PathBuf::new(),
             branch: None,
             dirty: false,
-            commits: 0,
+            ahead: 0,
+            behind: 0,
         }]);
         app.worktree_selected = 0;
 

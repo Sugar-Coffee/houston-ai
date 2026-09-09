@@ -130,14 +130,27 @@ pub struct Form {
     /// The two-step — move, then Return to edit — is what makes this a menu
     /// rather than a wall of always-live text boxes.
     editing: bool,
+    /// What the popup calls itself.
+    ///
+    /// On the form rather than chosen by the renderer, because landing names
+    /// the branch and the remote in its title — the confirmation ADR-0009
+    /// asks for — and only the code that opened the form knows those.
+    pub title: String,
 }
 
 impl Form {
     #[must_use]
     pub fn new(fields: Vec<Field>) -> Self {
-        let mut form = Self { fields, focused: 0, editing: false };
+        let mut form = Self { fields, focused: 0, editing: false, title: "new session".into() };
         form.focus_first_visible();
         form
+    }
+
+    /// Names the form, for a popup that is not the new-session dialog.
+    #[must_use]
+    pub fn titled(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
     }
 
     pub const fn is_editing(&self) -> bool {

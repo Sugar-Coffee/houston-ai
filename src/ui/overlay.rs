@@ -103,7 +103,7 @@ pub fn form(frame: &mut Frame, area: Rect, form: &Form, theme: Theme) {
     };
 
     frame.render_widget(Clear, popup);
-    form_ui::render(frame, popup, form, theme, " new session ");
+    form_ui::render(frame, popup, form, theme, &format!(" {} ", form.title));
 }
 
 /// The worktree manager.
@@ -187,14 +187,24 @@ pub fn worktrees(
                 .file_name()
                 .map_or_else(|| "—".to_string(), |name| name.to_string_lossy().into_owned());
 
+            // Ahead and behind only when there is something to say. A column
+            // of "↑0 ↓0" on every row is a column of nothing.
+            let tracking = match (worktree.ahead, worktree.behind) {
+                (0, 0) => String::new(),
+                (ahead, 0) => format!("↑{ahead}"),
+                (0, behind) => format!("↓{behind}"),
+                (ahead, behind) => format!("↑{ahead} ↓{behind}"),
+            };
+
             Line::from(vec![
                 Span::styled(if chosen { "▸ " } else { "  " }, Style::default().fg(theme.accent)),
-                Span::styled(format!("{:<26}", truncate(&worktree.name, 25)), name_style),
+                Span::styled(format!("{:<24}", truncate(&worktree.name, 23)), name_style),
                 Span::styled(
-                    format!("{:<18}", truncate(&repository, 17)),
+                    format!("{:<16}", truncate(&repository, 15)),
                     Style::default().fg(theme.link),
                 ),
                 Span::styled(format!("{badge:<15}"), Style::default().fg(badge_colour)),
+                Span::styled(format!("{tracking:<9}"), Style::default().fg(theme.dim)),
             ])
         })
         .collect();

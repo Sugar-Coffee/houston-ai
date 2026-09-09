@@ -36,8 +36,14 @@ pub struct Worktree {
     pub branch: Option<String>,
     /// Uncommitted changes present.
     pub dirty: bool,
-    /// Commits ahead of where the branch started.
-    pub commits: usize,
+    /// Commits this branch has that its upstream does not, and vice versa.
+    ///
+    /// Both zero when there is no upstream, which is the normal state of a
+    /// worktree nobody has pushed yet. "Nothing to compare against" and "in
+    /// step with the remote" look the same here; the difference has not been
+    /// worth a third state to render.
+    pub ahead: usize,
+    pub behind: usize,
 }
 
 /// The branch checked out in a directory, by reading `.git/HEAD`.
@@ -138,7 +144,7 @@ pub fn create_in(root: &Path, repository: &Path, requested_name: &str) -> Result
     git(&repository, &["worktree", "add", "-b", &branch, &path.to_string_lossy(), "HEAD"])
         .with_context(|| format!("could not create a worktree at {}", path.display()))?;
 
-    Ok(Worktree { name, path, repository, branch: Some(branch), dirty: false, commits: 0 })
+    Ok(Worktree { name, path, repository, branch: Some(branch), dirty: false, ahead: 0, behind: 0 })
 }
 
 /// A free directory name under `root`, suffixing on collision.
@@ -182,16 +188,31 @@ pub fn list_in(root: &Path) -> Result<Vec<Worktree>> {
 
         let dirty =
             git(&path, &["status", "--porcelain"]).is_ok_and(|output| !output.trim().is_empty());
-        let commits = git(&path, &["rev-list", "--count", "HEAD", "^HEAD@{upstream}"])
-            .ok()
-            .and_then(|output| output.trim().parse().ok())
-            .unwrap_or(0);
+        // One command for both numbers. Asking twice would double the process
+        // count for a row that already costs three.
+        let (ahead, behind) =
+            git(&path, &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+                .map_or((0, 0), |output| parse_ahead_behind(&output));
 
-        worktrees.push(Worktree { name, path, repository, branch, dirty, commits });
+        worktrees.push(Worktree { name, path, repository, branch, dirty, ahead, behind });
     }
 
     worktrees.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(worktrees)
+}
+
+/// Reads `git rev-list --left-right --count`, which is two tab-separated
+/// numbers: what the left side has that the right does not, then the reverse.
+///
+/// `(0, 0)` for anything unparseable. A worktree with no upstream makes git
+/// exit non-zero here, and that is the common case, not an error worth
+/// surfacing.
+#[must_use]
+pub fn parse_ahead_behind(output: &str) -> (usize, usize) {
+    let mut columns = output.split_whitespace();
+    let ahead = columns.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+    let behind = columns.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+    (ahead, behind)
 }
 
 /// Removes a worktree.
@@ -223,6 +244,122 @@ pub fn remove(worktree: &Worktree, force: bool) -> Result<()> {
             .with_context(|| format!("could not remove {}", worktree.path.display()))?;
     }
     Ok(())
+}
+
+/// What landing a worktree should do, in order.
+///
+/// Split from doing it so the decisions can be tested without pushing
+/// anything to anybody. The same reason `session::restore_spec` exists: the
+/// interesting part is what gets chosen, and that part should not require a
+/// network, a remote, or somebody's repository to check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    Commit(String),
+    Push,
+    PullRequest,
+    Remove,
+}
+
+/// What the user asked for on the landing form.
+#[derive(Debug, Clone, Default)]
+pub struct Land {
+    pub message: String,
+    pub push: bool,
+    pub pull_request: bool,
+    pub remove: bool,
+}
+
+/// Turns a request into an ordered plan, or explains why it cannot.
+pub fn plan(worktree: &Worktree, request: &Land) -> Result<Vec<Step>> {
+    let mut steps = Vec::new();
+
+    if worktree.dirty {
+        let message = request.message.trim();
+        if message.is_empty() {
+            bail!("a commit needs a message");
+        }
+        steps.push(Step::Commit(message.to_string()));
+    }
+
+    // A pull request needs a branch the remote can see, so asking for one is
+    // asking for a push. Silently skipping the push and then failing on the
+    // PR would be a worse way to learn that.
+    if request.push || request.pull_request {
+        steps.push(Step::Push);
+    }
+    if request.pull_request {
+        steps.push(Step::PullRequest);
+    }
+    if request.remove {
+        steps.push(Step::Remove);
+    }
+
+    if steps.is_empty() {
+        bail!("nothing to do — {} is already clean", worktree.name);
+    }
+    Ok(steps)
+}
+
+/// Carries out a plan, saying what happened.
+///
+/// Stops at the first failure and reports how far it got. A half-landed
+/// worktree is a normal outcome — a push can be rejected, `gh` may not be
+/// installed — and the recovery is always to look at what did happen and
+/// press the key again.
+pub fn land(worktree: &Worktree, steps: &[Step]) -> Result<String> {
+    let branch = worktree.branch.clone().unwrap_or_else(|| "HEAD".to_string());
+    let mut done: Vec<String> = Vec::new();
+
+    for step in steps {
+        let outcome = match step {
+            Step::Commit(message) => {
+                git(&worktree.path, &["add", "-A"])?;
+                git(&worktree.path, &["commit", "-m", message])?;
+                "committed".to_string()
+            }
+            Step::Push => {
+                git(&worktree.path, &["push", "-u", "origin", &branch]).with_context(|| {
+                    format!("could not push {branch} to origin (landed: {})", summarise(&done))
+                })?;
+                format!("pushed to origin/{branch}")
+            }
+            Step::PullRequest => open_pull_request(&worktree.path, &done)?,
+            Step::Remove => {
+                // Re-read, because the commit above has just made it clean and
+                // the copy we were handed still says otherwise.
+                let mut fresh = worktree.clone();
+                fresh.dirty = false;
+                remove(&fresh, false)?;
+                "removed the worktree".to_string()
+            }
+        };
+        done.push(outcome);
+    }
+    Ok(summarise(&done))
+}
+
+/// Opens a PR with `gh`, which is the only tool that can.
+fn open_pull_request(path: &Path, done: &[String]) -> Result<String> {
+    let output = Command::new("gh")
+        .args(["pr", "create", "--fill"])
+        .current_dir(path)
+        .output()
+        .context("could not run gh — install the GitHub CLI, or untick the pull request")?;
+
+    if !output.status.success() {
+        let reason = String::from_utf8_lossy(&output.stderr);
+        bail!("gh pr create: {} (landed: {})", reason.trim(), summarise(done));
+    }
+
+    // `gh` prints the URL it made, which is the one thing worth repeating.
+    let url = String::from_utf8_lossy(&output.stdout);
+    let url = url.lines().rev().find(|line| line.starts_with("http")).unwrap_or("").trim();
+
+    Ok(if url.is_empty() { "opened a pull request".to_string() } else { format!("PR {url}") })
+}
+
+fn summarise(done: &[String]) -> String {
+    if done.is_empty() { "nothing".to_string() } else { done.join(", ") }
 }
 
 /// Runs git in a directory, returning stdout.
@@ -264,6 +401,114 @@ mod tests {
         git(&path, &["add", "."]).unwrap();
         git(&path, &["commit", "-q", "-m", "first"]).unwrap();
         path
+    }
+
+    fn dirty(name: &str) -> Worktree {
+        Worktree {
+            name: name.to_string(),
+            path: PathBuf::from("/tmp/nowhere"),
+            repository: PathBuf::from("/tmp/repo"),
+            branch: Some("feature".to_string()),
+            dirty: true,
+            ahead: 1,
+            behind: 0,
+        }
+    }
+
+    #[test]
+    fn tracking_counts_are_read_from_one_command_and_default_to_level() {
+        assert_eq!(parse_ahead_behind("3\t1\n"), (3, 1), "left is ahead, right is behind");
+        assert_eq!(parse_ahead_behind("0\t0\n"), (0, 0));
+        assert_eq!(
+            parse_ahead_behind(""),
+            (0, 0),
+            "no upstream is the normal state of an unpushed worktree, not an error"
+        );
+        assert_eq!(parse_ahead_behind("nonsense"), (0, 0));
+    }
+
+    #[test]
+    fn landing_uncommitted_work_without_a_message_is_refused_rather_than_guessed() {
+        let request = Land { push: true, ..Land::default() };
+
+        let refusal = plan(&dirty("wt"), &request).unwrap_err().to_string();
+        assert!(refusal.contains("message"), "the reason has to say what is missing: {refusal}");
+    }
+
+    #[test]
+    fn a_clean_worktree_is_not_committed_again() {
+        let mut clean = dirty("wt");
+        clean.dirty = false;
+
+        let steps = plan(&clean, &Land { push: true, ..Land::default() }).unwrap();
+        assert_eq!(steps, vec![Step::Push], "there is nothing to commit, so nothing is");
+    }
+
+    #[test]
+    fn asking_for_a_pull_request_pushes_first_even_if_you_did_not_tick_push() {
+        let request =
+            Land { message: "done".to_string(), pull_request: true, push: false, remove: false };
+
+        let steps = plan(&dirty("wt"), &request).unwrap();
+        assert_eq!(
+            steps,
+            vec![Step::Commit("done".to_string()), Step::Push, Step::PullRequest],
+            "a PR needs a branch the remote can see; failing at the PR would teach that badly"
+        );
+    }
+
+    #[test]
+    fn removal_comes_last_so_nothing_is_deleted_before_it_is_safe() {
+        let request =
+            Land { message: "done".to_string(), push: true, pull_request: false, remove: true };
+
+        let steps = plan(&dirty("wt"), &request).unwrap();
+        assert_eq!(steps.last(), Some(&Step::Remove), "the tree goes only after the work is out");
+    }
+
+    #[test]
+    fn a_request_that_would_do_nothing_says_so() {
+        let mut clean = dirty("spare");
+        clean.dirty = false;
+
+        let refusal = plan(&clean, &Land::default()).unwrap_err().to_string();
+        assert!(refusal.contains("clean"), "silence would look like it worked: {refusal}");
+    }
+
+    /// The whole plan, carried out against a real repository with a real
+    /// remote — but a local one, so nothing leaves the machine.
+    #[test]
+    fn landing_commits_and_pushes_to_a_real_remote() {
+        let remote = std::env::temp_dir().join("houston-wt-remote.git");
+        let _ = std::fs::remove_dir_all(&remote);
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        let repository = scratch_repository("landing");
+        git(&repository, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+
+        let root = scratch_root("landing");
+        let mut worktree = create_in(&root, &repository, "ship it").unwrap();
+        std::fs::write(worktree.path.join("work.txt"), "agent output\n").unwrap();
+        worktree.dirty = true;
+
+        let steps = plan(
+            &worktree,
+            &Land { message: "the agent's work".to_string(), push: true, ..Land::default() },
+        )
+        .unwrap();
+        let report = land(&worktree, &steps).unwrap();
+
+        assert!(report.contains("committed"), "it says what it did: {report}");
+        assert!(report.contains("pushed"), "including the push: {report}");
+
+        let branches = git(&remote, &["branch", "--list"]).unwrap();
+        assert!(branches.contains("ship-it"), "the branch really reached the remote: {branches}");
+
+        remove(&worktree, true).ok();
+        for path in [&root, &repository, &remote] {
+            std::fs::remove_dir_all(path).ok();
+        }
     }
 
     #[test]

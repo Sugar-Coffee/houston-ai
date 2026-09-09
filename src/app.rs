@@ -134,11 +134,13 @@ pub struct App {
 const INPUT_LOG: usize = 14;
 
 /// What accepting the open form does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormPurpose {
     None,
     /// Start a session with the form's settings.
     NewSession,
+    /// Land the named worktree: commit, push, open a PR, remove.
+    Land(String),
 }
 
 /// Field labels, so the form and the code that reads it cannot drift apart.
@@ -152,6 +154,11 @@ pub mod fields {
     pub const THEME: &str = "Theme";
     pub const CREATE: &str = "Create";
     pub const MOUSE: &str = "Capture the mouse";
+    pub const MESSAGE: &str = "Commit message";
+    pub const PUSH: &str = "Push to origin";
+    pub const PULL_REQUEST: &str = "Open a pull request";
+    pub const REMOVE: &str = "Remove the worktree";
+    pub const LAND: &str = "Land";
 }
 
 impl App {
@@ -273,6 +280,37 @@ impl App {
 
         self.form = Some(form);
         self.form_purpose = FormPurpose::NewSession;
+        self.dirty = true;
+    }
+
+    /// Opens the landing form for a worktree.
+    ///
+    /// The title names the branch and where it is going, because pushing and
+    /// opening a pull request are visible to other people and a confirmation
+    /// that does not say where is not a confirmation. Removal is the one
+    /// toggle that starts off: it destroys a directory, and the rest of this
+    /// form does not.
+    pub fn open_land_form(&mut self, worktree: &crate::worktree::Worktree) {
+        let branch = worktree.branch.clone().unwrap_or_else(|| "HEAD".to_string());
+        let in_use = self.sessions.uses_worktree(&worktree.name);
+
+        let mut form = Form::new(vec![
+            Field::text(fields::MESSAGE, "what the agent did", ""),
+            Field::toggle(fields::PUSH, "origin", true),
+            Field::toggle(fields::PULL_REQUEST, "needs the gh CLI", true),
+            Field::toggle(fields::REMOVE, "after it has landed", false),
+            Field::action(fields::LAND, "commit, push, open a PR"),
+        ])
+        .titled(format!("land {branch} → origin"));
+
+        // Offering to delete the directory a live agent is working in is not a
+        // choice worth presenting.
+        if in_use {
+            form.set_visible(fields::REMOVE, false);
+        }
+
+        self.form = Some(form);
+        self.form_purpose = FormPurpose::Land(worktree.name.clone());
         self.dirty = true;
     }
 
@@ -510,6 +548,7 @@ impl App {
             ]),
             InputFocus::Overlay if self.worktrees.is_some() => Some(vec![
                 ("j/k", "select"),
+                ("l", "land"),
                 ("d", "remove"),
                 ("D", "force remove"),
                 ("r", "refresh"),
@@ -625,6 +664,44 @@ mod tests {
 
         app.select_tab(Tab::Board);
         assert!(app.dirty, "changing tab should force a redraw");
+    }
+
+    fn spare_worktree(name: &str) -> crate::worktree::Worktree {
+        crate::worktree::Worktree {
+            name: name.to_string(),
+            path: std::env::temp_dir().join(name),
+            repository: std::env::temp_dir().join("repo"),
+            branch: Some("agent/thing".to_string()),
+            dirty: true,
+            ahead: 0,
+            behind: 0,
+        }
+    }
+
+    /// Pushing and opening a pull request are visible to other people, so the
+    /// confirmation has to say where the work is going.
+    #[test]
+    fn the_landing_form_names_the_branch_and_the_remote() {
+        let mut app = App::new();
+        app.open_land_form(&spare_worktree("wt"));
+
+        let form = app.form.as_ref().expect("the form opened");
+        assert!(form.title.contains("agent/thing"), "the branch is named: {}", form.title);
+        assert!(form.title.contains("origin"), "and where it is going: {}", form.title);
+    }
+
+    #[test]
+    fn landing_defaults_to_publishing_but_never_to_deleting() {
+        let mut app = App::new();
+        app.open_land_form(&spare_worktree("wt"));
+
+        let form = app.form.as_ref().unwrap();
+        assert!(form.is_on(fields::PUSH), "landing without pushing is not landing");
+        assert!(form.is_on(fields::PULL_REQUEST));
+        assert!(
+            !form.is_on(fields::REMOVE),
+            "removing the directory is the one step here that cannot be undone"
+        );
     }
 
     /// Guards the trap in `App::new`: the suite must not vary with whatever
