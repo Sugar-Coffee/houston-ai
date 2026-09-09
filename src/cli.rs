@@ -72,11 +72,12 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Command> {
     let Some(session) = session else { bail!("notify needs --session") };
     let Some(socket) = socket else { bail!("notify needs --socket") };
 
-    // Read the payload the agent piped in. A hook that cannot parse its input
-    // still has a job to do, so this is best-effort.
-    let conversation = hooks::conversation_from_stdin();
-
-    Ok(Command::Notify { notification: Notification { session, kind, conversation }, socket })
+    // Deliberately *not* reading the hook payload here. `parse` is pure: doing
+    // I/O in it blocks every argument test on a stdin that never closes, and —
+    // worse — it drains the pipe, so the read in `dispatch` that actually uses
+    // the payload found nothing. Both bugs existed at once, which is why the
+    // conversation id was always null.
+    Ok(Command::Notify { notification: Notification { session, kind, conversation: None }, socket })
 }
 
 /// Runs everything that is not the TUI. `true` means we are done.

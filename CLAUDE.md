@@ -127,9 +127,25 @@ sends you rewriting code that works.
 bug**, not a flaky harness. Both mistakes were made here in the same hour, in
 opposite directions.
 
+**And a lingering test binary is usually an orphan.** When a timed command is
+killed, `cargo` dies but the test binary it spawned can survive with no parent.
+Check for a `cargo` parent before believing it is stuck:
+
+```sh
+ps -o ppid= -p $(pgrep -f 'deps/<crate>-' | head -1)   # ppid 1 means orphaned
+```
+
 **Never verify a rendering bug through the state that drives the render.** A
 scrollback bug shipped twice because the indicator — which reads the state
 directly — was correct the whole time. Assert on the frame.
+
+**The same trap, one level up: unit tests can all pass while the binary is
+broken.** `houston notify` sent `"conversation": null` for weeks with a green
+suite, because the parser was fine and the *wiring* was not — `parse` read
+stdin, draining the pipe, and then `dispatch` read what was left. Nothing that
+tests a function in isolation can see that. When a feature crosses a process
+boundary, test it across the boundary: `tests/hook_payload.rs` spawns the real
+binary. Confirm such a test fails against the bug before trusting it.
 
 ## Two habits worth keeping
 

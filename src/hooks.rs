@@ -99,10 +99,18 @@ pub struct Notification {
 /// session that reopens without its history.
 #[must_use]
 pub fn conversation_from_stdin() -> Option<String> {
-    use std::io::Read;
+    conversation_from(std::io::stdin().lock())
+}
 
+/// Reads `session_id` from a hook payload.
+///
+/// Takes a reader rather than touching stdin directly, so the parsing can be
+/// tested — the version that only read stdin was untestable, and shipped
+/// broken because of it.
+#[must_use]
+pub fn conversation_from(mut reader: impl std::io::Read) -> Option<String> {
     let mut payload = String::new();
-    std::io::stdin().read_to_string(&mut payload).ok()?;
+    reader.read_to_string(&mut payload).ok()?;
 
     let value: serde_json::Value = serde_json::from_str(&payload).ok()?;
     let id = value.get("session_id")?.as_str()?.trim();
@@ -271,6 +279,21 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn a_hook_payload_yields_its_session_id() {
+        let payload = br#"{"session_id":"abc-123","cwd":"/tmp","hook_event_name":"Stop"}"#;
+        assert_eq!(conversation_from(&payload[..]).as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn anything_unreadable_yields_nothing_rather_than_failing_the_hook() {
+        assert!(conversation_from(&b""[..]).is_none());
+        assert!(conversation_from(&b"not json"[..]).is_none());
+        assert!(conversation_from(&br#"{"cwd":"/tmp"}"#[..]).is_none());
+        assert!(conversation_from(&br#"{"session_id":""}"#[..]).is_none());
+        assert!(conversation_from(&br#"{"session_id":42}"#[..]).is_none());
     }
 
     #[test]
