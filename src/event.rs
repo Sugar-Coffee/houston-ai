@@ -89,6 +89,9 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
             }
 
             _ = frames.tick() => {
+                if app.poll_font_install() {
+                    app.dirty = true;
+                }
                 // Children draw on their own schedule; ask them what changed.
                 if app.sessions.poll() {
                     app.dirty = true;
@@ -567,6 +570,11 @@ fn on_key_form(app: &mut App, key: KeyEvent) {
         {
             app.open_theme_picker();
         }
+        KeyCode::Enter | KeyCode::Char(' ')
+            if !modal && form.focused().is_some_and(|f| f.label == fields::INSTALL_FONT) =>
+        {
+            app.install_font();
+        }
         KeyCode::Enter | KeyCode::Char(' ') => {
             let activation = form.activate();
             sync_form_visibility(app, modal);
@@ -622,11 +630,6 @@ fn apply_form_field(app: &mut App, modal: bool) {
     let powerline = app.settings.is_on(fields::POWERLINE);
     if Some(powerline) != app.config.powerline {
         app.config.powerline = Some(powerline);
-    }
-
-    let icons = app.settings.is_on(fields::ICONS);
-    if Some(icons) != app.config.icons {
-        app.config.icons = Some(icons);
     }
 
     let vault = app.settings.value(fields::VAULT);

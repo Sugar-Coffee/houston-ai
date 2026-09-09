@@ -60,8 +60,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     let [tabs, body, footer] = layout(frame.area());
 
-    let glyphs =
-        powerline::Glyphs::for_setting(app.config.powerline_enabled(), app.config.icons_enabled());
+    let glyphs = powerline::Glyphs::for_setting(app.config.powerline_enabled());
 
     chrome::tab_strip(frame, tabs, app, theme);
 
@@ -71,7 +70,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
         Tab::Vault => match &app.editor {
             Some(open) => editor::render(frame, body, open, theme),
-            None => vault::render(frame, body, app.browser.as_ref(), glyphs, theme),
+            None => vault::render(frame, body, app.browser.as_ref(), theme),
         },
         Tab::Board => board::render(frame, body, &app.sessions, theme),
         Tab::Worktrees => worktrees::render(
@@ -265,24 +264,17 @@ mod tests {
     }
 
     /// A shell is marked and an agent is not, which is what makes the marker
-    /// carry information rather than being on every row.
+    /// carry information rather than sitting on every row.
     #[test]
     fn a_shell_session_is_marked_and_an_agent_is_not() {
         let mut app = App::new();
         app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
-        app.config.icons = Some(true);
 
-        assert!(draw(&app, 110, 20).contains('\u{f120}'), "the terminal glyph marks a shell");
+        assert!(draw(&app, 110, 20).contains(" $"), "a shell says so");
 
-        // The same session as an agent takes the other marker. Flipped rather
-        // than spawned: launching a real agent to check a glyph would be an
-        // absurd thing for a unit test to do.
         app.sessions.selected_mut().unwrap().kind =
             crate::session::Kind::Agent { provider: "claude" };
-
-        let agent = draw(&app, 110, 20);
-        assert!(agent.contains('\u{f0e7}'), "an agent takes the agent marker");
-        assert!(!agent.contains('\u{f120}'), "and stops being marked as a shell");
+        assert!(!draw(&app, 110, 20).contains(" $"), "an agent is the unmarked default");
     }
 
     /// The diff row changes shape with the setting but never loses the numbers.
@@ -303,27 +295,28 @@ mod tests {
         assert!(flowing.contains("2 files"), "the count is not lost to decoration");
     }
 
-    /// The bug the split exists to prevent, at the level that shipped it.
+    /// Nothing Houston draws may be a private use codepoint.
     ///
-    /// A powerline-patched font has the separator block and not the icon
-    /// block. Turning on separators used to turn on icons too, which put a row
-    /// of replacement boxes in the vault list of anyone whose tabs looked
-    /// perfect.
+    /// Ordinary Unicode a font lacks falls back to another installed font and
+    /// renders. A private use codepoint that no font on the machine claims has
+    /// nothing to fall back to and comes out as a question mark. The powerline
+    /// block is the one exception, and only when the setting asks for it.
     #[test]
-    fn separators_alone_never_draw_an_icon_the_font_may_not_have() {
+    fn no_private_use_glyph_reaches_the_screen_unless_powerline_is_on() {
         let mut app = App::new();
         app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
-        app.config.powerline = Some(true);
-        app.config.icons = Some(false);
+        app.sessions.selected_mut().unwrap().branch = Some("main".to_string());
 
-        let rendered = draw(&app, 110, 20);
-
-        assert!(rendered.contains('\u{e0b0}'), "the separators the font does have are drawn");
-        for icon in ['\u{f07b}', '\u{f15c}', '\u{f120}', '\u{f0e7}'] {
-            assert!(
-                !rendered.contains(icon),
-                "{icon:?} needs a Nerd Font, which a powerline-patched font is not"
-            );
+        for tab in [Tab::Sessions, Tab::Vault, Tab::Board, Tab::Worktrees, Tab::Settings] {
+            app.tab = tab;
+            for character in draw(&app, 110, 24).chars() {
+                let point = character as u32;
+                assert!(
+                    !(0xE000..=0xF8FF).contains(&point),
+                    "{tab:?} drew U+{point:X}, which renders as a question mark for anyone \
+                     whose fonts do not claim it"
+                );
+            }
         }
     }
 
@@ -335,10 +328,16 @@ mod tests {
         app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
         app.sessions.selected_mut().unwrap().branch = Some("main".to_string());
 
-        assert!(draw(&app, 110, 20).contains('⑂'), "plain uses a character every font has");
+        assert!(
+            draw(&app, 110, 20).contains('\u{2442}'),
+            "plain uses ordinary Unicode, which falls back rather than failing"
+        );
 
         app.config.powerline = Some(true);
-        assert!(draw(&app, 110, 20).contains('\u{e0a0}'), "powerline uses the Nerd Font branch");
+        assert!(
+            draw(&app, 110, 20).contains('\u{e0a0}'),
+            "with the setting on it takes the powerline branch glyph"
+        );
     }
 
     /// Failing to read the list is a different thing from there being none,

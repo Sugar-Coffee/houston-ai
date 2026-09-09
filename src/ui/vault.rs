@@ -14,13 +14,7 @@ use ratatui::{
 
 const LIST_WIDTH: u16 = 34;
 
-pub fn render(
-    frame: &mut Frame,
-    area: Rect,
-    browser: Option<&Browser>,
-    glyphs: crate::ui::powerline::Glyphs,
-    theme: Theme,
-) {
+pub fn render(frame: &mut Frame, area: Rect, browser: Option<&Browser>, theme: Theme) {
     let Some(browser) = browser else {
         render_missing(frame, area, theme);
         return;
@@ -31,7 +25,7 @@ pub fn render(
         .constraints([Constraint::Length(LIST_WIDTH), Constraint::Min(0)])
         .split(area);
 
-    render_list(frame, columns[0], browser, glyphs, theme);
+    render_list(frame, columns[0], browser, theme);
     render_note(frame, columns[1], browser, theme);
 }
 
@@ -56,13 +50,7 @@ fn render_missing(frame: &mut Frame, area: Rect, theme: Theme) {
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), centred);
 }
 
-fn render_list(
-    frame: &mut Frame,
-    area: Rect,
-    browser: &Browser,
-    glyphs: crate::ui::powerline::Glyphs,
-    theme: Theme,
-) {
+fn render_list(frame: &mut Frame, area: Rect, browser: &Browser, theme: Theme) {
     // While typing, the title is the query — so the search box and the list
     // header are the same thing and no vertical space is spent on a prompt.
     let title = match browser.mode() {
@@ -120,20 +108,10 @@ fn render_list(
                 Style::default().fg(theme.text)
             };
 
-            // The note marker sits between the cursor and the name, so the
-            // column reads as a column of notes rather than a column of text
-            // that happens to be indented.
-            let mut spans = vec![Span::styled(
-                if selected { "▸ " } else { "  " },
-                Style::default().fg(theme.accent),
-            )];
-            if !glyphs.note.is_empty() {
-                spans.push(Span::styled(
-                    format!("{} ", glyphs.note),
-                    Style::default().fg(theme.dim),
-                ));
-            }
-            spans.push(Span::styled(truncate(&note.stem, 24), style));
+            let mut spans = vec![
+                Span::styled(if selected { "▸ " } else { "  " }, Style::default().fg(theme.accent)),
+                Span::styled(truncate(&note.stem, 24), style),
+            ];
 
             // A full-text hit is more useful with its line number attached.
             if let Some(hit) = hits.get(index) {
@@ -145,14 +123,10 @@ fn render_list(
                     Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
                 ));
             } else {
-                // Where it lives, marked as a place rather than more name.
-                // Without the icon the folder is only distinguishable from the
-                // stem by being further right, which stops being true as soon
-                // as a stem is long.
                 let folder = note.folder();
                 if !folder.is_empty() {
                     spans.push(Span::styled(
-                        format!("  {} {}", glyphs.folder, truncate(folder, 12)),
+                        format!("  {}", truncate(folder, 12)),
                         Style::default().fg(theme.dim),
                     ));
                 }

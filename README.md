@@ -287,24 +287,24 @@ than a redesign.
 
 ### Powerline separators
 
-Two settings in Settings, and they are deliberately separate because they need
-two different fonts:
+Turn on **Powerline separators** in Settings and the tab strip becomes flowing
+arrow-shaped segments, branch names take the powerline branch glyph, and a
+session's diff becomes a green-into-red segment pair.
 
-- **Powerline separators** — arrow-shaped tab segments and the branch glyph.
-  Needs a powerline-patched font; the old
-  [powerline/fonts](https://github.com/powerline/fonts) collection is enough.
-- **Nerd Font icons** — folder, note, shell and agent markers. Needs a
-  [Nerd Font](https://www.nerdfonts.com/) specifically.
+It needs a powerline-patched font, which is a smaller ask than it sounds —
+[powerline/fonts](https://github.com/powerline/fonts) has patched a couple of
+dozen ordinary families, and a [Nerd Font](https://www.nerdfonts.com/) works
+too. **Houston will tell you whether you have one.** The setting scans your
+installed fonts, prints the glyphs so you can see them for yourself, and offers
+an Install row that downloads one patched font if you do not.
 
-A powerline-patched font has the first and not the second, which is why they
-are not one switch. Each hint in Settings prints its own glyphs, so you can see
-whether your font can draw them before you turn the row on — boxes there mean
-no.
+One thing it cannot do for you: change which font your terminal uses. That
+lives in the terminal's own settings and is different for every one of them, so
+after installing you still have to point iTerm2 (or Ghostty, or WezTerm) at it.
+The keybindings doc lists where to find that for the common ones.
 
-Both default to off. A terminal without the glyphs renders replacement boxes,
-and that does not degrade into "plain", it degrades into "broken". Nothing
-needs installing for Houston itself; this is about the font your terminal is
-already using.
+It is off by default. A terminal without the glyphs renders replacement boxes,
+and that does not degrade into "plain", it degrades into "broken".
 
 Your own themes are `.toml` files in `~/.houston/themes/`, and a documented
 template is written there on first run. Every field is optional, so overriding

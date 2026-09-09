@@ -96,10 +96,7 @@ fn tab_line<'a>(app: &App, theme: Theme) -> Line<'a> {
         Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
     )];
 
-    let glyphs = crate::ui::powerline::Glyphs::for_setting(
-        app.config.powerline_enabled(),
-        app.config.icons_enabled(),
-    );
+    let glyphs = crate::ui::powerline::Glyphs::for_setting(app.config.powerline_enabled());
 
     if glyphs.is_flowing() {
         push_flowing_tabs(&mut spans, app, glyphs, theme);

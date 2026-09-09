@@ -11,6 +11,7 @@ mod config;
 mod diff;
 mod editor;
 mod event;
+mod fonts;
 mod form;
 mod hooks;
 mod input;

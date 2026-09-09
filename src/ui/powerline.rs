@@ -27,109 +27,46 @@ pub struct Glyphs {
     pub notch: &'static str,
     /// Precedes a branch name. U+E0A0.
     pub branch: &'static str,
-    /// A directory.
-    pub folder: &'static str,
-    /// A note in the vault.
-    pub note: &'static str,
-    /// A session running an AI agent.
-    pub agent: &'static str,
-    /// A session running a shell.
-    pub shell: &'static str,
     /// Whether segments should be drawn as flowing blocks at all.
     pub segmented: bool,
 }
 
-/// The plain style: no glyph outside the ASCII-and-common-symbols range that
-/// every terminal already draws.
-pub const PLAIN: Glyphs = Glyphs {
-    cap: "",
-    notch: "",
-    branch: "⑂",
-    folder: "▪",
-    note: "·",
-    agent: "",
-    shell: "$",
-    segmented: false,
-};
+/// The plain style: no glyph outside what an ordinary monospace font carries.
+pub const PLAIN: Glyphs = Glyphs { cap: "", notch: "", branch: "\u{2442}", segmented: false };
 
-/// Separators, from the powerline symbols block U+E0A0–U+E0B3.
+/// The powerline style, from the symbols block U+E0A0–U+E0B3.
 ///
-/// **A smaller ask than the icons below.** The [powerline/fonts][pf]
-/// collection patches exactly this block into a couple of dozen families and
-/// nothing else, and plenty of people installed it years ago for a shell
-/// prompt without ever meeting a Nerd Font.
+/// **Only this block.** An earlier version also drew Font Awesome icons here,
+/// on the assumption that anyone with powerline glyphs has a Nerd Font. That
+/// is wrong often enough to matter: the [powerline/fonts][pf] collection
+/// patches this range and nothing else, and it is what most people who set up
+/// a shell prompt before Nerd Fonts existed are still running.
+///
+/// The failure was ugly in a specific way. A missing glyph in ordinary Unicode
+/// falls back to another installed font and renders fine. A missing glyph in
+/// the private use area has nothing to fall back *to* — no font on the machine
+/// claims it — so it comes out as a question mark. Icons were the only part of
+/// Houston that could produce that, which is why they are gone rather than
+/// behind another switch.
 ///
 /// [pf]: https://github.com/powerline/fonts
-const SEPARATORS: Glyphs =
-    Glyphs { cap: "\u{e0b0}", notch: "\u{e0b2}", branch: "\u{e0a0}", ..PLAIN };
+pub const POWERLINE: Glyphs =
+    Glyphs { cap: "\u{e0b0}", notch: "\u{e0b2}", branch: "\u{e0a0}", segmented: true };
 
-/// Icons, from the Font Awesome 4 block.
-///
-/// **A bigger ask, and a separate one.** This block only exists in a
-/// [Nerd Font][nf]; a powerline-patched font does not have it. Conflating the
-/// two is how a release shipped icons to somebody whose separators worked
-/// perfectly — the tabs were right and the vault list was a row of boxes.
-///
-/// Codepoints stay inside Font Awesome 4 because Nerd Fonts moved several
-/// ranges between v2 and v3, and a glyph only in the newest patch set draws a
-/// box for anyone on an older one.
-///
-/// [nf]: https://www.nerdfonts.com/
-const ICONS: Glyphs =
-    Glyphs { folder: "\u{f07b}", note: "\u{f15c}", agent: "\u{f0e7}", shell: "\u{f120}", ..PLAIN };
-
-/// Everything on, for anyone running a Nerd Font.
-///
-/// Only the tests name this directly; the app composes the two settings.
-#[cfg(test)]
-pub const POWERLINE: Glyphs = Glyphs {
-    cap: SEPARATORS.cap,
-    notch: SEPARATORS.notch,
-    branch: SEPARATORS.branch,
-    folder: ICONS.folder,
-    note: ICONS.note,
-    agent: ICONS.agent,
-    shell: ICONS.shell,
-    segmented: true,
-};
-
-/// A sample of the separator glyphs, for the Settings hint.
+/// A sample of the glyphs, for the Settings hint.
 ///
 /// **The preview is the detection.** Houston cannot ask the terminal which
-/// font it is using, and a missing glyph usually renders as a one-cell
-/// replacement box, so measuring cursor advance does not distinguish it
-/// either. Putting the actual characters in the hint sidesteps all of that:
-/// you look at the row, and if it is boxes you know before you turn it on.
-pub const SEPARATOR_SAMPLE: &str = "\u{e0b0} \u{e0b2} \u{e0a0}";
-
-/// A sample of the icon glyphs. Different font, so a separate sample.
-pub const ICON_SAMPLE: &str = "\u{f07b} \u{f15c} \u{f120} \u{f0e7}";
-
-/// Builds the glyph set from the two independent settings.
-///
-/// Two settings rather than one because they are two different fonts. A
-/// powerline-patched font has the separators and not the icons, which is the
-/// common case for anybody who set up a shell prompt before Nerd Fonts
-/// existed.
-#[must_use]
-pub const fn resolve(separators: bool, icons: bool) -> Glyphs {
-    Glyphs {
-        cap: if separators { SEPARATORS.cap } else { PLAIN.cap },
-        notch: if separators { SEPARATORS.notch } else { PLAIN.notch },
-        branch: if separators { SEPARATORS.branch } else { PLAIN.branch },
-        folder: if icons { ICONS.folder } else { PLAIN.folder },
-        note: if icons { ICONS.note } else { PLAIN.note },
-        agent: if icons { ICONS.agent } else { PLAIN.agent },
-        shell: if icons { ICONS.shell } else { PLAIN.shell },
-        segmented: separators,
-    }
-}
+/// font it is using — that lives in the terminal's own profile, in a different
+/// place for every one of them. Putting the actual characters in the hint
+/// sidesteps it: you look at the row, and if it is boxes or question marks you
+/// know before you turn anything on.
+pub const SAMPLE: &str = "\u{e0b0} \u{e0b2} \u{e0a0}";
 
 impl Glyphs {
-    /// The style for a pair of settings.
+    /// The style for the setting.
     #[must_use]
-    pub const fn for_setting(separators: bool, icons: bool) -> Self {
-        resolve(separators, icons)
+    pub const fn for_setting(enabled: bool) -> Self {
+        if enabled { POWERLINE } else { PLAIN }
     }
 
     /// The separator between two segments, and what colours it takes.
@@ -147,100 +84,42 @@ impl Glyphs {
 mod tests {
     use super::*;
 
+    /// The plain style has to survive an ordinary monospace font.
+    ///
+    /// Specifically it must stay out of the private use area. Ordinary Unicode
+    /// that a font lacks falls back to another font and renders; a private use
+    /// codepoint that no installed font claims renders as a question mark, and
+    /// there is nothing the user can do about it short of installing a font.
     #[test]
-    fn the_plain_style_uses_nothing_a_terminal_might_not_have() {
-        let plain = [
-            PLAIN.cap,
-            PLAIN.notch,
-            PLAIN.branch,
-            PLAIN.folder,
-            PLAIN.note,
-            PLAIN.agent,
-            PLAIN.shell,
-        ];
-        for glyph in plain {
+    fn the_plain_style_stays_out_of_the_private_use_area() {
+        for glyph in [PLAIN.cap, PLAIN.notch, PLAIN.branch] {
             for character in glyph.chars() {
+                let point = character as u32;
                 assert!(
-                    (character as u32) < 0xE000 || (character as u32) > 0xF8FF,
-                    "{character:?} is in the private use area, which is where Nerd Font glyphs \
-                     live and where an unpatched font draws a box"
+                    !(0xE000..=0xF8FF).contains(&point),
+                    "{character:?} is private use, so a font without it has no fallback"
                 );
             }
         }
     }
 
+    /// Everything the powerline style draws must be in the one block that
+    /// powerline-patched fonts actually carry.
     #[test]
-    fn the_powerline_style_uses_the_glyphs_the_standard_defines() {
-        assert_eq!(POWERLINE.cap, "\u{e0b0}", "the right-pointing solid triangle");
-        assert_eq!(POWERLINE.notch, "\u{e0b2}", "and its mirror");
-        assert_eq!(POWERLINE.branch, "\u{e0a0}", "the branch glyph");
-    }
-
-    /// Every icon has to have a plain counterpart, or turning the setting off
-    /// would silently lose information rather than only losing decoration.
-    #[test]
-    fn nothing_is_only_expressible_with_a_nerd_font() {
-        assert!(!PLAIN.folder.is_empty(), "a folder still reads as a folder without the font");
-        assert!(!PLAIN.note.is_empty());
-        assert!(!PLAIN.shell.is_empty(), "a shell is still marked as one");
-        assert!(
-            PLAIN.agent.is_empty(),
-            "an agent is the unmarked default, which is what makes the shell marker mean something"
-        );
+    fn the_powerline_style_uses_only_the_powerline_block() {
+        for glyph in [POWERLINE.cap, POWERLINE.notch, POWERLINE.branch] {
+            let point = glyph.chars().next().unwrap() as u32;
+            assert!(
+                (0xE0A0..=0xE0B3).contains(&point),
+                "{glyph:?} at U+{point:X} is outside U+E0A0–E0B3, so powerline/fonts lacks it"
+            );
+        }
     }
 
     #[test]
-    fn both_settings_off_draws_nothing_exotic() {
-        assert_eq!(Glyphs::for_setting(false, false), PLAIN);
+    fn the_setting_picks_one_or_the_other_and_defaults_to_safe() {
+        assert_eq!(Glyphs::for_setting(false), PLAIN, "off means nothing exotic is drawn");
         assert!(!PLAIN.is_flowing(), "plain tabs stay as pills");
-    }
-
-    /// The bug this split exists to prevent: a powerline-patched font has the
-    /// separators and not the icons, and turning on one used to turn on both.
-    #[test]
-    fn separators_can_be_on_while_icons_stay_off() {
-        let separators_only = Glyphs::for_setting(true, false);
-
-        assert_eq!(separators_only.cap, SEPARATORS.cap, "the tabs get their arrows");
-        assert!(separators_only.is_flowing());
-        assert_eq!(
-            separators_only.folder, PLAIN.folder,
-            "and the vault list stays on characters a powerline font actually has"
-        );
-        assert_eq!(separators_only.shell, PLAIN.shell);
-    }
-
-    #[test]
-    fn icons_can_be_on_while_separators_stay_off() {
-        let icons_only = Glyphs::for_setting(false, true);
-
-        assert_eq!(icons_only.folder, ICONS.folder);
-        assert_eq!(icons_only.cap, PLAIN.cap, "no arrows without the separator setting");
-        assert!(!icons_only.is_flowing(), "and tabs stay as pills");
-    }
-
-    #[test]
-    fn both_on_is_the_full_set() {
-        assert_eq!(Glyphs::for_setting(true, true), POWERLINE);
-    }
-
-    /// The two blocks come from different fonts, so nothing may straddle them.
-    #[test]
-    fn separators_and_icons_live_in_ranges_that_do_not_overlap() {
-        for glyph in [SEPARATORS.cap, SEPARATORS.notch, SEPARATORS.branch] {
-            let point = glyph.chars().next().unwrap() as u32;
-            assert!(
-                (0xE0A0..=0xE0D4).contains(&point),
-                "{glyph:?} is outside the powerline block, so a powerline font would not have it"
-            );
-        }
-
-        for glyph in [ICONS.folder, ICONS.note, ICONS.agent, ICONS.shell] {
-            let point = glyph.chars().next().unwrap() as u32;
-            assert!(
-                (0xF000..=0xF2FF).contains(&point),
-                "{glyph:?} at U+{point:X} is outside the Font Awesome 4 block"
-            );
-        }
+        assert!(Glyphs::for_setting(true).is_flowing());
     }
 }

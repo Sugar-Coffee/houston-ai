@@ -66,12 +66,6 @@ pub struct Config {
     /// terminal without the glyphs draws boxes, and a first run that looks
     /// broken is worse than a first run that looks plain.
     pub powerline: Option<bool>,
-    /// Draw file, folder and session icons. Needs a **Nerd Font** specifically.
-    ///
-    /// Separate from `powerline` because it is a separate font. The
-    /// powerline/fonts collection patches the separator block and nothing
-    /// else, so plenty of people have working separators and no icons at all.
-    pub icons: Option<bool>,
 }
 
 impl Config {
@@ -147,15 +141,6 @@ impl Config {
     #[must_use]
     pub const fn powerline_enabled(&self) -> bool {
         match self.powerline {
-            Some(enabled) => enabled,
-            None => false,
-        }
-    }
-
-    /// Whether to draw Nerd Font icons.
-    #[must_use]
-    pub const fn icons_enabled(&self) -> bool {
-        match self.icons {
             Some(enabled) => enabled,
             None => false,
         }

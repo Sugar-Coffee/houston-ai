@@ -183,18 +183,12 @@ fn name_row<'a>(
         }
     };
 
-    // An agent is the unmarked default and a shell is marked, rather than both
-    // carrying a badge. Most sessions here are agents; marking the majority
-    // would be a column of the same glyph.
+    // An agent is the unmarked default and a shell is marked. Most sessions
+    // here are agents, so marking the majority would be a column of the same
+    // thing repeated.
     let kind = match session.kind {
-        Kind::Agent { .. } => {
-            if chrome.glyphs.agent.is_empty() {
-                String::new()
-            } else {
-                format!(" {}", chrome.glyphs.agent)
-            }
-        }
-        Kind::Shell => format!(" {}", chrome.glyphs.shell),
+        Kind::Agent { .. } => "",
+        Kind::Shell => " $",
     };
 
     let ordinal = if index < 9 { format!("{} ", index + 1) } else { "  ".to_string() };

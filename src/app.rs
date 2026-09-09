@@ -113,6 +113,17 @@ pub struct App {
     /// The Settings view, which *is* a form — a menu of fields you move
     /// through and press Return to edit.
     pub settings: Form,
+    /// What a scan of the installed fonts found, for the Settings hint.
+    ///
+    /// Cached. Answering it means reading font files until one matches, which
+    /// is fine once and absurd per frame.
+    pub font_detection: crate::fonts::Detection,
+    /// A font install running on another thread, if one is.
+    ///
+    /// On a thread because a download is seconds and the frame tick is
+    /// milliseconds. Blocking the loop would freeze the whole app on what is
+    /// meant to be a convenience.
+    pub font_install: Option<std::sync::mpsc::Receiver<anyhow::Result<std::path::PathBuf>>>,
     /// The open theme picker, if any.
     pub theme_picker: Option<ThemePicker>,
     /// The open diff, if any. Captured once on open; see [`crate::diff::View`].
@@ -171,7 +182,7 @@ pub mod fields {
     pub const CREATE: &str = "Create";
     pub const MOUSE: &str = "Capture the mouse";
     pub const POWERLINE: &str = "Powerline separators";
-    pub const ICONS: &str = "Nerd Font icons";
+    pub const INSTALL_FONT: &str = "Install a powerline font";
     pub const MESSAGE: &str = "Commit message";
     pub const PUSH: &str = "Push to origin";
     pub const PULL_REQUEST: &str = "Open a pull request";
@@ -276,23 +287,21 @@ impl App {
                 self.themes.iter().map(|theme| theme.name.clone()).collect(),
                 self.config.theme.as_deref().unwrap_or("Dracula"),
             ),
+            // The hint carries the glyphs themselves *and* what a scan of the
+            // installed fonts found. The scan can only prove absence — the
+            // terminal may be pointed at some other font entirely — so the
+            // glyphs are there for you to judge the rest.
+            Field::toggle(
+                fields::POWERLINE,
+                format!("{}  {}", crate::ui::powerline::SAMPLE, self.font_hint()),
+                self.config.powerline_enabled(),
+            ),
+            // Directly under the row it exists to fix.
+            Field::action(fields::INSTALL_FONT, self.install_hint()),
             Field::toggle(
                 fields::MOUSE,
                 "wheel scrolls sessions; off restores text selection",
                 self.config.mouse_enabled(),
-            ),
-            // The hints carry the glyphs themselves, so the row you are about
-            // to switch on shows you whether your font can draw it. Boxes here
-            // mean the answer is no, before you turn anything on.
-            Field::toggle(
-                fields::POWERLINE,
-                format!("arrow-shaped tabs — {}", crate::ui::powerline::SEPARATOR_SAMPLE),
-                self.config.powerline_enabled(),
-            ),
-            Field::toggle(
-                fields::ICONS,
-                format!("needs a Nerd Font — {}", crate::ui::powerline::ICON_SAMPLE),
-                self.config.icons_enabled(),
             ),
         ]);
     }
@@ -377,6 +386,78 @@ impl App {
         for _ in 0..scroll.abs().min(20) {
             self.move_worktree_selection(scroll > 0);
         }
+    }
+
+    /// What the powerline row says about your fonts.
+    fn font_hint(&self) -> String {
+        if self.font_install.is_some() {
+            return "installing a font…".to_string();
+        }
+
+        match &self.font_detection {
+            crate::fonts::Detection::Found { family } => format!("found in {family}"),
+            crate::fonts::Detection::Missing => {
+                "no installed font has these — expect question marks".to_string()
+            }
+            crate::fonts::Detection::Unknown => "arrow-shaped tabs".to_string(),
+        }
+    }
+
+    /// What the install row says, which depends on whether it is worth doing.
+    fn install_hint(&self) -> String {
+        match &self.font_detection {
+            crate::fonts::Detection::Found { .. } => {
+                "you already have one; this adds another".to_string()
+            }
+            _ => format!("downloads {}", crate::fonts::FONT_NAME),
+        }
+    }
+
+    /// Scans the installed fonts, once.
+    ///
+    /// Called when Settings is opened rather than at startup: it reads font
+    /// files, and somebody who never opens Settings should never pay for it.
+    pub fn detect_fonts(&mut self) {
+        if self.font_detection == crate::fonts::Detection::Unknown {
+            self.font_detection = crate::fonts::detect();
+            self.rebuild_settings();
+        }
+    }
+
+    /// Starts a font install on another thread.
+    pub fn install_font(&mut self) {
+        if self.font_install.is_some() {
+            return self.notify("already installing");
+        }
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::fonts::install());
+        });
+
+        self.font_install = Some(receiver);
+        self.notify(format!("downloading {}…", crate::fonts::FONT_NAME));
+        self.rebuild_settings();
+    }
+
+    /// Picks up a finished install. Called from the frame tick.
+    pub fn poll_font_install(&mut self) -> bool {
+        let Some(receiver) = &self.font_install else { return false };
+        let Ok(outcome) = receiver.try_recv() else { return false };
+
+        self.font_install = None;
+        match outcome {
+            Ok(path) => {
+                // Re-scan rather than assuming: the file is on disk, and the
+                // scan is the thing that has been telling the truth so far.
+                self.font_detection = crate::fonts::detect();
+                let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                self.notify(format!("installed {name} — now set your terminal's font to it"));
+            }
+            Err(error) => self.notify(error.to_string()),
+        }
+        self.rebuild_settings();
+        true
     }
 
     /// Opens the theme picker, previewing as you move through it.
@@ -501,6 +582,8 @@ impl App {
             form: None,
             form_purpose: FormPurpose::None,
             settings: Form::new(Vec::new()),
+            font_detection: crate::fonts::Detection::Unknown,
+            font_install: None,
             theme_picker: None,
             diff: None,
             worktrees: None,
@@ -633,6 +716,9 @@ impl App {
         // you switch to the tab, and nothing at all while you are elsewhere.
         if tab == Tab::Worktrees {
             self.load_worktrees();
+        }
+        if tab == Tab::Settings {
+            self.detect_fonts();
         }
     }
 
@@ -948,6 +1034,56 @@ mod tests {
         assert_eq!(
             app.themes[picker.selected].name, "Gruvbox Dark",
             "it starts where you are, not at the top of a list of nineteen"
+        );
+    }
+
+    /// The scan can only ever prove absence, so the wording has to be honest
+    /// about which way round the answer is.
+    #[test]
+    fn the_font_hint_distinguishes_not_looked_from_looked_and_found_nothing() {
+        let mut app = App::new();
+
+        app.font_detection = crate::fonts::Detection::Unknown;
+        let unknown = app.font_hint();
+
+        app.font_detection = crate::fonts::Detection::Missing;
+        let missing = app.font_hint();
+        assert!(missing.contains("question marks"), "it warns what will happen: {missing}");
+        assert_ne!(unknown, missing, "'we did not look' must not read as 'you have none'");
+
+        app.font_detection =
+            crate::fonts::Detection::Found { family: "Meslo LG S for Powerline".to_string() };
+        assert!(app.font_hint().contains("Meslo"), "and names what it found");
+    }
+
+    /// Installing is offered whatever the scan said, because the scan cannot
+    /// see which font the terminal is actually using — but the wording changes.
+    #[test]
+    fn the_install_row_says_something_different_once_a_font_is_found() {
+        let mut app = App::new();
+
+        app.font_detection = crate::fonts::Detection::Missing;
+        assert!(app.install_hint().contains(crate::fonts::FONT_NAME));
+
+        app.font_detection = crate::fonts::Detection::Found { family: "Something".to_string() };
+        assert!(app.install_hint().contains("already"), "it does not pretend you need it");
+    }
+
+    #[test]
+    fn a_finished_install_is_picked_up_and_a_pending_one_is_not() {
+        let mut app = App::new();
+        assert!(!app.poll_font_install(), "nothing running, nothing to pick up");
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.font_install = Some(receiver);
+        assert!(!app.poll_font_install(), "still running, so the loop is not blocked on it");
+
+        sender.send(Err(anyhow::anyhow!("no network"))).unwrap();
+        assert!(app.poll_font_install(), "the result arrives on a later tick");
+        assert!(app.font_install.is_none(), "and the install is over");
+        assert!(
+            app.notice.as_deref().is_some_and(|notice| notice.contains("no network")),
+            "a failure says why rather than silently doing nothing"
         );
     }
 
