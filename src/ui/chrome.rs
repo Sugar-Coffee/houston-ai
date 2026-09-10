@@ -116,6 +116,14 @@ fn tab_line<'a>(app: &App, theme: Theme) -> Line<'a> {
         }
     }
 
+    // A newer release, said once and quietly. It is news, not a problem, so it
+    // takes `link` — the hue for "there is something here you can follow" —
+    // rather than `attention`, which means an agent is waiting on you.
+    if let Some(version) = &app.update_available {
+        spans
+            .push(Span::styled(format!("   {version} available"), Style::default().fg(theme.link)));
+    }
+
     if app.is_attached() {
         // Green: your keystrokes are reaching a live child.
         spans.push(Span::styled(

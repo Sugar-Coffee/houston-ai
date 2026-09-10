@@ -44,6 +44,17 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
     let mut frames = tokio::time::interval(FRAME_BUDGET);
     frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // The update check, on a thread nobody waits for. Started here rather than
+    // in `App::new` so the suite never touches the network: a test constructs
+    // an `App` constantly and must not make a request while doing it.
+    let updates = {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::update::available());
+        });
+        receiver
+    };
+
     let mut branches = tokio::time::interval(BRANCH_REFRESH);
     branches.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -90,6 +101,13 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
 
             _ = frames.tick() => {
                 if app.poll_font_install() {
+                    app.dirty = true;
+                }
+
+                if let Ok(found) = updates.try_recv()
+                    && let Some(version) = found
+                {
+                    app.update_available = Some(version);
                     app.dirty = true;
                 }
                 // Children draw on their own schedule; ask them what changed.

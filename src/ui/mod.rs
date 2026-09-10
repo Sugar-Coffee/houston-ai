@@ -300,6 +300,19 @@ mod tests {
         assert!(flowing.contains("2 files"), "the count is not lost to decoration");
     }
 
+    /// News, not a problem: it takes `link` rather than `attention`, which
+    /// means an agent is waiting on you.
+    #[test]
+    fn a_newer_release_is_mentioned_once_and_quietly() {
+        let mut app = App::new();
+        assert!(!draw(&app, 110, 20).contains("available"), "nothing to say by default");
+
+        app.update_available = Some("v9.9.9".to_string());
+        let rendered = draw(&app, 110, 20);
+        assert!(rendered.contains("v9.9.9 available"), "it names the version");
+        assert_eq!(rendered.matches("available").count(), 1, "once, not on every view");
+    }
+
     /// The footer's caps follow the same setting as everything else.
     #[test]
     fn the_keybind_footer_flows_when_powerline_is_on() {

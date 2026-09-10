@@ -68,8 +68,12 @@ else
     # It has to be matched rather than trimmed: a repository with no releases
     # does not redirect at all, and a blind `sed 's|.*/tag/||'` then hands back
     # the whole URL as though it were a version number.
-    latest="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    # No -f on purpose: with it, a repository with no releases 404s and curl
+    # exits non-zero, which looks exactly like the network being down.
+    latest="$(curl -sSLI -o /dev/null -w '%{url_effective}' \
         "https://github.com/$REPO/releases/latest" 2>/dev/null || true)"
+
+    [ -n "$latest" ] || die "Could not reach GitHub. Check your connection."
 
     case "$latest" in
         */releases/tag/*) TAG="${latest##*/tag/}" ;;

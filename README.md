@@ -280,6 +280,20 @@ cd houston-ai
 cargo run --release
 ```
 
+### Updating
+
+Houston checks GitHub once a day, on a background thread, and says so quietly
+in the tab strip if there is a newer version. Then:
+
+```sh
+houston update
+```
+
+It installs over whichever copy you are running — including one from
+`cargo install` — rather than leaving a second binary somewhere else on your
+`PATH`. Nothing downloads or replaces itself without you asking: a workspace
+holding half a dozen live agent sessions is the wrong place for a surprise.
+
 **Piping a script into a shell is a thing worth being suspicious of.**
 [Read it first](install.sh) — it is a hundred lines of POSIX sh, and it is
 short on purpose so that reading it is realistic.

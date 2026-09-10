@@ -124,6 +124,8 @@ pub struct App {
     /// milliseconds. Blocking the loop would freeze the whole app on what is
     /// meant to be a convenience.
     pub font_install: Option<std::sync::mpsc::Receiver<anyhow::Result<std::path::PathBuf>>>,
+    /// A newer release, once the background check has found one.
+    pub update_available: Option<String>,
     /// A pending question. Nothing destructive happens while this is set.
     pub confirm: Option<Confirm>,
     /// The open theme picker, if any.
@@ -634,6 +636,7 @@ impl App {
             form: None,
             form_purpose: FormPurpose::None,
             settings: Form::new(Vec::new()),
+            update_available: None,
             confirm: None,
             font_detection: crate::fonts::Detection::Unknown,
             font_install: None,

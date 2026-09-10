@@ -23,6 +23,7 @@ mod session;
 mod state;
 mod terminal;
 mod ui;
+mod update;
 mod vault;
 mod worktree;
 

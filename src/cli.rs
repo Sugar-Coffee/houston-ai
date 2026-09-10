@@ -16,6 +16,8 @@ pub enum Command {
         notification: Notification,
         socket: PathBuf,
     },
+    /// Install the latest release over this binary.
+    Update,
     /// Print usage and exit.
     Help,
     Version,
@@ -26,6 +28,7 @@ houston — a terminal workspace for a knowledge vault and coding agents
 
 USAGE:
     houston                     start the workspace
+    houston update              install the latest release over this one
     houston notify <event> --session <id> --socket <path>
     houston --help
     houston --version
@@ -43,6 +46,7 @@ pub fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Command> {
     match first.as_str() {
         "--help" | "-h" | "help" => return Ok(Command::Help),
         "--version" | "-V" => return Ok(Command::Version),
+        "update" => return Ok(Command::Update),
         "notify" => {}
         other => bail!("unknown argument '{other}'\n\n{USAGE}"),
     }
@@ -90,6 +94,12 @@ pub fn dispatch(command: &Command) -> bool {
         }
         Command::Version => {
             println!("houston {}", env!("CARGO_PKG_VERSION"));
+            true
+        }
+        Command::Update => {
+            if let Err(error) = crate::update::run() {
+                eprintln!("  {error}");
+            }
             true
         }
         Command::Notify { notification, socket } => {
