@@ -35,6 +35,7 @@ pub fn render(frame: &mut Frame, area: Rect, term: &Term<Notifier>, theme: Theme
     // at the top — which looks like the bottom of the screen emptying out
     // rather than like scrolling.
     let offset = i32::try_from(content.display_offset).unwrap_or(0);
+    let selection = content.selection;
     let buffer = frame.buffer_mut();
 
     for indexed in content.display_iter {
@@ -68,6 +69,14 @@ pub fn render(frame: &mut Frame, area: Rect, term: &Term<Notifier>, theme: Theme
         }
         if cell.flags.contains(Flags::HIDDEN) {
             foreground = background;
+        }
+
+        // Selected cells take the theme's own highlight, the same fill a
+        // selected row gets everywhere else — selection is a filled shape, not
+        // a colour, and copy mode is no exception.
+        if selection.is_some_and(|range| range.contains(indexed.point)) {
+            background = theme.highlight;
+            foreground = theme.text;
         }
 
         // An untouched cell holds '\0', which would render as a hole.

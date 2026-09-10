@@ -100,6 +100,18 @@ The honest part: a shell cannot be resumed, so shells come back as a fresh
 shell in the right directory. Houston does not pretend otherwise, and does not
 try to replay scrollback it would only be guessing at.
 
+### Get text back out
+
+Houston reports the mouse so the wheel can scroll a session's history, and a
+terminal that is reporting the mouse stops doing its own click-and-drag
+selection. So `c` gives you a copy mode instead: vim motions over the
+scrollback, `v` to select, `y` to copy. The selection and the word motions are
+the VT layer's own, so they understand wrapped lines and wide characters.
+
+If you would rather have the mouse back, hold **option** while dragging in
+iTerm2 (**shift** in most other terminals), or turn off *Capture the mouse* in
+Settings.
+
 ### Review what an agent actually changed
 
 Every session card carries what its agent has done to the working tree: `+142`
@@ -323,7 +335,7 @@ memorise anything.
 |---|---|
 | `n` · `s` | new agent (asks where, and whether to make a worktree) · new shell |
 | `↵` · `ctrl-\` | attach · detach |
-| `v` | review — the diff of what its agent changed |
+| `v` · `c` | review its diff · copy text out of its output |
 | `r` · `x` | rename · close |
 | `u` `d` `g` `G` | scroll a session's output |
 

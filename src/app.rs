@@ -60,6 +60,8 @@ pub enum InputFocus {
     Editor,
     /// Keys drive a form: move between fields, edit one, accept or cancel.
     Form,
+    /// Keys drive a copy cursor over a session's scrollback.
+    Copy,
 }
 
 /// A modal chooser: pick one of the running sessions.
@@ -124,6 +126,12 @@ pub struct App {
     /// milliseconds. Blocking the loop would freeze the whole app on what is
     /// meant to be a convenience.
     pub font_install: Option<std::sync::mpsc::Receiver<anyhow::Result<std::path::PathBuf>>>,
+    /// The session whose scrollback is being selected, if any.
+    ///
+    /// The id rather than a flag: copy mode lives in that session's own VT
+    /// state, so leaving it has to reach the same session even if the
+    /// selection has moved on since.
+    pub copying: Option<crate::session::SessionId>,
     /// A newer release, once the background check has found one.
     pub update_available: Option<String>,
     /// A pending question. Nothing destructive happens while this is set.
@@ -422,6 +430,27 @@ impl App {
         }
     }
 
+    /// Enters copy mode on the selected session.
+    pub fn start_copying(&mut self) {
+        let Some(session) = self.sessions.selected() else {
+            return self.notify("no session to copy from");
+        };
+        session.enter_copy_mode();
+
+        let id = session.id;
+        self.copying = Some(id);
+        self.dirty = true;
+    }
+
+    /// Leaves copy mode, whichever session it was running in.
+    pub fn stop_copying(&mut self) {
+        let Some(id) = self.copying.take() else { return };
+        if let Some(session) = self.sessions.by_id_mut(id.0) {
+            session.exit_copy_mode();
+        }
+        self.dirty = true;
+    }
+
     /// Raises a question. Nothing happens until it is answered.
     pub fn ask(&mut self, question: impl Into<String>, detail: impl Into<String>, action: Pending) {
         self.confirm = Some(Confirm { question: question.into(), detail: detail.into(), action });
@@ -636,6 +665,7 @@ impl App {
             form: None,
             form_purpose: FormPurpose::None,
             settings: Form::new(Vec::new()),
+            copying: None,
             update_available: None,
             confirm: None,
             font_detection: crate::fonts::Detection::Unknown,
@@ -713,6 +743,9 @@ impl App {
         // keyboard whole rather than being split across two focuses.
         if self.tab == Tab::Vault && self.editor.is_some() {
             return InputFocus::Editor;
+        }
+        if self.copying.is_some() {
+            return InputFocus::Copy;
         }
         if self.tab == Tab::Sessions && self.sessions.focus() == Focus::Attached {
             return InputFocus::Session;
@@ -876,9 +909,28 @@ impl App {
                 ("\u{21b5}", "send"),
                 ("esc", "cancel"),
             ]),
+            InputFocus::Copy => Some(self.copy_keybinds()),
             InputFocus::Form => Some(self.form_keybinds()),
             InputFocus::Commands | InputFocus::Editor => None,
         }
+    }
+
+    /// Keys for copy mode. What `v` does depends on whether anything is
+    /// selected yet, and saying so is most of what makes the mode learnable.
+    fn copy_keybinds(&self) -> Vec<(&'static str, &'static str)> {
+        let selecting = self.sessions.selected().is_some_and(|session| {
+            session.pty().term().lock().is_ok_and(|term| term.selection.is_some())
+        });
+
+        vec![
+            ("hjkl", "move"),
+            ("w/b", "word"),
+            ("0/$", "line"),
+            ("g/G", "top/bottom"),
+            ("v", if selecting { "drop selection" } else { "start selecting" }),
+            ("y", "copy"),
+            ("esc", "done"),
+        ]
     }
 
     /// Keys for a form, which behaves the same whether it is Settings or the
@@ -918,6 +970,7 @@ impl App {
                         ("j/k", "select"),
                         ("↵", "attach"),
                         ("v", "review"),
+                        ("c", "copy"),
                         ("u/d", "scroll"),
                         ("r", "rename"),
                         ("x", "close"),

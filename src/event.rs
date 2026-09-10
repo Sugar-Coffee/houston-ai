@@ -329,6 +329,7 @@ fn on_key(app: &mut App, key: KeyEvent) {
         InputFocus::Form => on_key_form(app, key),
         InputFocus::Editor => on_key_editor(app, key),
         InputFocus::Session => on_key_attached(app, key),
+        InputFocus::Copy => on_key_copy(app, key),
         InputFocus::Overlay => on_key_picker(app, key),
         InputFocus::Text => on_key_typing(app, key),
         InputFocus::Commands => on_key_browsing(app, key),
@@ -918,6 +919,96 @@ fn remove_worktree_now(app: &mut App, name: &str) {
     }
 }
 
+/// Driving the copy cursor over a session's scrollback.
+///
+/// The motions are vim's because the VT layer already implements them
+/// properly — `w` and `b` know what a word is across a wrapped line, which is
+/// not something worth reimplementing badly.
+fn on_key_copy(app: &mut App, key: KeyEvent) {
+    use alacritty_terminal::vi_mode::ViMotion;
+
+    app.dirty = true;
+
+    let motion = match key.code {
+        KeyCode::Char('h') | KeyCode::Left => Some(ViMotion::Left),
+        KeyCode::Char('j') | KeyCode::Down => Some(ViMotion::Down),
+        KeyCode::Char('k') | KeyCode::Up => Some(ViMotion::Up),
+        KeyCode::Char('l') | KeyCode::Right => Some(ViMotion::Right),
+        KeyCode::Char('w') => Some(ViMotion::SemanticRight),
+        KeyCode::Char('b') => Some(ViMotion::SemanticLeft),
+        KeyCode::Char('e') => Some(ViMotion::SemanticRightEnd),
+        KeyCode::Char('0') | KeyCode::Home => Some(ViMotion::First),
+        KeyCode::Char('$') | KeyCode::End => Some(ViMotion::Last),
+        KeyCode::Char('^') => Some(ViMotion::FirstOccupied),
+        KeyCode::Char('H') => Some(ViMotion::High),
+        KeyCode::Char('M') => Some(ViMotion::Middle),
+        KeyCode::Char('L') => Some(ViMotion::Low),
+        _ => None,
+    };
+
+    if let Some(motion) = motion {
+        if let Some(session) = app.sessions.selected() {
+            session.copy_motion(motion);
+        }
+        return;
+    }
+
+    match key.code {
+        KeyCode::Char('v' | ' ') => {
+            if let Some(session) = app.sessions.selected() {
+                session.toggle_selection();
+            }
+        }
+        KeyCode::Char('y') | KeyCode::Enter => yank_selection(app),
+        KeyCode::Esc | KeyCode::Char('q') => app.stop_copying(),
+        // `g` and `G` go to the ends of the scrollback. Alacritty has no vi
+        // motion for those, so they move by screens until they stop moving.
+        KeyCode::Char('g') => scroll_copy_cursor(app, false),
+        KeyCode::Char('G') => scroll_copy_cursor(app, true),
+        _ => {}
+    }
+}
+
+/// Copies the selection and leaves copy mode.
+///
+/// Leaving is the point: you came here to get something out, and staying in a
+/// mode after it has done its job is a mode you then have to remember to exit.
+fn yank_selection(app: &mut App) {
+    let Some(text) = app.sessions.selected().and_then(crate::session::Session::selected_text)
+    else {
+        return app.notify("nothing selected — press v, move, then y");
+    };
+
+    let lines = text.lines().count();
+    match clipboard::copy(&text) {
+        Ok(_) => {
+            app.stop_copying();
+            app.notify(if lines == 1 {
+                "copied 1 line".to_string()
+            } else {
+                format!("copied {lines} lines")
+            });
+        }
+        Err(error) => app.notify(format!("could not copy: {error}")),
+    }
+}
+
+/// Walks the copy cursor to the top or bottom of the scrollback.
+///
+/// Bounded rather than looping until nothing moves: a runaway here would hang
+/// the frame, and a hundred screens is further than any scrollback Houston
+/// keeps.
+fn scroll_copy_cursor(app: &App, bottom: bool) {
+    use alacritty_terminal::vi_mode::ViMotion;
+
+    let Some(session) = app.sessions.selected() else { return };
+    let motion = if bottom { ViMotion::Down } else { ViMotion::Up };
+
+    for _ in 0..10_000 {
+        session.copy_motion(motion);
+    }
+}
+
 /// Answering a question.
 ///
 /// Anything that is not clearly yes is no. There is no default-to-yes here and
@@ -1170,6 +1261,9 @@ fn on_key_board(app: &mut App, key: KeyEvent) {
         // The board is where you notice a card has gone quiet, so it is where
         // you want to ask what it did. Same key, same selected session.
         KeyCode::Char('v') => open_diff(app),
+        // `c` for copy. The terminal's own click-and-drag stops working the
+        // moment Houston asks for mouse reporting, so this is the way out.
+        KeyCode::Char('c') => app.start_copying(),
         _ => {}
     }
 }
@@ -1403,6 +1497,9 @@ fn on_key_sessions(app: &mut App, key: KeyEvent) {
         // `v` for review. `d` would be the better mnemonic and is long since
         // spoken for by half-page scrolling.
         KeyCode::Char('v') => open_diff(app),
+        // `c` for copy. The terminal's own click-and-drag stops working the
+        // moment Houston asks for mouse reporting, so this is the way out.
+        KeyCode::Char('c') => app.start_copying(),
         // Reading back through an agent's output is a normal thing to want,
         // and it must not depend on the terminal reporting the mouse.
         KeyCode::PageUp
@@ -1673,6 +1770,65 @@ mod tests {
 
         assert!(app.form.is_none(), "the quick shell asks nothing");
         assert_eq!(app.sessions.len(), 1);
+    }
+
+    /// The whole point: text you can get out of an agent's output.
+    #[test]
+    fn copy_mode_selects_and_yanks_what_is_on_screen() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        app.sessions.detach();
+
+        // Put something known on the session's screen, the way the child would.
+        app.sessions.selected().unwrap().feed("hello copy mode\r\n");
+
+        on_key(&mut app, press(KeyCode::Char('c')));
+        assert_eq!(app.focus(), InputFocus::Copy, "c takes the keyboard");
+
+        // To the start of the text, then select to the end of the word.
+        on_key(&mut app, press(KeyCode::Char('g')));
+        on_key(&mut app, press(KeyCode::Char('v')));
+        for _ in 0..4 {
+            on_key(&mut app, press(KeyCode::Char('l')));
+        }
+
+        let selected = app.sessions.selected().unwrap().selected_text();
+        assert_eq!(selected.as_deref(), Some("hello"), "five cells of the first word");
+    }
+
+    #[test]
+    fn escaping_copy_mode_gives_the_keyboard_back() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        app.sessions.detach();
+
+        on_key(&mut app, press(KeyCode::Char('c')));
+        assert_eq!(app.focus(), InputFocus::Copy);
+
+        on_key(&mut app, press(KeyCode::Esc));
+        assert_eq!(app.focus(), InputFocus::Commands, "esc leaves");
+        assert!(app.copying.is_none());
+        assert!(
+            !app.sessions.selected().unwrap().is_copying(),
+            "and the session's own VT state comes out of vi mode with it"
+        );
+    }
+
+    /// A stray `y` must not quietly replace your clipboard with nothing.
+    #[test]
+    fn yanking_with_no_selection_says_so_rather_than_copying_emptiness() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        app.sessions.detach();
+        on_key(&mut app, press(KeyCode::Char('c')));
+
+        on_key(&mut app, press(KeyCode::Char('y')));
+
+        assert!(
+            app.notice.as_deref().is_some_and(|notice| notice.contains("nothing selected")),
+            "it explains what to do instead"
+        );
+        assert_eq!(app.focus(), InputFocus::Copy, "and stays put so you can do it");
     }
 
     /// Worktrees is reached the way every other view is reached.

@@ -10,7 +10,13 @@ use crate::{
     provider::{self, Provider},
     pty::{LaunchSpec, PtySession, Size},
 };
-use alacritty_terminal::{term::TermMode, tty::ChildEvent};
+use alacritty_terminal::{
+    index::Side,
+    selection::{Selection, SelectionType},
+    term::TermMode,
+    tty::ChildEvent,
+    vi_mode::ViMotion,
+};
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use std::path::Path;
@@ -144,6 +150,114 @@ impl Session {
     /// Re-reads the branch. Cheap, but not free — call on a timer, not a frame.
     pub fn refresh_branch(&mut self) {
         self.branch = crate::worktree::branch_of(&self.spec.cwd);
+    }
+
+    /// Enters copy mode: a cursor you drive with the keyboard, over the
+    /// session's own scrollback.
+    ///
+    /// **Why this exists.** Houston asks the terminal to report the mouse so
+    /// the wheel can scroll a session's history, and a terminal reporting the
+    /// mouse hands drags to the application instead of using them for its own
+    /// selection. So the native click-and-drag stops working, and there is
+    /// nothing Houston can do about that from inside — the terminal has
+    /// already decided.
+    ///
+    /// The VT layer has had the machinery all along: alacritty's vi mode moves
+    /// a cursor through the grid, its selection tracks a range, and
+    /// `selection_to_string` reassembles the text with wide characters and
+    /// wrapped lines handled properly. This wires those to keys.
+    pub fn enter_copy_mode(&self) {
+        let Ok(mut term) = self.pty.term().lock() else { return };
+        if !term.mode().contains(TermMode::VI) {
+            term.toggle_vi_mode();
+        }
+        term.selection = None;
+    }
+
+    /// Leaves copy mode, dropping any selection.
+    pub fn exit_copy_mode(&self) {
+        let Ok(mut term) = self.pty.term().lock() else { return };
+        if term.mode().contains(TermMode::VI) {
+            term.toggle_vi_mode();
+        }
+        term.selection = None;
+    }
+
+    /// Moves the copy cursor, extending the selection if one is running.
+    pub fn copy_motion(&self, motion: ViMotion) {
+        let Ok(mut term) = self.pty.term().lock() else { return };
+        term.vi_motion(motion);
+
+        // A live selection follows the cursor. Alacritty keeps the two
+        // independent, so nothing extends unless we say so.
+        let point = term.vi_mode_cursor.point;
+        if let Some(selection) = term.selection.as_mut() {
+            selection.update(point, Side::Left);
+            // Both end cells included, the way vim's visual mode behaves:
+            // `v` then four `l` selects five characters, not four. `update`
+            // alone leaves the cursor's own cell out, which reads as the
+            // selection lagging a column behind the cursor.
+            selection.include_all();
+        }
+    }
+
+    /// Starts a selection at the cursor, or drops the one in progress.
+    ///
+    /// Returns whether there is now a selection, so the footer can say which
+    /// of the two things `v` will do next.
+    pub fn toggle_selection(&self) -> bool {
+        let Ok(mut term) = self.pty.term().lock() else { return false };
+
+        if term.selection.is_some() {
+            term.selection = None;
+            return false;
+        }
+
+        let point = term.vi_mode_cursor.point;
+        term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+        true
+    }
+
+    /// The selected text, if any.
+    ///
+    /// Empty selections come back as `None`: a stray `v` followed by `y`
+    /// should say "nothing selected", not silently replace your clipboard
+    /// with an empty string.
+    #[must_use]
+    pub fn selected_text(&self) -> Option<String> {
+        let text = self.pty.term().lock().ok()?.selection_to_string()?;
+        (!text.trim().is_empty()).then_some(text)
+    }
+
+    /// Writes text straight into the VT, as though the child had printed it.
+    ///
+    /// Test-only. The grid is otherwise filled by the reader thread from a
+    /// real child, which means a test wanting known text on screen would have
+    /// to write to a shell and wait for it — timing-dependent, and the thing
+    /// under test here is the selection, not the pty.
+    #[cfg(test)]
+    pub fn feed(&self, text: &str) {
+        use alacritty_terminal::vte::ansi::Handler;
+
+        let Ok(mut term) = self.pty.term().lock() else { return };
+        for character in text.chars() {
+            match character {
+                '\n' => term.linefeed(),
+                '\r' => term.carriage_return(),
+                other => term.input(other),
+            }
+        }
+    }
+
+    /// Whether this session is in copy mode.
+    ///
+    /// Test-only: the app tracks copy mode by session id, and this exists to
+    /// check that leaving it really reaches the session's own VT state rather
+    /// than only clearing Houston's flag.
+    #[cfg(test)]
+    #[must_use]
+    pub fn is_copying(&self) -> bool {
+        self.pty.term().lock().is_ok_and(|term| term.mode().contains(TermMode::VI))
     }
 
     /// Re-counts what has changed in its directory.
