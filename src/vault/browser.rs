@@ -59,8 +59,42 @@ pub struct Open {
     pub scroll: u16,
 }
 
+/// The folder containing a relative path, or `""` at the top.
+fn parent_of(relative: &str) -> &str {
+    relative.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
+/// One line of the sidebar, whichever view is showing.
+///
+/// Owned and rebuilt on change rather than borrowed per frame. Building it
+/// per frame would mean a thousand allocations sixty times a second in a view
+/// that changes when you press a key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entry {
+    Folder { relative: String, name: String, depth: usize, expanded: bool },
+    Note { id: NoteId, name: String, depth: usize },
+}
+
+impl Entry {
+    #[must_use]
+    pub const fn is_folder(&self) -> bool {
+        matches!(self, Self::Folder { .. })
+    }
+
+    #[must_use]
+    pub const fn depth(&self) -> usize {
+        match self {
+            Self::Folder { depth, .. } | Self::Note { depth, .. } => *depth,
+        }
+    }
+}
+
 pub struct Browser {
     pub vault: Vault,
+    /// Which folders are open, for the browsing view.
+    tree: crate::vault::tree::Tree,
+    /// What the sidebar draws, rebuilt whenever it could have changed.
+    entries: Vec<Entry>,
     matcher: Matcher,
     source: Source,
     results: Vec<NoteId>,
@@ -78,8 +112,10 @@ pub struct Browser {
 impl Browser {
     pub fn new(vault: Vault) -> Self {
         let results = (0..vault.len().min(RESULT_LIMIT)).map(NoteId).collect();
-        Self {
+        let mut browser = Self {
             vault,
+            tree: crate::vault::tree::Tree::default(),
+            entries: Vec::new(),
             matcher: Matcher::new(),
             source: Source::All,
             results,
@@ -90,7 +126,155 @@ impl Browser {
             mode: Mode::Browsing,
             query: String::new(),
             wrap: true,
+        };
+        browser.rebuild();
+        browser
+    }
+
+    /// Rebuilds what the sidebar draws.
+    ///
+    /// One place, called after anything that could change it — the source, the
+    /// results, an open folder, a file created or renamed. Everything else
+    /// reads `entries`, so a view that disagrees with the vault is not
+    /// something that can happen halfway through.
+    pub fn rebuild(&mut self) {
+        self.entries = if matches!(self.source, Source::All) {
+            self.tree
+                .rows(&self.vault)
+                .into_iter()
+                .map(|row| match row.note {
+                    Some(id) => Entry::Note { id, name: row.name, depth: row.depth },
+                    None => Entry::Folder {
+                        relative: row.relative,
+                        name: row.name,
+                        depth: row.depth,
+                        expanded: row.expanded,
+                    },
+                })
+                .collect()
+        } else {
+            // Every other view is a list of notes and nothing else: a tree of
+            // search results would hide the thing you searched for behind a
+            // folder you then have to open.
+            self.results
+                .iter()
+                .filter_map(|id| {
+                    self.vault.get(*id).map(|note| Entry::Note {
+                        id: *id,
+                        name: note.stem.clone(),
+                        depth: 0,
+                    })
+                })
+                .collect()
+        };
+
+        self.selected = self.selected.min(self.entries.len().saturating_sub(1));
+    }
+
+    /// What the sidebar draws.
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    /// Opens or closes the selected folder.
+    ///
+    /// Returns whether it was a folder, so the caller can fall through to
+    /// opening a note without asking twice.
+    pub fn toggle_selected_folder(&mut self) -> bool {
+        let Some(Entry::Folder { relative, .. }) = self.entries.get(self.selected) else {
+            return false;
+        };
+        let relative = relative.clone();
+        self.tree.toggle(&relative);
+        self.rebuild();
+        true
+    }
+
+    /// Closes the selected folder, or moves to the folder containing it.
+    ///
+    /// The `←` behaviour every tree has: pressing it on a closed thing takes
+    /// you out a level rather than doing nothing.
+    pub fn collapse_or_leave(&mut self) {
+        let Some(entry) = self.entries.get(self.selected) else { return };
+
+        if let Entry::Folder { relative, expanded: true, .. } = entry {
+            let relative = relative.clone();
+            self.tree.collapse(&relative);
+            return self.rebuild();
         }
+
+        // Walk up the list to the nearest row one level shallower.
+        let depth = entry.depth();
+        if depth == 0 {
+            return;
+        }
+        if let Some(parent) =
+            self.entries[..self.selected].iter().rposition(|other| other.depth() < depth)
+        {
+            self.selected = parent;
+        }
+    }
+
+    /// The path the selection points at, relative to the vault root.
+    pub fn selected_relative(&self) -> Option<String> {
+        match self.entries.get(self.selected)? {
+            Entry::Folder { relative, .. } => Some(relative.clone()),
+            Entry::Note { id, .. } => self.vault.get(*id).map(|note| note.relative.clone()),
+        }
+    }
+
+    /// The absolute path the selection points at.
+    pub fn selected_path(&self) -> Option<std::path::PathBuf> {
+        Some(self.vault.root().join(self.selected_relative()?))
+    }
+
+    /// Whether the selection is a folder.
+    pub fn selection_is_folder(&self) -> bool {
+        self.entries.get(self.selected).is_some_and(Entry::is_folder)
+    }
+
+    /// The folder a new thing should go into: the selected folder, or the one
+    /// containing the selected note.
+    pub fn target_folder(&self) -> String {
+        match self.entries.get(self.selected) {
+            Some(Entry::Folder { relative, .. }) => relative.clone(),
+            Some(Entry::Note { id, .. }) => {
+                self.vault.get(*id).map(|note| note.folder().to_string()).unwrap_or_default()
+            }
+            None => String::new(),
+        }
+    }
+
+    /// Re-reads the vault from disk and puts the selection back where it was.
+    ///
+    /// Called after anything that changes the files. `reveal` opens the
+    /// folders down to `focus` so a note created three levels deep is visible
+    /// rather than hidden behind a closed folder — which is what makes "new
+    /// note" look like it did nothing.
+    pub fn reindex(&mut self, focus: Option<&str>) -> Result<()> {
+        let root = self.vault.root().to_path_buf();
+        self.vault = Vault::open(root)?;
+
+        if let Some(focus) = focus {
+            self.tree.reveal(parent_of(focus));
+        }
+
+        self.source = Source::All;
+        self.results = (0..self.vault.len().min(RESULT_LIMIT)).map(NoteId).collect();
+        self.hits.clear();
+        self.rebuild();
+
+        if let Some(focus) = focus
+            && let Some(index) = self.entries.iter().position(|entry| match entry {
+                Entry::Folder { relative, .. } => relative == focus,
+                Entry::Note { id, .. } => {
+                    self.vault.get(*id).is_some_and(|note| note.relative == focus)
+                }
+            })
+        {
+            self.selected = index;
+        }
+        Ok(())
     }
 
     /// Whether long lines are wrapped.
@@ -119,10 +303,6 @@ impl Browser {
         &self.query
     }
 
-    pub fn results(&self) -> &[NoteId] {
-        &self.results
-    }
-
     pub const fn selected_index(&self) -> usize {
         self.selected
     }
@@ -136,25 +316,32 @@ impl Browser {
     }
 
     pub fn selected_note(&self) -> Option<&Note> {
-        self.results.get(self.selected).and_then(|id| self.vault.get(*id))
+        match self.entries.get(self.selected)? {
+            Entry::Note { id, .. } => self.vault.get(*id),
+            Entry::Folder { .. } => None,
+        }
     }
 
     pub const fn select_next(&mut self) {
-        if !self.results.is_empty() {
-            self.selected = (self.selected + 1) % self.results.len();
+        if !self.entries.is_empty() {
+            self.selected = (self.selected + 1) % self.entries.len();
         }
     }
 
     pub const fn select_previous(&mut self) {
-        if !self.results.is_empty() {
-            self.selected = (self.selected + self.results.len() - 1) % self.results.len();
+        if !self.entries.is_empty() {
+            self.selected = (self.selected + self.entries.len() - 1) % self.entries.len();
         }
     }
 
     /// Opens the selected note, remembering where we came from.
     pub fn open_selected(&mut self, theme: Theme) -> Result<()> {
-        let Some(id) = self.results.get(self.selected).copied() else { return Ok(()) };
-        self.open_note(id, theme)
+        // A folder opens in the sense a folder can: it shows what is inside.
+        if self.toggle_selected_folder() {
+            return Ok(());
+        }
+        let Some(Entry::Note { id, .. }) = self.entries.get(self.selected) else { return Ok(()) };
+        self.open_note(*id, theme)
     }
 
     pub fn open_note(&mut self, id: NoteId, theme: Theme) -> Result<()> {
@@ -221,6 +408,7 @@ impl Browser {
         self.results = (0..self.vault.len().min(RESULT_LIMIT)).map(NoteId).collect();
         self.hits.clear();
         self.selected = 0;
+        self.rebuild();
     }
 
     /// Lists the wikilinks going out of the open note.
@@ -233,6 +421,7 @@ impl Browser {
         self.source = Source::Links;
         self.results = links;
         self.hits.clear();
+        self.rebuild();
         self.selected = 0;
         true
     }
@@ -290,6 +479,7 @@ impl Browser {
         self.source = Source::Grep(self.query.clone());
         self.selected = 0;
         self.mode = Mode::Browsing;
+        self.rebuild();
     }
 
     fn refresh_filter(&mut self) {
@@ -297,6 +487,7 @@ impl Browser {
         self.source = Source::Filtered(self.query.clone());
         self.hits.clear();
         self.selected = 0;
+        self.rebuild();
     }
 }
 
@@ -318,6 +509,63 @@ mod tests {
 
     fn browser(root: &std::path::Path) -> Browser {
         Browser::new(Vault::open(root).unwrap())
+    }
+
+    /// A note made three folders deep must end up visible, or "new note"
+    /// looks like it did nothing.
+    #[test]
+    fn reindexing_reveals_the_thing_that_was_just_made() {
+        let root = scratch("reveal", &[("top.md", "# top")]);
+        let mut browser = browser(&root);
+
+        assert_eq!(browser.entries().len(), 1, "one note, no folders yet");
+
+        let made = crate::vault::files::create_note(&root, "a/b/deep").unwrap();
+        let relative = made.strip_prefix(&root).unwrap().to_string_lossy().into_owned();
+        browser.reindex(Some(&relative)).unwrap();
+
+        let names: Vec<String> = browser
+            .entries()
+            .iter()
+            .map(|entry| match entry {
+                Entry::Folder { name, .. } | Entry::Note { name, .. } => name.clone(),
+            })
+            .collect();
+
+        assert_eq!(names, vec!["a", "b", "deep", "top"], "every folder on the way is open");
+        assert_eq!(
+            browser.selected_relative().as_deref(),
+            Some("a/b/deep.md"),
+            "and the selection is on what was just made"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Left on a closed folder steps out rather than doing nothing.
+    #[test]
+    fn collapsing_walks_out_a_level_when_there_is_nothing_to_close() {
+        let root = scratch("collapse", &[("folder/inner.md", "# inner")]);
+        let mut browser = browser(&root);
+
+        browser.toggle_selected_folder();
+        browser.select_next();
+        assert_eq!(browser.selected_relative().as_deref(), Some("folder/inner.md"));
+
+        browser.collapse_or_leave();
+        assert_eq!(
+            browser.selected_relative().as_deref(),
+            Some("folder"),
+            "from a note, left goes to the folder holding it"
+        );
+
+        browser.collapse_or_leave();
+        assert!(
+            !browser.entries().iter().any(|e| matches!(e, Entry::Note { .. })),
+            "and again closes that folder"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -367,19 +615,19 @@ mod tests {
             scratch("filter", &[("payments.md", ""), ("scheduler.md", ""), ("onboarding.md", "")]);
         let mut browser = browser(&root);
 
-        assert_eq!(browser.results().len(), 3);
+        assert_eq!(browser.entries().len(), 3);
 
         browser.begin_find();
         for character in "pay".chars() {
             browser.push_query(character);
         }
-        assert_eq!(browser.results().len(), 1);
+        assert_eq!(browser.entries().len(), 1);
         assert_eq!(browser.selected_note().unwrap().stem, "payments");
 
         browser.pop_query();
         browser.pop_query();
         browser.pop_query();
-        assert_eq!(browser.results().len(), 3, "clearing the query restores everything");
+        assert_eq!(browser.entries().len(), 3, "clearing the query restores everything");
 
         fs::remove_dir_all(&root).ok();
     }
@@ -395,7 +643,7 @@ mod tests {
         }
         browser.run_search();
 
-        assert_eq!(browser.results().len(), 1);
+        assert_eq!(browser.entries().len(), 1);
         assert_eq!(browser.selected_note().unwrap().stem, "b");
         assert_eq!(browser.hits()[0].line, 1);
         assert_eq!(browser.mode(), Mode::Browsing, "running a search leaves query mode");
@@ -446,7 +694,7 @@ mod tests {
         for character in "zzzznomatch".chars() {
             browser.push_query(character);
         }
-        assert!(browser.results().is_empty());
+        assert!(browser.entries().is_empty());
         browser.select_next();
         browser.select_previous();
         assert!(browser.selected_note().is_none(), "no selection, but no panic either");

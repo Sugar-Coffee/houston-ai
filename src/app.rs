@@ -176,6 +176,10 @@ pub enum FormPurpose {
     NewSession,
     /// Land the named worktree: commit, push, open a PR, remove.
     Land(String),
+    /// Create a note or folder in the vault.
+    NewVaultEntry,
+    /// Rename or move whatever is selected in the vault.
+    RenameVaultEntry,
 }
 
 /// A question standing between you and something irreversible.
@@ -206,6 +210,8 @@ pub enum Pending {
     RemoveWorktree(String),
     /// Save the open note over a file that has changed on disk.
     OverwriteNote,
+    /// Delete the vault path, and everything under it if it is a folder.
+    RemoveVaultEntry(std::path::PathBuf),
 }
 
 /// The theme picker's state.
@@ -232,6 +238,7 @@ pub mod fields {
     pub const MOUSE: &str = "Capture the mouse";
     pub const POWERLINE: &str = "Powerline separators";
     pub const INSTALL_FONT: &str = "Install a powerline font";
+    pub const FOLDER: &str = "Folder";
     pub const MESSAGE: &str = "Commit message";
     pub const PUSH: &str = "Push to origin";
     pub const PULL_REQUEST: &str = "Open a pull request";
@@ -637,6 +644,72 @@ impl App {
         self.reload_theme_from_list();
     }
 
+    /// Opens the form for a new note or folder.
+    ///
+    /// Prefilled with the folder the selection is in, so a new note lands
+    /// beside what you were looking at rather than at the top of the vault.
+    pub fn open_new_vault_form(&mut self) {
+        let folder = self.browser.as_ref().map(Browser::target_folder).unwrap_or_default();
+        let prefill = if folder.is_empty() { String::new() } else { format!("{folder}/") };
+
+        self.form = Some(
+            Form::new(vec![
+                Field::text(fields::NAME, "name, or a path like projects/notes", prefill),
+                Field::toggle(fields::FOLDER, "a folder rather than a note", false),
+                Field::action(fields::CREATE, "make it"),
+            ])
+            .titled("new in the vault"),
+        );
+        self.form_purpose = FormPurpose::NewVaultEntry;
+        self.dirty = true;
+    }
+
+    /// Opens the rename form for whatever the vault has selected.
+    pub fn open_rename_vault_form(&mut self) {
+        let Some(relative) = self.browser.as_ref().and_then(Browser::selected_relative) else {
+            return self.notify("nothing selected");
+        };
+
+        // Prefilled with the current path, extension and all, because renaming
+        // is usually editing a name rather than replacing one — and because
+        // typing a folder into it is how something gets moved.
+        let current = relative.strip_suffix(".md").unwrap_or(&relative).to_string();
+
+        self.form = Some(
+            Form::new(vec![
+                Field::text(fields::NAME, "a new name, or a new path to move it", current),
+                Field::action(fields::CREATE, "rename"),
+            ])
+            .titled("rename"),
+        );
+        self.form_purpose = FormPurpose::RenameVaultEntry;
+        self.dirty = true;
+    }
+
+    /// Asks before deleting whatever the vault has selected.
+    pub fn ask_remove_vault_entry(&mut self) {
+        let Some(browser) = self.browser.as_ref() else { return };
+        let Some(relative) = browser.selected_relative() else {
+            return self.notify("nothing selected");
+        };
+        let Some(path) = browser.selected_path() else { return };
+
+        // A folder takes everything under it, so the question has to say how
+        // much that is. "Delete reference?" and "Delete reference? 34 notes"
+        // are different questions.
+        let detail = if browser.selection_is_folder() {
+            match crate::vault::files::count_within(&path) {
+                0 => "It is empty.".to_string(),
+                1 => "The note inside it goes too.".to_string(),
+                many => format!("All {many} notes inside it go too."),
+            }
+        } else {
+            "It is not recoverable from Houston.".to_string()
+        };
+
+        self.ask(format!("Delete {relative}?"), detail, Pending::RemoveVaultEntry(path));
+    }
+
     /// Opens the landing form for a worktree.
     ///
     /// The title names the branch and where it is going, because pushing and
@@ -1031,13 +1104,15 @@ impl App {
             Tab::Vault if self.browser.is_some() => {
                 binds.extend([
                     ("j/k", "select"),
-                    ("↵", "open"),
+                    ("↵", "open/close"),
+                    ("n", "new"),
+                    ("r", "rename"),
+                    ("x", "delete"),
                     ("/", "find"),
                     ("f", "search"),
                     ("y", "yank"),
                     ("i", "to session"),
                     ("e", "edit"),
-                    ("w", "wrap"),
                 ]);
             }
             _ => {}
@@ -1287,8 +1362,12 @@ mod tests {
 
         app.select_tab(Tab::Vault);
         let vault: Vec<_> = app.keybinds().iter().map(|(key, _)| *key).collect();
-        assert!(!vault.contains(&"n"), "session keys must not leak into other views");
+        assert!(!vault.contains(&"s"), "session keys must not leak into other views");
         assert!(vault.contains(&"q"));
+
+        // `n` is in both, on purpose: it means "make a new one of whatever
+        // this view holds". A session here, a note there.
+        assert!(vault.contains(&"n"), "the vault makes new notes");
     }
 
     #[test]

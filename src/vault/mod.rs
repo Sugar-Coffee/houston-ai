@@ -5,14 +5,19 @@
 //! resolution, backlinks) rather than around rendering one.
 
 pub mod browser;
+pub mod files;
 pub mod markdown;
 pub mod search;
+pub mod tree;
 
 pub use browser::Browser;
 pub use search::Matcher;
 
 use anyhow::{Context, Result};
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 use walkdir::WalkDir;
 
 /// Directories that are never notes, however deep they are nested.
@@ -44,10 +49,14 @@ impl Note {
 
 #[derive(Debug, Default)]
 pub struct Vault {
-    /// Kept so Phase 8's settings view can show which vault is loaded.
-    #[expect(dead_code, reason = "Phase 8's settings view displays this")]
     pub root: PathBuf,
     notes: Vec<Note>,
+    /// Every directory under the root, relative and sorted.
+    ///
+    /// Indexed separately from the notes because a folder you have just made
+    /// contains nothing, and a tree built only from note paths would not show
+    /// it — which makes "new folder" look like it silently failed.
+    folders: Vec<String>,
     /// Lowercased stem -> notes with that stem. Wikilinks resolve through this.
     by_stem: HashMap<String, Vec<NoteId>>,
     /// Note -> the notes it links to. Built lazily as documents are opened,
@@ -63,6 +72,7 @@ impl Vault {
             root.canonicalize().with_context(|| format!("no vault at {}", root.display()))?;
 
         let mut notes = Vec::new();
+        let mut folders = Vec::new();
 
         for entry in WalkDir::new(&root)
             .follow_links(false)
@@ -70,10 +80,20 @@ impl Vault {
             .filter_entry(|entry| !is_skipped(entry.file_name().to_string_lossy().as_ref()))
             .filter_map(Result::ok)
         {
+            let path = entry.path();
+
+            if entry.file_type().is_dir() {
+                // The root itself is the tree, not a folder inside it.
+                if let Ok(relative) = path.strip_prefix(&root)
+                    && !relative.as_os_str().is_empty()
+                {
+                    folders.push(relative.to_string_lossy().into_owned());
+                }
+                continue;
+            }
             if !entry.file_type().is_file() {
                 continue;
             }
-            let path = entry.path();
             if path.extension().is_none_or(|extension| extension != "md") {
                 continue;
             }
@@ -91,13 +111,14 @@ impl Vault {
         }
 
         notes.sort_by(|a, b| a.relative.cmp(&b.relative));
+        folders.sort();
 
         let mut by_stem: HashMap<String, Vec<NoteId>> = HashMap::new();
         for (index, note) in notes.iter().enumerate() {
             by_stem.entry(note.stem.to_lowercase()).or_default().push(NoteId(index));
         }
 
-        Ok(Self { root, notes, by_stem, links: HashMap::new() })
+        Ok(Self { root, notes, folders, by_stem, links: HashMap::new() })
     }
 
     pub const fn len(&self) -> usize {
@@ -106,6 +127,16 @@ impl Vault {
 
     pub fn notes(&self) -> &[Note] {
         &self.notes
+    }
+
+    /// Every folder under the root, relative and sorted.
+    pub fn folders(&self) -> &[String] {
+        &self.folders
+    }
+
+    /// Where the vault lives, for building paths to new files.
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn get(&self, id: NoteId) -> Option<&Note> {

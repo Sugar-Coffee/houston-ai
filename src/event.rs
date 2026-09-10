@@ -715,8 +715,11 @@ fn apply_form_field(app: &mut App, modal: bool) {
 
 /// Creates the session the new-session form describes.
 fn accept_form(app: &mut App) {
-    if let FormPurpose::Land(name) = app.form_purpose.clone() {
-        return accept_land(app, &name);
+    match app.form_purpose.clone() {
+        FormPurpose::Land(name) => return accept_land(app, &name),
+        FormPurpose::NewVaultEntry => return accept_new_vault_entry(app),
+        FormPurpose::RenameVaultEntry => return accept_rename_vault_entry(app),
+        FormPurpose::NewSession | FormPurpose::None => {}
     }
 
     let Some(form) = app.form.as_ref() else { return };
@@ -1102,6 +1105,90 @@ fn scroll_copy_cursor(app: &App, bottom: bool) {
     }
 }
 
+/// Deletes a vault path, past the point of asking.
+fn remove_vault_entry(app: &mut App, path: &Path) {
+    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+
+    if let Err(error) = crate::vault::files::remove(path) {
+        return app.notify(error.to_string());
+    }
+
+    // If the deleted note was the one on screen, the reader is now showing a
+    // file that no longer exists.
+    if let Some(browser) = app.browser.as_mut() {
+        if let Err(error) = browser.reindex(None) {
+            app.notify(format!("deleted, but the vault could not be re-read: {error}"));
+            return;
+        }
+        app.notify(format!("deleted {name}"));
+    }
+}
+
+/// Creates the note or folder the form describes.
+fn accept_new_vault_entry(app: &mut App) {
+    let Some(form) = app.form.as_ref() else { return };
+    let name = form.value(fields::NAME);
+    let folder = form.is_on(fields::FOLDER);
+
+    let Some(root) = app.browser.as_ref().map(|browser| browser.vault.root().to_path_buf()) else {
+        return;
+    };
+
+    let made = if folder {
+        crate::vault::files::create_folder(&root, &name)
+    } else {
+        crate::vault::files::create_note(&root, &name)
+    };
+
+    match made {
+        Ok(path) => {
+            app.close_form();
+            let relative = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().into_owned();
+
+            if let Some(browser) = app.browser.as_mut()
+                && let Err(error) = browser.reindex(Some(&relative))
+            {
+                return app.notify(format!("made it, but the vault could not be re-read: {error}"));
+            }
+            app.notify(format!("made {relative}"));
+
+            // Straight into the editor for a new note: you made it to write in
+            // it. A new folder has nothing to open.
+            if !folder {
+                open_editor(app);
+            }
+        }
+        // The form stays open on failure, with what you typed still in it.
+        Err(error) => app.notify(error.to_string()),
+    }
+}
+
+/// Renames or moves whatever the vault has selected.
+fn accept_rename_vault_entry(app: &mut App) {
+    let Some(form) = app.form.as_ref() else { return };
+    let name = form.value(fields::NAME);
+
+    let Some(browser) = app.browser.as_ref() else { return };
+    let (Some(from), root) = (browser.selected_path(), browser.vault.root().to_path_buf()) else {
+        return;
+    };
+
+    match crate::vault::files::rename(&root, &from, &name) {
+        Ok(path) => {
+            app.close_form();
+            let relative = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().into_owned();
+
+            if let Some(browser) = app.browser.as_mut()
+                && let Err(error) = browser.reindex(Some(&relative))
+            {
+                return app.notify(format!("renamed, but the vault could not be re-read: {error}"));
+            }
+            app.notify(format!("renamed to {relative}"));
+        }
+        Err(error) => app.notify(error.to_string()),
+    }
+}
+
 /// Answering a question.
 ///
 /// Anything that is not clearly yes is no. There is no default-to-yes here and
@@ -1114,6 +1201,7 @@ fn on_key_confirm(app: &mut App, key: KeyEvent) {
     match action {
         crate::app::Pending::RemoveWorktree(name) => remove_worktree_now(app, &name),
         crate::app::Pending::OverwriteNote => save_editor(app, true),
+        crate::app::Pending::RemoveVaultEntry(path) => remove_vault_entry(app, &path),
     }
 }
 
@@ -1466,6 +1554,9 @@ fn on_key_vault(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('y') => yank_selected_path(app),
         KeyCode::Char('i') => send_selected_to_session(app),
+        KeyCode::Char('n') => app.open_new_vault_form(),
+        KeyCode::Char('r') => app.open_rename_vault_form(),
+        KeyCode::Char('x') => app.ask_remove_vault_entry(),
         _ => {
             let Some(browser) = app.browser.as_mut() else { return };
             match key.code {
@@ -1475,6 +1566,14 @@ fn on_key_vault(app: &mut App, key: KeyEvent) {
                     if let Err(error) = browser.open_selected(theme) {
                         app.notify(format!("could not open note: {error}"));
                     }
+                }
+                // `←` closes a folder, or steps out to the one containing
+                // the selection. `→` opens one. `l` is links-out and has been
+                // since Phase 4, so the tree uses arrows rather than stealing
+                // it — an asymmetric h/l would be worse than neither.
+                KeyCode::Left => browser.collapse_or_leave(),
+                KeyCode::Right => {
+                    browser.toggle_selected_folder();
                 }
                 KeyCode::Char('/') => browser.begin_find(),
                 KeyCode::Char('f') => browser.begin_search(),

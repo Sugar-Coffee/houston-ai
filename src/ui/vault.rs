@@ -2,7 +2,10 @@
 
 use crate::{
     ui::{Theme, keycap},
-    vault::{Browser, browser::Mode},
+    vault::{
+        Browser,
+        browser::{Entry, Mode},
+    },
 };
 use ratatui::{
     Frame,
@@ -77,7 +80,7 @@ fn render_list(frame: &mut Frame, area: Rect, browser: &Browser, theme: Theme) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if browser.results().is_empty() {
+    if browser.entries().is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "  nothing matches",
@@ -93,55 +96,75 @@ fn render_list(frame: &mut Frame, area: Rect, browser: &Browser, theme: Theme) {
     let height = inner.height as usize;
     let selected = browser.selected_index();
     let start = selected.saturating_sub(height.saturating_sub(1) / 2);
-    let start = start.min(browser.results().len().saturating_sub(height));
+    let start = start.min(browser.entries().len().saturating_sub(height));
 
     let hits = browser.hits();
     let lines: Vec<Line> = browser
-        .results()
+        .entries()
         .iter()
         .enumerate()
         .skip(start)
         .take(height)
-        .filter_map(|(index, id)| {
-            let note = browser.vault.get(*id)?;
+        .map(|(index, entry)| {
             let selected = index == browser.selected_index();
 
-            let style = if selected {
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text)
-            };
+            let mut spans = vec![Span::styled(
+                if selected { "▸ " } else { "  " },
+                Style::default().fg(theme.accent),
+            )];
 
-            let mut spans = vec![
-                Span::styled(if selected { "▸ " } else { "  " }, Style::default().fg(theme.accent)),
-                Span::styled(truncate(&note.stem, 24), style),
-            ];
+            match entry {
+                Entry::Folder { name, depth, expanded, .. } => {
+                    spans.push(Span::raw("  ".repeat(*depth)));
+                    // The triangle is the whole affordance: it says this row
+                    // opens, and which way it currently is.
+                    spans.push(Span::styled(
+                        if *expanded { "▾ " } else { "▸ " },
+                        Style::default().fg(theme.dim),
+                    ));
+                    spans.push(Span::styled(
+                        truncate(name, 22_usize.saturating_sub(depth * 2)),
+                        // Folders take `link`: they are the followable thing
+                        // in this list, which is exactly what that hue means.
+                        if selected {
+                            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(theme.link).add_modifier(Modifier::BOLD)
+                        },
+                    ));
+                }
+                Entry::Note { name, depth, .. } => {
+                    // Two spaces where a folder's triangle would be, so names
+                    // line up with the folders they sit under.
+                    spans.push(Span::raw("  ".repeat(*depth)));
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        truncate(name, 22_usize.saturating_sub(depth * 2)),
+                        if selected {
+                            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(theme.text)
+                        },
+                    ));
+                }
+            }
 
             // A full-text hit is more useful with its line number attached.
             if let Some(hit) = hits.get(index) {
-                // The matched line is far more useful here than the folder.
                 spans
                     .push(Span::styled(format!(":{}  ", hit.line), Style::default().fg(theme.dim)));
                 spans.push(Span::styled(
                     truncate(&hit.text, 40),
                     Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
                 ));
-            } else {
-                let folder = note.folder();
-                if !folder.is_empty() {
-                    spans.push(Span::styled(
-                        format!("  {}", truncate(folder, 12)),
-                        Style::default().fg(theme.dim),
-                    ));
-                }
             }
 
             let line = Line::from(spans);
-            Some(if selected {
+            if selected {
                 keycap::fill(line, inner.width).style(keycap::selected_row(theme))
             } else {
                 line
-            })
+            }
         })
         .collect();
 
