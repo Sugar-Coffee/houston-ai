@@ -141,14 +141,14 @@ pub fn keybind_bar(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     if app.quit_armed {
         let warning = Line::from(vec![
             Span::styled(
-                format!(" {} ", keycap::label("q")),
+                " q ".to_string(),
                 Style::default().fg(theme.surface).bg(theme.attention).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "  press again to quit  ",
                 Style::default().fg(theme.attention).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(keycap::label("esc"), Style::default().fg(theme.dim)),
+            Span::styled("esc", Style::default().fg(theme.dim)),
             Span::styled("  stay", Style::default().fg(theme.dim)),
         ]);
         frame.render_widget(Paragraph::new(warning).style(Style::default().bg(theme.raised)), area);

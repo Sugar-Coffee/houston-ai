@@ -494,6 +494,9 @@ mod tests {
     /// measure precisely, so it must not be flaky on a loaded machine.
     #[test]
     fn a_179_kilobyte_note_stays_responsive() {
+        /// Generous on purpose — see the note by the assertions.
+        const BUDGET: u128 = 3_000;
+
         use std::time::Instant;
 
         // Same shape as the real file: long prose lines, headings throughout.
@@ -541,10 +544,18 @@ mod tests {
 
         // Each of these is hundreds of operations; a keystroke must be far
         // under a frame, so hundreds must be well under a second.
-        assert!(movement.as_millis() < 500, "200 cursor moves took {movement:?}");
-        assert!(paging.as_millis() < 500, "200 pages took {paging:?}");
-        assert!(headings.as_millis() < 500, "50 heading jumps took {headings:?}");
-        assert!(tagging.as_millis() < 100, "tagging one screen took {tagging:?}");
+        //
+        // **Generous on purpose, and it has already needed to be.** These run
+        // in about 80ms on an idle machine and blew past 500ms once while a
+        // `cargo clippy` was using the other cores. A wall-clock assertion
+        // shares state with everything else on the box, so the only useful
+        // threshold is one that still catches an *order of magnitude*
+        // regression — which is the kind this is here to catch — and ignores
+        // the noise. Tightening it would buy nothing and cost a flake.
+        assert!(movement.as_millis() < BUDGET, "200 cursor moves took {movement:?}");
+        assert!(paging.as_millis() < BUDGET, "200 pages took {paging:?}");
+        assert!(headings.as_millis() < BUDGET, "50 heading jumps took {headings:?}");
+        assert!(tagging.as_millis() < BUDGET / 5, "tagging one screen took {tagging:?}");
     }
 
     #[test]

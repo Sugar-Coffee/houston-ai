@@ -202,9 +202,9 @@ mod tests {
         let rendered = draw(&App::new(), 100, 24);
         assert!(rendered.contains("No sessions yet"));
         assert!(rendered.contains("start an agent"));
-        // The key is drawn as a key, not as a letter in a sentence — and in
-        // upper case, because that is what the key on the keyboard says.
-        assert!(rendered.contains(" N "), "the shortcut is capped");
+        // The key is drawn as a key, not as a letter in a sentence — and
+        // exactly as you would type it.
+        assert!(rendered.contains(" n "), "the shortcut is capped");
     }
 
     #[test]
@@ -365,7 +365,7 @@ mod tests {
         app.config.powerline = Some(true);
         let flowing = draw(&app, 110, 20);
         assert!(flowing.contains('\u{e0b0}'), "and flow into them with the setting on");
-        assert!(flowing.contains(" N "), "without losing the key itself");
+        assert!(flowing.contains(" n "), "without losing the key itself");
     }
 
     /// Nothing Houston draws may be a private use codepoint.
