@@ -300,6 +300,48 @@ mod tests {
         assert!(flowing.contains("2 files"), "the count is not lost to decoration");
     }
 
+    /// A selection you cannot see is a selection that does not work.
+    ///
+    /// Asserted on the drawn frame rather than on the selection state, because
+    /// the state was right the whole time the feature appeared broken — see
+    /// `terminal::MOUSE_ON`.
+    #[test]
+    fn a_selection_is_visible_in_the_pane() {
+        let mut app = App::new();
+        app.sessions.spawn_shell(&std::env::temp_dir(), crate::pty::Size::new(24, 80)).unwrap();
+        app.sessions.detach();
+        app.sessions.selected().unwrap().feed("select me please\r\n");
+
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+
+        let filled = |terminal: &Terminal<TestBackend>| {
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .filter(|cell| cell.style().bg == Some(theme.highlight))
+                .count()
+        };
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let before = filled(&terminal);
+
+        // Select the first several cells of the first row, as a drag would.
+        let session = app.sessions.selected().unwrap();
+        session.begin_mouse_selection(0, 0, 1);
+        session.drag_mouse_selection(0, 8);
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let after = filled(&terminal);
+
+        assert!(
+            after >= before + 9,
+            "nine selected cells should be filled; went from {before} to {after}"
+        );
+    }
+
     /// News, not a problem: it takes `link` rather than `attention`, which
     /// means an agent is waiting on you.
     #[test]

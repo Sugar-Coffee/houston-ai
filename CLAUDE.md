@@ -161,6 +161,15 @@ tests a function in isolation can see that. When a feature crosses a process
 boundary, test it across the boundary: `tests/hook_payload.rs` spawns the real
 binary. Confirm such a test fails against the bug before trusting it.
 
+**Driving an escape sequence into the pty proves you handle it, not that
+the terminal sends it.** Mouse drag selection was written, unit-tested, and
+verified by writing SGR drag sequences into a pty — all of it green, and none
+of it reachable, because `MOUSE_ON` asked for `?1000h` (press and release) and
+not `?1002h` (motion while a button is held). Real terminals sent a press and a
+release and nothing in between. When a feature depends on the terminal being
+asked for something, assert on the request as well as on the handling — see
+`terminal::mouse_mode_tests`.
+
 **A test that spawns an agent only passes where one is installed.**
 `spawn_agent` falls back to a shell when no coding agent CLI is found, and a
 shell displaces nobody — so the hook-collision test passed on a laptop with
