@@ -248,6 +248,63 @@ impl Session {
         (!text.trim().is_empty()).then_some(text)
     }
 
+    /// Whether the child has asked to handle the mouse itself.
+    ///
+    /// When it has, drags belong to it and Houston must keep its hands off —
+    /// a full-screen program with its own click handling would be unusable
+    /// otherwise.
+    #[must_use]
+    pub fn wants_mouse(&self) -> bool {
+        self.pty.mode().intersects(
+            TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG,
+        )
+    }
+
+    /// Starts a mouse selection at a screen position within the pane.
+    ///
+    /// `clicks` picks what a single gesture means, the way every terminal
+    /// does it: one selects characters, two a word, three a whole line.
+    /// Alacritty knows where words and lines begin, including across a wrap,
+    /// so none of that is decided here.
+    pub fn begin_mouse_selection(&self, row: u16, column: u16, clicks: u8) {
+        let Ok(mut term) = self.pty.term().lock() else { return };
+
+        let point = crate::ui::terminal::grid_point(row, column, term.grid().display_offset());
+        let kind = match clicks {
+            2 => SelectionType::Semantic,
+            3 => SelectionType::Lines,
+            _ => SelectionType::Simple,
+        };
+
+        let mut selection = Selection::new(kind, point, Side::Left);
+        // A word or line selection is complete the moment it starts: there is
+        // nothing to drag out, and leaving it empty until the mouse moves
+        // would make a double-click do nothing at all.
+        if clicks > 1 {
+            selection.update(point, Side::Right);
+        }
+        term.selection = Some(selection);
+    }
+
+    /// Extends the running mouse selection.
+    pub fn drag_mouse_selection(&self, row: u16, column: u16) {
+        let Ok(mut term) = self.pty.term().lock() else { return };
+
+        let point = crate::ui::terminal::grid_point(row, column, term.grid().display_offset());
+        if let Some(selection) = term.selection.as_mut() {
+            selection.update(point, Side::Left);
+            selection.include_all();
+        }
+    }
+
+    /// Drops any selection. Called when typing, so the highlight does not
+    /// linger over output that has since scrolled away.
+    pub fn clear_selection(&self) {
+        if let Ok(mut term) = self.pty.term().lock() {
+            term.selection = None;
+        }
+    }
+
     /// Writes text straight into the VT, as though the child had printed it.
     ///
     /// Test-only. The grid is otherwise filled by the reader thread from a
@@ -256,16 +313,15 @@ impl Session {
     /// under test here is the selection, not the pty.
     #[cfg(test)]
     pub fn feed(&self, text: &str) {
-        use alacritty_terminal::vte::ansi::Handler;
+        use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 
+        // Through the real parser rather than pushing characters in. Escape
+        // sequences have to *mean* something here: a test that a child asking
+        // for mouse reporting keeps its drags is worthless if `\x1b[?1000h`
+        // arrives as six printable characters.
         let Ok(mut term) = self.pty.term().lock() else { return };
-        for character in text.chars() {
-            match character {
-                '\n' => term.linefeed(),
-                '\r' => term.carriage_return(),
-                other => term.input(other),
-            }
-        }
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+        parser.advance(&mut *term, text.as_bytes());
     }
 
     /// Whether this session is in copy mode.

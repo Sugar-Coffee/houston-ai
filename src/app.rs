@@ -126,6 +126,13 @@ pub struct App {
     /// milliseconds. Blocking the loop would freeze the whole app on what is
     /// meant to be a convenience.
     pub font_install: Option<std::sync::mpsc::Receiver<anyhow::Result<std::path::PathBuf>>>,
+    /// The last left-button press: when, where, and how many in a row.
+    ///
+    /// Click counting has to happen here because a terminal reports three
+    /// separate presses for a triple-click and leaves the counting to you.
+    pub last_click: Option<(std::time::Instant, u16, u16, u8)>,
+    /// A mouse selection is in progress, so drags extend it.
+    pub dragging: bool,
     /// The session whose scrollback is being selected, if any.
     ///
     /// The id rather than a flag: copy mode lives in that session's own VT
@@ -430,6 +437,32 @@ impl App {
         }
     }
 
+    /// Counts this press as part of a multi-click, and says which it is.
+    ///
+    /// Two conditions, both needed. Within the double-click interval, and on
+    /// the same cell — otherwise dragging out one selection and starting
+    /// another somewhere else would read as a double-click and silently
+    /// select a word instead.
+    pub fn count_click(&mut self, row: u16, column: u16) -> u8 {
+        const INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
+
+        let now = std::time::Instant::now();
+        let clicks = match self.last_click {
+            Some((at, last_row, last_column, count))
+                if now.duration_since(at) < INTERVAL
+                    && last_row == row
+                    && last_column == column =>
+            {
+                // Wraps back to one after a triple, the way terminals do.
+                count % 3 + 1
+            }
+            _ => 1,
+        };
+
+        self.last_click = Some((now, row, column, clicks));
+        clicks
+    }
+
     /// Enters copy mode on the selected session.
     pub fn start_copying(&mut self) {
         let Some(session) = self.sessions.selected() else {
@@ -665,6 +698,8 @@ impl App {
             form: None,
             form_purpose: FormPurpose::None,
             settings: Form::new(Vec::new()),
+            last_click: None,
+            dragging: false,
             copying: None,
             update_available: None,
             confirm: None,

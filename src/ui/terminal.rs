@@ -6,6 +6,7 @@
 
 use crate::{palette, pty::Notifier, ui::Theme};
 use alacritty_terminal::{
+    index::{Column, Line, Point},
     term::{Term, cell::Flags},
     vte::ansi::{Color as TermColor, NamedColor},
 };
@@ -14,6 +15,18 @@ use ratatui::{
     layout::{Position, Rect},
     style::{Color, Modifier, Style},
 };
+
+/// The grid point under a screen position.
+///
+/// The inverse of [`viewport_row`], and it has the same trap in it: scrollback
+/// lines are *negative*, so a row near the top of a scrolled-back screen maps
+/// to a negative line. Clamping that to zero would put every click in the
+/// history onto the first live row.
+#[must_use]
+pub fn grid_point(row: u16, column: u16, display_offset: usize) -> Point {
+    let offset = i32::try_from(display_offset).unwrap_or(0);
+    Point::new(Line(i32::from(row) - offset), Column(column as usize))
+}
 
 /// Draws the terminal's visible screen into `area`.
 ///

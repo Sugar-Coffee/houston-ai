@@ -107,15 +107,14 @@ guessing at.
 
 ### Get text back out
 
-Houston reports the mouse so the wheel can scroll a session's history, and a
-terminal that is reporting the mouse stops doing its own click-and-drag
-selection. So `c` gives you a copy mode instead: vim motions over the
-scrollback, `v` to select, `y` to copy. The selection and the word motions are
-the VT layer's own, so they understand wrapped lines and wide characters.
+Drag inside a session pane and it copies on release. Double-click a word,
+triple-click a line. Exactly what you expect from a terminal — and crucially,
+*scoped to the pane*, which your terminal cannot do: it selects its own rows,
+and a Houston row is the sidebar and the pane side by side.
 
-If you would rather have the mouse back, hold **option** while dragging in
-iTerm2 (**shift** in most other terminals), or turn off *Capture the mouse* in
-Settings.
+There is a keyboard mode too — `c`, then vim motions, `v` to select, `y` to
+copy — for a precise selection spanning screens, or over SSH. Both use the VT
+layer's own selection, so they understand wrapped lines and wide characters.
 
 ### Review what an agent actually changed
 

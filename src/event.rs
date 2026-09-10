@@ -22,7 +22,8 @@ use crate::{
 };
 use anyhow::Result;
 use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use futures::StreamExt;
 use ratatui::{Terminal, layout::Rect};
@@ -238,6 +239,20 @@ fn on_mouse(app: &mut App, mouse: MouseEvent, area: Option<Rect>) {
         MouseEventKind::ScrollDown => 1,
         _ => 0,
     };
+
+    // Selecting inside the pane, whether or not you are attached.
+    //
+    // **This is why option-dragging was useless.** Your terminal selects its
+    // own rows, and a Houston row is the sidebar and the pane side by side, so
+    // a line selection drags in both. Only Houston knows where the pane ends,
+    // so only Houston can select within it.
+    if app.tab == Tab::Sessions
+        && let Some(area) = area
+        && !app.sessions.selected().is_some_and(crate::session::Session::wants_mouse)
+        && on_pane_mouse(app, mouse, area)
+    {
+        return;
+    }
 
     if app.is_attached() {
         let Some(area) = area else { return };
@@ -924,6 +939,79 @@ fn remove_worktree_now(app: &mut App, name: &str) {
     }
 }
 
+/// Selecting with the mouse inside a session pane.
+///
+/// Returns whether the event was ours. Anything that is not a left-button
+/// gesture inside the pane is handed back, so the wheel still scrolls and a
+/// click on the sidebar still selects a session.
+fn on_pane_mouse(app: &mut App, mouse: MouseEvent, area: Rect) -> bool {
+    let inside = mouse.column >= area.x
+        && mouse.column < area.x + area.width
+        && mouse.row >= area.y
+        && mouse.row < area.y + area.height;
+
+    let row = mouse.row.saturating_sub(area.y);
+    let column = mouse.column.saturating_sub(area.x);
+
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) if inside => {
+            let clicks = app.count_click(mouse.row, mouse.column);
+            if let Some(session) = app.sessions.selected() {
+                session.begin_mouse_selection(row, column, clicks);
+            }
+            app.dragging = true;
+            app.dirty = true;
+            true
+        }
+        // Drags are followed outside the pane too: dragging past the edge to
+        // extend a selection is how every other terminal behaves, and stopping
+        // at the border would make selecting the last line fiddly.
+        MouseEventKind::Drag(MouseButton::Left) if app.dragging => {
+            let row = row.min(area.height.saturating_sub(1));
+            let column = column.min(area.width.saturating_sub(1));
+            if let Some(session) = app.sessions.selected() {
+                session.drag_mouse_selection(row, column);
+            }
+            app.dirty = true;
+            true
+        }
+        MouseEventKind::Up(MouseButton::Left) if app.dragging => {
+            app.dragging = false;
+            copy_pane_selection(app);
+            app.dirty = true;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Copies whatever the mouse just selected.
+///
+/// **Copy on release**, the way a terminal does it, rather than requiring a
+/// second gesture. The point of this feature is getting a paragraph of an
+/// agent's answer into a message to somebody, and a second keystroke in the
+/// middle of that is a second thing to know.
+///
+/// A selection of nothing is silent. Click-to-place-the-cursor is a normal
+/// thing to do by accident, and it must not clear your clipboard or put a
+/// notice in the footer.
+fn copy_pane_selection(app: &mut App) {
+    let Some(text) = app.sessions.selected().and_then(crate::session::Session::selected_text)
+    else {
+        return;
+    };
+
+    let lines = text.lines().count();
+    match clipboard::copy(&text) {
+        Ok(_) => app.notify(if lines == 1 {
+            "copied 1 line".to_string()
+        } else {
+            format!("copied {lines} lines")
+        }),
+        Err(error) => app.notify(format!("could not copy: {error}")),
+    }
+}
+
 /// Driving the copy cursor over a session's scrollback.
 ///
 /// The motions are vim's because the VT layer already implements them
@@ -1181,6 +1269,13 @@ fn on_key_typing(app: &mut App, key: KeyEvent) {
 /// agent unusable.
 fn on_key_attached(app: &mut App, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // Typing drops the highlight, the same way it returns you to live output
+    // from a scrolled-back view. A selection left over some text that has
+    // since scrolled away is a highlight pointing at nothing.
+    if let Some(session) = app.sessions.selected() {
+        session.clear_selection();
+    }
 
     // Ctrl-\ is the detach key precisely because almost nothing else uses it:
     // Ctrl-C, Ctrl-D and Escape all belong to the agent.
@@ -1775,6 +1870,84 @@ mod tests {
 
         assert!(app.form.is_none(), "the quick shell asks nothing");
         assert_eq!(app.sessions.len(), 1);
+    }
+
+    fn click(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
+    }
+
+    /// The complaint this fixes: dragging in your terminal selects a whole
+    /// Houston row, sidebar included, because your terminal has no idea a pane
+    /// exists. Houston does.
+    #[test]
+    fn dragging_inside_the_pane_selects_and_copies_on_release() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        app.sessions.selected().unwrap().feed("copy this line\r\n");
+
+        // A pane occupying the right-hand side, as the real layout gives it.
+        let pane = Rect { x: 40, y: 3, width: 60, height: 20 };
+
+        on_mouse(&mut app, click(MouseEventKind::Down(MouseButton::Left), 40, 3), Some(pane));
+        assert!(app.dragging, "the press starts a selection");
+
+        on_mouse(&mut app, click(MouseEventKind::Drag(MouseButton::Left), 48, 3), Some(pane));
+
+        let selected = app.sessions.selected().unwrap().selected_text();
+        assert_eq!(selected.as_deref(), Some("copy this"), "nine cells of the first row");
+
+        on_mouse(&mut app, click(MouseEventKind::Up(MouseButton::Left), 48, 3), Some(pane));
+        assert!(!app.dragging, "the release ends it");
+    }
+
+    /// Clicking to put the cursor somewhere is a normal accident. It must not
+    /// clear your clipboard or say anything.
+    #[test]
+    fn a_click_that_selects_nothing_is_silent() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        let pane = Rect { x: 40, y: 3, width: 60, height: 20 };
+
+        on_mouse(&mut app, click(MouseEventKind::Down(MouseButton::Left), 50, 10), Some(pane));
+        on_mouse(&mut app, click(MouseEventKind::Up(MouseButton::Left), 50, 10), Some(pane));
+
+        assert!(app.notice.is_none(), "an empty selection says nothing at all");
+    }
+
+    /// A terminal reports three separate presses for a triple-click and leaves
+    /// the counting to the application.
+    #[test]
+    fn clicks_in_the_same_place_count_up_and_wrap() {
+        let mut app = App::new();
+
+        assert_eq!(app.count_click(5, 5), 1);
+        assert_eq!(app.count_click(5, 5), 2, "a word");
+        assert_eq!(app.count_click(5, 5), 3, "a line");
+        assert_eq!(app.count_click(5, 5), 1, "and back to characters");
+    }
+
+    /// Otherwise dragging out one selection and starting another nearby would
+    /// read as a double-click and quietly select a word instead.
+    #[test]
+    fn a_click_somewhere_else_starts_the_count_again() {
+        let mut app = App::new();
+
+        assert_eq!(app.count_click(5, 5), 1);
+        assert_eq!(app.count_click(9, 5), 1, "a different cell is a new first click");
+    }
+
+    /// A child that handles the mouse itself must keep getting it.
+    #[test]
+    fn a_child_that_asked_for_the_mouse_still_gets_its_drags() {
+        let mut app = App::new();
+        on_key(&mut app, press(KeyCode::Char('s')));
+        // Ask for mouse reporting the way a full-screen program would.
+        app.sessions.selected().unwrap().feed("\u{1b}[?1000h");
+
+        let pane = Rect { x: 40, y: 3, width: 60, height: 20 };
+        on_mouse(&mut app, click(MouseEventKind::Down(MouseButton::Left), 50, 5), Some(pane));
+
+        assert!(!app.dragging, "the drag belongs to the child, not to Houston");
     }
 
     /// The whole point: text you can get out of an agent's output.
