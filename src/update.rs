@@ -151,20 +151,16 @@ pub fn run() -> Result<()> {
     let exe = std::env::current_exe().context("could not work out where this binary lives")?;
     let dir = exe.parent().context("this binary has no directory")?;
 
-    let latest = match cached() {
-        Some(cached) => cached,
-        None => match ask_github()? {
-            Some(tag) => {
-                remember(&tag);
-                tag
-            }
-            // Reached GitHub and it said there are none. Not a failure, and
-            // not something a retry will fix.
-            None => {
-                println!("  No releases published yet.\n");
-                return Ok(());
-            }
-        },
+    let latest = if let Some(cached) = cached() {
+        cached
+    } else if let Some(tag) = ask_github()? {
+        remember(&tag);
+        tag
+    } else {
+        // Reached GitHub and it said there are none. Not a failure, and not
+        // something a retry will fix.
+        println!("  No releases published yet.\n");
+        return Ok(());
     };
 
     println!("  houston {} → {latest}", current());
