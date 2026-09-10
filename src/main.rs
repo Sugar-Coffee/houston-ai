@@ -8,6 +8,7 @@ mod app;
 mod cli;
 mod clipboard;
 mod config;
+mod cwd;
 mod diff;
 mod editor;
 mod event;

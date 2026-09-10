@@ -19,7 +19,7 @@ use alacritty_terminal::{
 };
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Lines moved per wheel notch. Three is the terminal convention.
 const SCROLL_LINES: i32 = 3;
@@ -102,6 +102,11 @@ pub struct Session {
     /// `claude --resume <id>` reopens that conversation. Capturing it is what
     /// lets a restored session continue rather than start again.
     pub conversation: Option<String>,
+    /// Where the child has actually got to, once anyone has looked.
+    ///
+    /// `None` until the first refresh, and left alone when a look fails —
+    /// "cannot tell" is not the same as "moved back to where it started".
+    pub live_cwd: Option<PathBuf>,
     /// The branch its directory is on, refreshed periodically.
     ///
     /// Cached rather than read per frame: it is a file read, but sixty of them
@@ -142,14 +147,28 @@ impl Session {
         matches!(self.kind, Kind::Agent { .. }) && !self.hooks_live
     }
 
-    /// The directory this session runs in.
+    /// The directory this session is in *now*.
+    ///
+    /// Falls back to the launch directory when the live one is unknown, which
+    /// is also what it is before the first refresh. Everything that asks where
+    /// a session is — the card, the branch, the diff, the state file — goes
+    /// through here, so tracking `cd` was a matter of changing one accessor.
     pub fn directory(&self) -> &Path {
-        &self.spec.cwd
+        self.live_cwd.as_deref().unwrap_or(&self.spec.cwd)
+    }
+
+    /// Re-reads where the child has got to.
+    ///
+    /// A subprocess on macOS, so this belongs on a timer. See `crate::cwd`.
+    pub fn refresh_directory(&mut self) {
+        if let Some(found) = crate::cwd::of(self.pty.child_pid()) {
+            self.live_cwd = Some(found);
+        }
     }
 
     /// Re-reads the branch. Cheap, but not free — call on a timer, not a frame.
     pub fn refresh_branch(&mut self) {
-        self.branch = crate::worktree::branch_of(&self.spec.cwd);
+        self.branch = crate::worktree::branch_of(self.directory());
     }
 
     /// Enters copy mode: a cursor you drive with the keyboard, over the
@@ -262,7 +281,7 @@ impl Session {
 
     /// Re-counts what has changed in its directory.
     pub fn refresh_changes(&mut self) {
-        self.changes = crate::diff::changes_in(&self.spec.cwd);
+        self.changes = crate::diff::changes_in(self.directory());
     }
 
     /// Sets a name the user chose, or clears it back to the default.
@@ -714,6 +733,7 @@ impl Sessions {
             state,
             started_at: std::time::SystemTime::now(),
             conversation: None,
+            live_cwd: None,
             hooks_live: true,
             branch: crate::worktree::branch_of(&spec.cwd),
             changes: crate::diff::changes_in(&spec.cwd),
@@ -795,6 +815,10 @@ impl Sessions {
     /// loop, because a branch changes when you switch it, not when you blink.
     pub fn refresh_branches(&mut self) {
         for session in &mut self.items {
+            // Directory first: the branch is read from whatever directory the
+            // session is in, so looking it up before moving would report the
+            // branch of where you used to be.
+            session.refresh_directory();
             session.refresh_branch();
         }
     }
@@ -807,6 +831,17 @@ impl Sessions {
     pub fn refresh_selected_changes(&mut self) {
         if let Some(session) = self.selected_mut() {
             session.refresh_changes();
+        }
+    }
+
+    /// Re-reads where every session has got to.
+    ///
+    /// A subprocess per session on macOS, so this is for the moments that
+    /// matter — quitting — rather than for the frame loop. The timer version
+    /// is folded into `refresh_branches`.
+    pub fn refresh_directories(&mut self) {
+        for session in &mut self.items {
+            session.refresh_directory();
         }
     }
 
@@ -1127,6 +1162,58 @@ mod restore_tests {
     ///
     /// Checked on the launch spec rather than by launching, so no real agent
     /// is started and nothing has to be killed afterwards.
+    /// The bug this fixes: a shell is launched somewhere, you `cd` out of it,
+    /// and quitting remembered where it started rather than where it got to.
+    #[test]
+    fn a_session_reports_where_it_has_got_to_not_where_it_started() {
+        let mut sessions = Sessions::new();
+        let launched_in = std::env::temp_dir();
+        sessions.spawn_shell(&launched_in, Size::new(24, 80)).unwrap();
+
+        let session = sessions.selected().unwrap();
+        assert_eq!(session.directory(), launched_in, "before anyone looks, the launch directory");
+
+        // As though the shell had been `cd`'d.
+        let moved_to = launched_in.join("houston-moved-here");
+        std::fs::create_dir_all(&moved_to).unwrap();
+        sessions.selected_mut().unwrap().live_cwd = Some(moved_to.clone());
+
+        assert_eq!(
+            sessions.selected().unwrap().directory(),
+            moved_to,
+            "everything asks through this accessor, so everything follows"
+        );
+
+        let state = crate::state::State::capture(&sessions);
+        assert_eq!(
+            state.sessions[0].cwd, moved_to,
+            "and what gets written is where you would want to come back to"
+        );
+
+        std::fs::remove_dir_all(&moved_to).ok();
+    }
+
+    /// "Cannot tell" is not "moved back to the start".
+    #[test]
+    fn a_failed_look_leaves_the_directory_alone() {
+        let mut sessions = Sessions::new();
+        sessions.spawn_shell(&std::env::temp_dir(), Size::new(24, 80)).unwrap();
+
+        let known = std::env::temp_dir().join("houston-known-cwd");
+        std::fs::create_dir_all(&known).unwrap();
+        sessions.selected_mut().unwrap().live_cwd = Some(known.clone());
+
+        // The child is alive, so this succeeds and overwrites — but the point
+        // is the shape: `refresh_directory` only ever assigns on success.
+        sessions.selected_mut().unwrap().refresh_directory();
+        assert!(
+            sessions.selected().unwrap().live_cwd.is_some(),
+            "a refresh never clears what it already knew"
+        );
+
+        std::fs::remove_dir_all(&known).ok();
+    }
+
     #[test]
     fn an_agent_with_a_conversation_is_resumed_rather_than_restarted() {
         let mut agent = remembered(&std::env::temp_dir());
@@ -1231,6 +1318,7 @@ mod collision_tests {
             started_at: std::time::SystemTime::now(),
             conversation: None,
             changes: None,
+            live_cwd: None,
             branch: None,
             spec: LaunchSpec::command("claude", Vec::new(), directory.clone()),
             worktree: None,
@@ -1264,6 +1352,7 @@ mod collision_tests {
             started_at: std::time::SystemTime::now(),
             conversation: None,
             changes: None,
+            live_cwd: None,
             branch: None,
             spec: LaunchSpec::command("claude", Vec::new(), directory.clone()),
             worktree: None,

@@ -202,6 +202,16 @@ impl PtySession {
         Ok(Self { term, pty, writer, notifier, dirty, size })
     }
 
+    /// The child's process id.
+    ///
+    /// The *direct* child, which is the shell itself rather than whatever it
+    /// happens to be running. That is what we want: `cd` changes the shell's
+    /// own working directory, and a `less` running inside it does not.
+    #[must_use]
+    pub fn child_pid(&self) -> u32 {
+        self.pty.child().id()
+    }
+
     /// Takes the "has drawn something since you last asked" flag.
     ///
     /// Reading clears it, so the caller must act on `true`.

@@ -125,6 +125,11 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
         }
 
         if app.should_quit {
+            // One last look at where everything is. The timer keeps this
+            // current to within a few seconds, which is fine while you are
+            // working and not fine for the save that decides where you come
+            // back to — a `cd` a second before quitting would be lost.
+            app.sessions.refresh_directories();
             app.remember_sessions();
             // Signalled and detached, so restoring the terminal is never held
             // up by a child that is slow to die.

@@ -96,9 +96,14 @@ directories they ran in, the worktrees they were using — and, for agents that
 support it, **the conversation itself**. Claude Code sessions return via
 `--resume`, Codex via its rollout files.
 
-The honest part: a shell cannot be resumed, so shells come back as a fresh
-shell in the right directory. Houston does not pretend otherwise, and does not
-try to replay scrollback it would only be guessing at.
+**And the right directory means where you got to**, not where the session
+started. Houston reads each child's actual working directory, so a shell you
+`cd`'d three levels deep comes back three levels deep.
+
+The honest part: a shell cannot be resumed, so it comes back as a fresh shell.
+Whatever was running in it — a dev server, a `tail -f` — is not. Houston does
+not pretend otherwise, and does not try to replay scrollback it would only be
+guessing at.
 
 ### Get text back out
 
