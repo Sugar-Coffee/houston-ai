@@ -717,7 +717,7 @@ fn apply_form_field(app: &mut App, modal: bool) {
 fn accept_form(app: &mut App) {
     match app.form_purpose.clone() {
         FormPurpose::Land(name) => return accept_land(app, &name),
-        FormPurpose::NewVaultEntry => return accept_new_vault_entry(app),
+        FormPurpose::NewVaultEntry { folder } => return accept_new_vault_entry(app, folder),
         FormPurpose::RenameVaultEntry => return accept_rename_vault_entry(app),
         FormPurpose::NewSession | FormPurpose::None => {}
     }
@@ -1125,10 +1125,9 @@ fn remove_vault_entry(app: &mut App, path: &Path) {
 }
 
 /// Creates the note or folder the form describes.
-fn accept_new_vault_entry(app: &mut App) {
+fn accept_new_vault_entry(app: &mut App, folder: bool) {
     let Some(form) = app.form.as_ref() else { return };
     let name = form.value(fields::NAME);
-    let folder = form.is_on(fields::FOLDER);
 
     let Some(root) = app.browser.as_ref().map(|browser| browser.vault.root().to_path_buf()) else {
         return;
@@ -1554,7 +1553,8 @@ fn on_key_vault(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('y') => yank_selected_path(app),
         KeyCode::Char('i') => send_selected_to_session(app),
-        KeyCode::Char('n') => app.open_new_vault_form(),
+        KeyCode::Char('n') => app.open_new_vault_form(false),
+        KeyCode::Char('N') => app.open_new_vault_form(true),
         KeyCode::Char('r') => app.open_rename_vault_form(),
         KeyCode::Char('x') => app.ask_remove_vault_entry(),
         _ => {

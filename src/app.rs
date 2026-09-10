@@ -176,8 +176,10 @@ pub enum FormPurpose {
     NewSession,
     /// Land the named worktree: commit, push, open a PR, remove.
     Land(String),
-    /// Create a note or folder in the vault.
-    NewVaultEntry,
+    /// Create something in the vault. `folder` picks which.
+    NewVaultEntry {
+        folder: bool,
+    },
     /// Rename or move whatever is selected in the vault.
     RenameVaultEntry,
 }
@@ -238,7 +240,6 @@ pub mod fields {
     pub const MOUSE: &str = "Capture the mouse";
     pub const POWERLINE: &str = "Powerline separators";
     pub const INSTALL_FONT: &str = "Install a powerline font";
-    pub const FOLDER: &str = "Folder";
     pub const MESSAGE: &str = "Commit message";
     pub const PUSH: &str = "Push to origin";
     pub const PULL_REQUEST: &str = "Open a pull request";
@@ -644,23 +645,33 @@ impl App {
         self.reload_theme_from_list();
     }
 
-    /// Opens the form for a new note or folder.
+    /// Opens the form for a new note, or for a new folder.
+    ///
+    /// **Two keys rather than a toggle inside one form.** "Make a new thing,
+    /// and by the way it is a folder" is a question asked in the wrong order:
+    /// you know which of the two you want before you start typing a name, so
+    /// it belongs in the key you press, not in a field you have to go and find.
     ///
     /// Prefilled with the folder the selection is in, so a new note lands
     /// beside what you were looking at rather than at the top of the vault.
-    pub fn open_new_vault_form(&mut self) {
-        let folder = self.browser.as_ref().map(Browser::target_folder).unwrap_or_default();
-        let prefill = if folder.is_empty() { String::new() } else { format!("{folder}/") };
+    pub fn open_new_vault_form(&mut self, folder: bool) {
+        let parent = self.browser.as_ref().map(Browser::target_folder).unwrap_or_default();
+        let prefill = if parent.is_empty() { String::new() } else { format!("{parent}/") };
+
+        let (title, hint, action) = if folder {
+            ("new folder", "name, or a path like reference/papers", "make the folder")
+        } else {
+            ("new note", "name, or a path like projects/kickoff", "make the note")
+        };
 
         self.form = Some(
             Form::new(vec![
-                Field::text(fields::NAME, "name, or a path like projects/notes", prefill),
-                Field::toggle(fields::FOLDER, "a folder rather than a note", false),
-                Field::action(fields::CREATE, "make it"),
+                Field::text(fields::NAME, hint, prefill),
+                Field::action(fields::CREATE, action),
             ])
-            .titled("new in the vault"),
+            .titled(title),
         );
-        self.form_purpose = FormPurpose::NewVaultEntry;
+        self.form_purpose = FormPurpose::NewVaultEntry { folder };
         self.dirty = true;
     }
 
@@ -1105,7 +1116,7 @@ impl App {
                 binds.extend([
                     ("j/k", "select"),
                     ("↵", "open/close"),
-                    ("n", "new"),
+                    ("n/N", "new note/folder"),
                     ("r", "rename"),
                     ("x", "delete"),
                     ("/", "find"),
@@ -1366,8 +1377,10 @@ mod tests {
         assert!(vault.contains(&"q"));
 
         // `n` is in both, on purpose: it means "make a new one of whatever
-        // this view holds". A session here, a note there.
-        assert!(vault.contains(&"n"), "the vault makes new notes");
+        // this view holds". A session here, a note there — and in the vault
+        // it is shown as the pair `n/N`, because a folder is the other thing
+        // you might be making.
+        assert!(vault.contains(&"n/N"), "the vault makes new notes and folders");
     }
 
     #[test]

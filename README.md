@@ -155,7 +155,7 @@ become a pane you work in while the agents run.
 
 
 The sidebar is a folder tree you can work in, not just read from: `n` makes a
-note or folder, `r` renames or moves one, `x` deletes with a confirmation that
+note and `N` a folder, `r` renames or moves one, `x` deletes with a confirmation that
 tells you how many notes a folder holds. A name is a path, so `projects/kickoff`
 makes the folders on the way, and a new note opens straight in the editor.
 
