@@ -1116,6 +1116,7 @@ impl App {
                 binds.extend([
                     ("j/k", "select"),
                     ("↵", "open/close"),
+                    ("c", "agent here"),
                     ("n/N", "new note/folder"),
                     ("r", "rename"),
                     ("x", "delete"),

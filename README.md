@@ -161,6 +161,12 @@ makes the folders on the way, and a new note opens straight in the editor.
 
 Find (`/`) and search (`f`) still show a flat list. A tree is a worse answer to
 "where is the note called X".
+
+**`c` starts an agent in the vault.** If your vault has its own `CLAUDE.md`,
+skills and rules — telling an agent how your knowledge base is organised, where
+things live, and what to do when you ask for certain things — then an agent
+launched inside it arrives already knowing all of that. One key, from the note
+you were reading.
 ### An editor
 
 Modal, markdown-first, with amp-style jump mode — press `f`, every word gets a

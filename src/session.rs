@@ -614,6 +614,25 @@ impl Sessions {
         })
     }
 
+    /// Selects the live agent already running in a directory.
+    ///
+    /// Returns `false` if there is none. Used to send you to an existing
+    /// session rather than starting a second one in the same place — two
+    /// agents in one directory share a hooks file, and the second silences
+    /// the first.
+    pub fn select_agent_in(&mut self, directory: &Path) -> bool {
+        let found = self.items.iter().position(|session| {
+            matches!(session.kind, Kind::Agent { .. })
+                && !matches!(session.state, State::Exited(_))
+                && session.spec.cwd == directory
+        });
+
+        if let Some(index) = found {
+            self.selected = index;
+        }
+        found.is_some()
+    }
+
     /// Selects the live session working in a worktree.
     ///
     /// Returns `false` if nothing is, which is the common case for a worktree

@@ -1553,6 +1553,10 @@ fn on_key_vault(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('y') => yank_selected_path(app),
         KeyCode::Char('i') => send_selected_to_session(app),
+        // `c` for chat. `a` would be the better mnemonic in an app that says
+        // "agent" everywhere, and it has meant "back to all notes" since the
+        // vault existed — not worth taking away for a nicer letter.
+        KeyCode::Char('c') => spawn_in_vault(app),
         KeyCode::Char('n') => app.open_new_vault_form(false),
         KeyCode::Char('N') => app.open_new_vault_form(true),
         KeyCode::Char('r') => app.open_rename_vault_form(),
@@ -1750,6 +1754,51 @@ fn scroll_selected_session(app: &App, code: KeyCode) {
         KeyCode::Home | KeyCode::Char('g') => session.scroll_to_edge(true),
         KeyCode::End | KeyCode::Char('G') => session.scroll_to_edge(false),
         _ => {}
+    }
+}
+
+/// Starts an agent in the vault, or goes to the one already there.
+///
+/// **The point of the vault being in the same app.** The way this gets used is
+/// a vault with its own `CLAUDE.md`, skills and rules, so an agent launched
+/// inside it already knows the shape of your knowledge base and where things
+/// live. Doing that from the Sessions view means typing the vault path every
+/// time, which is exactly the alt-tab this app exists to remove.
+///
+/// If an agent is already running there it is selected rather than joined by a
+/// second one: two agents in one directory share a hooks file, so the second
+/// silences the first and the board goes quietly stale.
+fn spawn_in_vault(app: &mut App) {
+    let Some(root) = app.browser.as_ref().map(|browser| browser.vault.root().to_path_buf()) else {
+        return app.notify("no vault to start an agent in");
+    };
+
+    app.select_tab(Tab::Sessions);
+
+    if app.sessions.select_agent_in(&root) {
+        app.sessions.attach();
+        app.dirty = true;
+        return app.notify("already have an agent in the vault");
+    }
+
+    match app.sessions.spawn_agent(&root, Size::new(24, 80)) {
+        Ok(_) => {
+            // Named rather than left as "claude": with several agents running,
+            // "vault" is the one fact about this session worth reading at a
+            // glance. Marked as user-chosen so a stray terminal title cannot
+            // overwrite it.
+            if let Some(session) = app.sessions.selected_mut() {
+                session.rename(Some("vault".to_string()));
+            }
+            app.sessions.attach();
+            app.remember_sessions();
+            app.dirty = true;
+
+            if let Some(warning) = app.sessions.take_hook_warning() {
+                app.notify(warning);
+            }
+        }
+        Err(error) => app.notify(format!("could not start an agent in the vault: {error}")),
     }
 }
 
@@ -2047,6 +2096,62 @@ mod tests {
         on_mouse(&mut app, click(MouseEventKind::Down(MouseButton::Left), 50, 5), Some(pane));
 
         assert!(!app.dragging, "the drag belongs to the child, not to Houston");
+    }
+
+    fn vault_app(name: &str) -> (std::path::PathBuf, App) {
+        let root = std::env::temp_dir().join(format!("houston-vaultagent-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("CLAUDE.md"), "# rules\n").unwrap();
+
+        let mut app = App::new();
+        app.browser = Some(crate::vault::Browser::new(crate::vault::Vault::open(&root).unwrap()));
+        app.tab = Tab::Vault;
+        (root, app)
+    }
+
+    /// The alt-tab this removes: starting an agent that already knows the
+    /// vault used to mean typing the vault path on the Sessions view.
+    #[test]
+    fn an_agent_started_from_the_vault_runs_in_the_vault() {
+        let (root, mut app) = vault_app("starts");
+
+        on_key(&mut app, press(KeyCode::Char('c')));
+
+        assert_eq!(app.tab, Tab::Sessions, "it takes you to where the agent now is");
+        let session = app.sessions.selected().expect("a session was started");
+        // Canonicalised on both sides: `Vault::open` resolves the root, and on
+        // macOS the temp directory is a symlink into `/private`.
+        assert_eq!(
+            session.directory().canonicalize().ok(),
+            root.canonicalize().ok(),
+            "and it runs in the vault"
+        );
+        assert_eq!(session.name, "vault", "named for what it is");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Two agents in one directory share a hooks file, so the second silences
+    /// the first and the board goes quietly stale.
+    #[test]
+    fn pressing_it_twice_goes_to_the_agent_rather_than_starting_another() {
+        let (root, mut app) = vault_app("twice");
+
+        on_key(&mut app, press(KeyCode::Char('c')));
+        let started = app.sessions.len();
+
+        app.tab = Tab::Vault;
+        on_key(&mut app, press(KeyCode::Char('c')));
+
+        assert_eq!(app.sessions.len(), started, "no second agent in the same place");
+        assert_eq!(app.tab, Tab::Sessions, "but it still takes you there");
+        assert!(
+            app.notice.as_deref().is_some_and(|notice| notice.contains("already")),
+            "and says why nothing new appeared"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// The whole point: text you can get out of an agent's output.
