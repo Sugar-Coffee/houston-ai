@@ -1775,10 +1775,10 @@ fn spawn_in_vault(app: &mut App) {
 
     app.select_tab(Tab::Sessions);
 
-    if app.sessions.select_agent_in(&root) {
+    if app.sessions.select_in(&root) {
         app.sessions.attach();
         app.dirty = true;
-        return app.notify("already have an agent in the vault");
+        return app.notify("already have a session in the vault");
     }
 
     match app.sessions.spawn_agent(&root, Size::new(24, 80)) {
@@ -2134,8 +2134,12 @@ mod tests {
 
     /// Two agents in one directory share a hooks file, so the second silences
     /// the first and the board goes quietly stale.
+    ///
+    /// Matched on the directory rather than on being an agent: a runner with
+    /// no coding agent installed falls back to a shell, and a lookup that only
+    /// found agents started a second session there every time.
     #[test]
-    fn pressing_it_twice_goes_to_the_agent_rather_than_starting_another() {
+    fn pressing_it_twice_goes_to_that_session_rather_than_starting_another() {
         let (root, mut app) = vault_app("twice");
 
         on_key(&mut app, press(KeyCode::Char('c')));
@@ -2144,7 +2148,7 @@ mod tests {
         app.tab = Tab::Vault;
         on_key(&mut app, press(KeyCode::Char('c')));
 
-        assert_eq!(app.sessions.len(), started, "no second agent in the same place");
+        assert_eq!(app.sessions.len(), started, "no second session in the same place");
         assert_eq!(app.tab, Tab::Sessions, "but it still takes you there");
         assert!(
             app.notice.as_deref().is_some_and(|notice| notice.contains("already")),

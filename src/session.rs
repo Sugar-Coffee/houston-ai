@@ -614,17 +614,19 @@ impl Sessions {
         })
     }
 
-    /// Selects the live agent already running in a directory.
+    /// Selects a live session already working in a directory.
     ///
-    /// Returns `false` if there is none. Used to send you to an existing
-    /// session rather than starting a second one in the same place — two
-    /// agents in one directory share a hooks file, and the second silences
-    /// the first.
-    pub fn select_agent_in(&mut self, directory: &Path) -> bool {
+    /// **Any session, not only an agent.** Matching on `Kind::Agent` made this
+    /// depend on whether a coding agent is installed: without one `spawn_agent`
+    /// falls back to a shell, so the lookup found nothing and started a second
+    /// session every time. It also asks the wrong question — "do I already
+    /// have something open here" is what the caller wants to know.
+    ///
+    /// Compares the *live* directory, so a shell that has been `cd`'d
+    /// elsewhere no longer counts as being here.
+    pub fn select_in(&mut self, directory: &Path) -> bool {
         let found = self.items.iter().position(|session| {
-            matches!(session.kind, Kind::Agent { .. })
-                && !matches!(session.state, State::Exited(_))
-                && session.spec.cwd == directory
+            !matches!(session.state, State::Exited(_)) && session.directory() == directory
         });
 
         if let Some(index) = found {

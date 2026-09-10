@@ -177,12 +177,18 @@ Claude Code and failed the first time CI ran it. `spawn_agent_as` takes the
 kind as a parameter for exactly this reason, the same way `restore_spec` is
 split from `restore`.
 
-You can see what CI will see without waiting for it:
+You can see what CI will see without waiting for it — but trim the `PATH`,
+do not empty the environment:
 
 ```sh
 cargo test --no-run
-env -i HOME="$HOME" PATH=/usr/bin:/bin TMPDIR=/tmp target/debug/deps/houston-<hash>
+CLEAN=$(echo "$PATH" | tr ':' '\n' | grep -vE 'homebrew|\.local/bin' | paste -sd: -)
+env PATH="$CLEAN" target/debug/deps/houston-<hash>
 ```
+
+`env -i` was the first version of this and it lies. It drops `$SHELL`, so
+`provider::login_shell` picks a different shell, so every test that reads a
+spawned shell's screen fails for a reason CI will never have.
 
 ## Two habits worth keeping
 
