@@ -92,15 +92,10 @@ without pressing Return, so you can finish the sentence.
 ## Which one needs you
 
 Sessions carry a state, and it comes from the agent's own **hooks** rather than
-from squinting at its output. The board is that in one glance:
+from squinting at its output. The board is that in one glance, and it moves on
+its own as the agents do.
 
-```
-  Needs you          Working            Shells             Finished
-  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-  │ ◆ auth-fix   │   │ ● api-rewrite│   │ $ dev-server │   │ × migrations │
-  │   +142 −31   │   │   +18 −4     │   │              │   │              │
-  └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
-```
+<p align="center"><img src="media/board.gif" alt="An agent moving between board columns on its own" width="900"></p>
 
 Only "Needs you" gets the loud colour. If a hook stops arriving Houston admits
 the status is stale rather than leaving an old one up looking current.
@@ -111,32 +106,36 @@ Start a session in its own git worktree, so three agents can work on one repo
 without fighting.
 
 The Worktrees view says what each one is and why, because "not doing anything"
-covers several situations that want different things from you:
+covers several situations that want different things from you. The selected row
+spells out what removing it would cost.
 
-```
-  ▸ auth-fix        ● session running          ↑2
-      ⑂ agent/auth      acme-api      +142 −31    close its session before removing it
-
-    old-migration   ◆ no session, uncommitted
-      ⑂ agent/migr      acme-api      +8 −0
-
-    spike-caching   · no session, clean
-      ⑂ spike           acme-api
-
-    stranded        ⚠ repository gone
-      ⑂ old-branch      —
-```
+<p align="center"><img src="media/worktrees.gif" alt="Worktrees, and what each one is for" width="900"></p>
 
 Press `l` on one and Houston commits it, pushes it, opens a PR and removes the
 tree. Press `v` to read the diff first, which you probably should.
 
 ## Oh, and
 
-- **Nineteen themes.** Dracula, Tokyo Night, Catppuccin, Gruvbox, Rosé Pine,
-  Kanagawa and friends. The picker repaints the whole app as you scroll it.
 - **Nothing is deleted without asking**, and the question tells you what you
   are about to lose.
 - **Runs Claude Code, Codex, Gemini and opencode**, or a plain shell.
+
+## Nineteen themes
+
+Dracula, Tokyo Night, Catppuccin, Gruvbox, Solarized, Rosé Pine, Kanagawa,
+Everforest, Ayu, Night Owl, GitHub and friends. The picker repaints the whole
+app as you move through it, so you pick by looking rather than by reading a
+name and hoping.
+
+<p align="center"><img src="media/themes.gif" alt="The theme picker repainting the app live" width="900"></p>
+
+Every hue means one thing everywhere: purple is *you are here*, orange is *this
+wants you*, green is *live*, cyan is *followable*. A test enforces a contrast
+floor so nothing ships with unreadable text. These are homages rather than
+ports, and [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md) says whose.
+
+Your own go in `~/.houston/themes/` as `.toml`; a documented template is written
+there on first run.
 
 ## Install
 

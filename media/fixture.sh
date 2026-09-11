@@ -220,6 +220,30 @@ pub struct SingleFlight {
 EOF
 printf 'CREATE INDEX sessions_expires_idx ON sessions (expires_at);\n' > migrations/0002_index.sql
 
+# ── Worktrees, one in each state the view can show ────────────────────────
+# `no session, clean`, `no session, uncommitted`, and `repository gone`. The
+# fourth, `session running`, appears when a tape starts an agent in one.
+WORKTREES="$STATE/worktrees"
+mkdir -p "$WORKTREES"
+
+git -C "$REPO" worktree add -q -b spike/caching "$WORKTREES/spike-caching"
+git -C "$REPO" worktree add -q -b agent/migrations "$WORKTREES/old-migrations"
+printf 'half a migration nobody finished\n' > "$WORKTREES/old-migrations/wip.sql"
+
+# One whose repository is deleted underneath it, which git can no longer act
+# on at all. Made from a throwaway repo so the real fixture survives.
+STRANDED="$ROOT/stranded-repo"
+mkdir -p "$STRANDED"
+cd "$STRANDED"
+git init -q -b main
+git config user.email "demo@example.com"
+git config user.name "Demo"
+printf 'gone\n' > README.md
+git add -A && git commit -qm "Initial commit"
+git worktree add -q -b old/branch "$WORKTREES/stranded"
+cd "$ROOT"
+rm -rf "$STRANDED"
+
 # New agent sessions default to the fixture repo. Without this the form
 # defaults to $HOME, the recording shows somebody's actual home directory, and
 # Claude Code greets them by name in a file destined for a public README.

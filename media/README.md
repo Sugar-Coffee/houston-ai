@@ -5,8 +5,12 @@ without anyone having to remember what was in the last one.
 
 ```sh
 brew install vhs          # pulls ttyd and ffmpeg
-sh media/record.sh        # builds, records all three, checks the output
+sh media/record.sh        # all six
+sh media/record.sh board  # or just one
 ```
+
+Six tapes: `sessions`, `board`, `worktrees`, `vault`, `editor`, `themes`. One
+feature each, around twelve seconds each.
 
 Then uncomment the `<img>` tags in `README.md`.
 
@@ -69,7 +73,13 @@ questions. That means:
 - **Re-recording gives different answers.** That is fine, but watch the output
   before committing it: whatever the agent says goes in the README.
 
-`vault.tape` and `editor.tape` use no agents and are deterministic.
+`board.tape` needs one too, and for a particular reason: it asks a slow
+question and then switches away to the board, so the recording catches a
+session moving between columns on its own. That is the whole point of the
+board and a still cannot show it.
+
+`vault`, `editor`, `worktrees` and `themes` use no agents and are
+deterministic.
 
 ## The frame
 
