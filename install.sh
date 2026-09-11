@@ -1,8 +1,11 @@
 #!/bin/sh
 # Installs Houston from the latest GitHub release.
 #
-#   curl -fsSL https://houston.sh/install | sh
-#   curl -fsSL https://raw.githubusercontent.com/Sugar-Coffee/houston-ai/main/install.sh | sh
+#   curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/latest/download/install.sh | sh
+#
+# Served from the release rather than from `main`, so the script that installs
+# a version is the script that shipped with it. A rename of the release assets
+# on `main` would otherwise break installs of every published version at once.
 #
 # Deliberately POSIX sh and nothing else: this is the one piece of Houston that
 # runs before Houston exists, so it cannot assume bash, and it certainly cannot
@@ -129,11 +132,17 @@ say "Installed to $INSTALL_DIR/houston"
 # ── Is it reachable? ──────────────────────────────────────────────────────
 case ":$PATH:" in
     *":$INSTALL_DIR:"*)
-        printf '\n  Run it with:  houston\n\n'
+        printf '\n  Start it with:\n\n'
+        printf '      houston\n\n'
+        printf '  %s --help lists the other commands.\n\n' "houston"
         ;;
     *)
-        printf '\n  %s is not on your PATH. Add it:\n\n' "$INSTALL_DIR"
-        printf '    echo '"'"'export PATH="%s:$PATH"'"'"' >> ~/.zshrc\n\n' "$INSTALL_DIR"
-        printf '  Or run it directly:  %s/houston\n\n' "$INSTALL_DIR/houston"
+        printf '\n  One thing left: %s is not on your PATH.\n\n' "$INSTALL_DIR"
+        printf '      echo '"'"'export PATH="%s:$PATH"'"'"' >> ~/.zshrc\n' "$INSTALL_DIR"
+        printf '      exec $SHELL\n\n'
+        printf '  Then start it with:\n\n'
+        printf '      houston\n\n'
+        printf '  Or run it where it is, right now:\n\n'
+        printf '      %s/houston\n\n' "$INSTALL_DIR"
         ;;
 esac

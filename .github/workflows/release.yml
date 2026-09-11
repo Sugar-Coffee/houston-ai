@@ -97,7 +97,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # `install.sh` ships as an asset so it can be fetched from the
+          # release rather than from `main`. Installing a released version
+          # with a script that has moved on since is a good way to have the
+          # two disagree about asset names.
+          cp install.sh dist/install.sh
+
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            dist/*.tar.gz dist/*.tar.gz.sha256
+            dist/*.tar.gz dist/*.tar.gz.sha256 dist/install.sh

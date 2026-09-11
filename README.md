@@ -10,7 +10,8 @@
 [![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux-lightgrey.svg)](#install)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Sugar-Coffee/houston-ai/main/install.sh | sh
+curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/latest/download/install.sh | sh
+houston
 ```
 
 <sub>**Repo is private for now, so that URL 404s.** [Build from source](#install)
@@ -158,12 +159,47 @@ tree. Press `v` to read the diff first, which you probably should.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Sugar-Coffee/houston-ai/main/install.sh | sh
+curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/latest/download/install.sh | sh
 ```
 
 Works out your platform, grabs the right build, checks the checksum, drops it
-in `~/.local/bin`. macOS (both chips) and Linux x86-64. Later on,
-`houston update` does the same thing over the top.
+in `~/.local/bin`. macOS (both chips) and Linux x86-64.
+
+Then run it:
+
+```sh
+houston
+```
+
+That is the whole interface. If your shell cannot find it, `~/.local/bin` is
+not on your `PATH` and the installer will have said so, with the line to add.
+
+Later on, `houston update` fetches the newest release over the top of whichever
+copy you are running. Houston checks once a day and mentions it in the tab
+strip when there is one.
+
+<details>
+<summary>Somewhere else, or a specific version</summary>
+
+```sh
+# a different directory
+curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/latest/download/install.sh \
+  | HOUSTON_INSTALL_DIR=/usr/local/bin sh
+
+# a specific version
+curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/download/v0.0.1/install.sh \
+  | HOUSTON_VERSION=v0.0.1 sh
+
+# from source
+cargo install --git https://github.com/Sugar-Coffee/houston-ai
+```
+
+The script comes from the release rather than from `main`, so the thing that
+installs a version is the thing that shipped with it.
+[Read it first](install.sh) if you would rather not pipe one into a shell. It
+is a hundred lines of POSIX sh, short on purpose.
+
+</details>
 
 > **While the repo is private** neither of those can reach GitHub, so build it
 > yourself:

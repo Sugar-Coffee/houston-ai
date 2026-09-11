@@ -169,7 +169,10 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    let script = format!("https://raw.githubusercontent.com/{REPO}/main/install.sh");
+    // From the release, not from `main`. Updating to a released version with
+    // a script that has moved on since is how the two end up disagreeing
+    // about what the assets are called.
+    let script = format!("https://github.com/{REPO}/releases/latest/download/install.sh");
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!("curl -fsSL {script} | HOUSTON_INSTALL_DIR={} sh", dir.display()))
