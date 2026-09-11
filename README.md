@@ -125,9 +125,24 @@ the status is stale rather than leaving an old one up looking current.
 ## Agents that do not tread on each other
 
 Start a session in its own git worktree, so three agents can work on one repo
-without fighting. The Worktrees view says which are in use, which have
-uncommitted work sitting in them, and which are orphaned because you deleted
-the repo they came from.
+without fighting.
+
+The Worktrees view says what each one is and why, because "not doing anything"
+covers several situations that want different things from you:
+
+```
+  ▸ auth-fix        ● session running          ↑2
+      ⑂ agent/auth      acme-api      +142 −31    close its session before removing it
+
+    old-migration   ◆ no session, uncommitted
+      ⑂ agent/migr      acme-api      +8 −0
+
+    spike-caching   · no session, clean
+      ⑂ spike           acme-api
+
+    stranded        ⚠ repository gone
+      ⑂ old-branch      —
+```
 
 Press `l` on one and Houston commits it, pushes it, opens a PR and removes the
 tree. Press `v` to read the diff first, which you probably should.

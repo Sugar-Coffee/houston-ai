@@ -426,6 +426,70 @@ mod tests {
         assert!(!rendered.contains("No worktrees yet"), "and does not claim there are none");
     }
 
+    /// Each state names its own reason. "Not doing anything" covers a worktree
+    /// nobody is using *and* one whose repository has been deleted, and those
+    /// want completely different things from you.
+    #[test]
+    fn each_worktree_state_says_why_it_is_in_that_state() {
+        let spare =
+            |name: &str, dirty: bool, repository: std::path::PathBuf| crate::worktree::Worktree {
+                name: name.to_string(),
+                path: std::env::temp_dir().join(name),
+                repository,
+                branch: Some("feature".to_string()),
+                dirty,
+                ahead: 0,
+                behind: 0,
+                changes: None,
+            };
+
+        let mut app = App::new();
+        app.tab = Tab::Worktrees;
+        app.worktrees = Some(vec![
+            spare("gone", false, std::path::PathBuf::from("/definitely/not/here")),
+            spare("dirty", true, std::env::temp_dir()),
+            spare("clean", false, std::env::temp_dir()),
+        ]);
+
+        let rendered = draw(&app, 130, 24);
+
+        assert!(rendered.contains("repository gone"), "git cannot act on it at all");
+        assert!(rendered.contains("no session, uncommitted"), "removing it would lose work");
+        assert!(rendered.contains("no session, clean"), "nothing to lose");
+        assert!(
+            !rendered.contains(" idle "),
+            "'idle' was true of three of these and told you nothing about any of them"
+        );
+    }
+
+    /// The advice answers "what happens if I remove this", which is a question
+    /// about one worktree. Four copies would be a column of noise.
+    #[test]
+    fn only_the_selected_worktree_explains_what_removing_it_costs() {
+        let spare = |name: &str| crate::worktree::Worktree {
+            name: name.to_string(),
+            path: std::env::temp_dir().join(name),
+            repository: std::env::temp_dir(),
+            branch: None,
+            dirty: false,
+            ahead: 0,
+            behind: 0,
+            changes: None,
+        };
+
+        let mut app = App::new();
+        app.tab = Tab::Worktrees;
+        app.worktrees = Some(vec![spare("one"), spare("two"), spare("three")]);
+
+        let rendered = draw(&app, 130, 24);
+
+        assert_eq!(
+            rendered.matches("safe to remove").count(),
+            1,
+            "said once, about the row you are pointing at"
+        );
+    }
+
     /// The four states are the whole point of the view: what is safe to throw
     /// away, and what is somebody's unfinished work.
     #[test]

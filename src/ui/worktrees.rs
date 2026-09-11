@@ -157,14 +157,14 @@ fn entry<'a>(
             ),
             Span::styled(glyphs.cap, Style::default().fg(colour)),
             Span::styled(
-                " ".repeat(18usize.saturating_sub(status.label().chars().count())),
+                " ".repeat(25usize.saturating_sub(status.label().chars().count())),
                 Style::default(),
             ),
         ]
     } else {
         vec![
             Span::styled(format!("{} ", status.marker()), Style::default().fg(colour)),
-            Span::styled(format!("{:<20}", status.label()), Style::default().fg(colour)),
+            Span::styled(format!("{:<27}", status.label()), Style::default().fg(colour)),
         ]
     };
 
@@ -181,6 +181,9 @@ fn entry<'a>(
         .file_name()
         .map_or_else(|| "—".to_string(), |name| name.to_string_lossy().into_owned());
 
+    // The advice goes on the selected row only. Four copies of it would be a
+    // column of noise, and you only need to know what removing this one costs
+    // at the moment you are pointing at it.
     let mut second = vec![
         Span::raw("     "),
         Span::styled(format!("{} ", glyphs.branch), Style::default().fg(theme.link)),
@@ -201,6 +204,16 @@ fn entry<'a>(
         second.push(Span::styled(
             format!("−{}", changes.deletions),
             Style::default().fg(theme.removed),
+        ));
+    }
+
+    // Advice last, and only on the row you are pointing at. It answers "what
+    // happens if I remove this", which is a question about one worktree, and
+    // four copies of the answer would be a column of noise.
+    if chosen {
+        second.push(Span::styled(
+            format!("   {}", status.advice()),
+            Style::default().fg(colour).add_modifier(Modifier::ITALIC),
         ));
     }
 

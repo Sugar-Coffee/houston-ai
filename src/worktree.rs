@@ -56,24 +56,46 @@ pub struct Worktree {
 /// until somebody notices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
-    /// Its repository is gone. Nothing can be done with it but delete it.
+    /// Its repository is gone. Git cannot manage it any more; only `rm` can.
     Orphaned,
     /// A live session is working in it.
     InUse,
-    /// Nobody is in it, and there is work in it that is not committed.
+    /// No session is using it, and there is work in it that is not committed.
     Abandoned,
-    /// Nobody is in it, and nothing would be lost by removing it.
+    /// No session is using it, and nothing would be lost by removing it.
     Idle,
 }
 
 impl Status {
+    /// What this row says about itself.
+    ///
+    /// **Each label names the reason, not the mood.** "idle" was accurate and
+    /// useless: a worktree nobody is using and a worktree whose repository has
+    /// been deleted are both "not doing anything", and they want completely
+    /// different things from you. One is safe to remove, one is holding work
+    /// you have not committed, and one cannot be removed by git at all.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Orphaned => "repository gone",
-            Self::InUse => "in use",
-            Self::Abandoned => "uncommitted work",
-            Self::Idle => "idle",
+            Self::InUse => "session running",
+            Self::Abandoned => "no session, uncommitted",
+            Self::Idle => "no session, clean",
+        }
+    }
+
+    /// What removing it would cost you, in a few words.
+    ///
+    /// The label says what the state is; this says what to do about it. Shown
+    /// beside the selected row rather than on every one, because four copies
+    /// of advice is not advice.
+    #[must_use]
+    pub const fn advice(self) -> &'static str {
+        match self {
+            Self::Orphaned => "git cannot touch it; removing deletes the directory",
+            Self::InUse => "close its session before removing it",
+            Self::Abandoned => "removing it loses the uncommitted work",
+            Self::Idle => "safe to remove",
         }
     }
 
