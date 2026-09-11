@@ -1,12 +1,15 @@
-# Recording the GIFs
+# Recording the README GIFs
+
+The machinery lives here; the output lands in `media/`, which holds nothing
+but the GIFs the README points at.
 
 Generated rather than hand-captured, so they can be redone after a UI change
 without anyone having to remember what was in the last one.
 
 ```sh
 brew install vhs          # pulls ttyd and ffmpeg
-sh media/record.sh        # all six
-sh media/record.sh board  # or just one
+sh tools/media/record.sh        # all six
+sh tools/media/record.sh board  # or just one
 ```
 
 Six tapes: `sessions`, `board`, `worktrees`, `vault`, `editor`, `themes`. One

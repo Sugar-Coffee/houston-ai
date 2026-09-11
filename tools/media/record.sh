@@ -1,8 +1,8 @@
 #!/bin/sh
 # Records the README GIFs. Run from the repository root.
 #
-#   sh media/record.sh            all of them
-#   sh media/record.sh vault      just one
+#   sh tools/media/record.sh            all of them
+#   sh tools/media/record.sh vault      just one
 #
 # vhs captures the frames; ffmpeg does the encoding here rather than letting
 # vhs do it. See "Why the encode is ours" in media/README.md.
@@ -39,7 +39,7 @@ echo "Building the release binary..."
 cargo build --release
 
 for name in ${*:-vault editor sessions}; do
-    tape="media/${name}.tape"
+    tape="tools/media/${name}.tape"
     [ -f "$tape" ] || { echo "no such tape: $tape" >&2; exit 1; }
 
     echo

@@ -12,7 +12,7 @@ Set Framerate 24
 Set TypingSpeed 70ms
 
 Hide
-Type `eval "$(sh media/fixture.sh)"`
+Type `eval "$(sh tools/media/fixture.sh)"`
 Enter
 Type `export HOUSTON_STATE_DIR=$STATE PATH="$PWD/target/release:$PATH" && cd "$REPO" && clear`
 Enter
