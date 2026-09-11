@@ -20,19 +20,21 @@ use std::{collections::VecDeque, path::PathBuf};
 pub enum Tab {
     Sessions,
     Vault,
+    Tasks,
     Board,
     Worktrees,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Self; 5] =
-        [Self::Sessions, Self::Vault, Self::Board, Self::Worktrees, Self::Settings];
+    pub const ALL: [Self; 6] =
+        [Self::Sessions, Self::Vault, Self::Tasks, Self::Board, Self::Worktrees, Self::Settings];
 
     pub const fn title(self) -> &'static str {
         match self {
             Self::Sessions => "Sessions",
             Self::Vault => "Vault",
+            Self::Tasks => "Tasks",
             Self::Board => "Board",
             Self::Worktrees => "Worktrees",
             Self::Settings => "Settings",
@@ -150,6 +152,15 @@ pub struct App {
     /// The worktree manager's contents, loaded when it opens.
     pub worktrees: Option<Vec<Worktree>>,
     pub worktree_selected: usize,
+    /// Tasks, read from the vault when the view opens or the folder changes.
+    pub tasks: Vec<crate::vault::tasks::Task>,
+    pub task_selected: usize,
+    /// Whether finished tasks are in the list.
+    ///
+    /// Off by default: a task list you have used for a month is mostly done
+    /// tasks, and "what should I be doing" is the question the view exists to
+    /// answer.
+    pub tasks_show_done: bool,
     /// The last few input events, newest last.
     ///
     /// Always recorded, shown only when asked for. Whether the terminal is
@@ -164,6 +175,10 @@ pub struct App {
     /// Every theme available, for the Settings row.
     pub themes: Vec<theme::Named>,
 }
+
+/// The "no project" option in the new-task form. A word rather than an empty
+/// row, because an empty row in a cycling picker looks like a rendering bug.
+pub const NO_PROJECT: &str = "none";
 
 /// How many input events the inspector remembers.
 const INPUT_LOG: usize = 14;
@@ -182,6 +197,8 @@ pub enum FormPurpose {
     },
     /// Rename or move whatever is selected in the vault.
     RenameVaultEntry,
+    /// Write a new task into the vault's `Tasks/` folder.
+    NewTask,
 }
 
 /// A question standing between you and something irreversible.
@@ -214,6 +231,8 @@ pub enum Pending {
     OverwriteNote,
     /// Delete the vault path, and everything under it if it is a folder.
     RemoveVaultEntry(std::path::PathBuf),
+    /// Delete the task file.
+    RemoveTask(std::path::PathBuf),
 }
 
 /// The theme picker's state.
@@ -245,6 +264,11 @@ pub mod fields {
     pub const PULL_REQUEST: &str = "Open a pull request";
     pub const REMOVE: &str = "Remove the worktree";
     pub const LAND: &str = "Land";
+    pub const TITLE: &str = "Title";
+    pub const PRIORITY: &str = "Priority";
+    pub const PROJECT: &str = "Project";
+    pub const TAGS: &str = "Tags";
+    pub const ADD: &str = "Add";
 }
 
 impl App {
@@ -412,6 +436,62 @@ impl App {
             }
         }
         self.dirty = true;
+    }
+
+    /// The vault root, for the things that work on files rather than the index.
+    pub fn vault_root(&self) -> Option<&std::path::Path> {
+        self.browser.as_ref().map(|browser| browser.vault.root())
+    }
+
+    /// Rereads `Tasks/`, keeping the cursor on the task it was already on.
+    ///
+    /// By path rather than by index: marking a task done moves it to the
+    /// bottom of the list, and a cursor that stayed at index 3 would land on
+    /// whatever slid up into the gap. That is how you tick off the wrong
+    /// thing twice.
+    pub fn load_tasks(&mut self) {
+        let here = self.selected_task().map(|task| task.path.clone());
+
+        let Some(root) = self.vault_root().map(std::path::Path::to_path_buf) else {
+            self.tasks.clear();
+            self.task_selected = 0;
+            return;
+        };
+
+        self.tasks = crate::vault::tasks::load(&root)
+            .into_iter()
+            .filter(|task| self.tasks_show_done || task.status == crate::vault::tasks::Status::Open)
+            .collect();
+
+        self.task_selected = here
+            .and_then(|path| self.tasks.iter().position(|task| task.path == path))
+            .unwrap_or(self.task_selected)
+            .min(self.tasks.len().saturating_sub(1));
+        self.dirty = true;
+    }
+
+    pub fn selected_task(&self) -> Option<&crate::vault::tasks::Task> {
+        self.tasks.get(self.task_selected)
+    }
+
+    /// Moves the task selection, stopping at both ends.
+    pub const fn move_task_selection(&mut self, forward: bool) {
+        let count = self.tasks.len();
+        if count == 0 {
+            return;
+        }
+        self.task_selected = if forward {
+            (self.task_selected + 1) % count
+        } else {
+            (self.task_selected + count - 1) % count
+        };
+        self.dirty = true;
+    }
+
+    pub fn scroll_tasks(&mut self, scroll: i32) {
+        for _ in 0..scroll.abs() {
+            self.move_task_selection(scroll > 0);
+        }
     }
 
     /// The worktree the cursor is on.
@@ -645,6 +725,53 @@ impl App {
         self.reload_theme_from_list();
     }
 
+    /// Opens the form for a new task.
+    ///
+    /// Priority and project are pickers rather than free text, which is the
+    /// whole argument for having a view over a folder of markdown: typing
+    /// `priority: hihg` into a file is a mistake nobody notices, and choosing
+    /// from three options is not. The project list is the folders under
+    /// `Projects/`, so a task cannot name a project the vault has never heard
+    /// of by accident either.
+    ///
+    /// Tags stay free text. There is no fixed vocabulary of them and inventing
+    /// one on somebody's behalf is how a tag system stops being used.
+    pub fn open_new_task_form(&mut self) {
+        let projects = self.vault_root().map(crate::vault::tasks::projects).unwrap_or_default();
+
+        // The project the cursor is already on, since a run of tasks for one
+        // project is the normal way this gets used.
+        let current = self
+            .selected_task()
+            .and_then(|task| task.project.clone())
+            .filter(|project| projects.contains(project))
+            .unwrap_or_else(|| NO_PROJECT.to_string());
+
+        let mut options = vec![NO_PROJECT.to_string()];
+        options.extend(projects);
+
+        self.form = Some(
+            Form::new(vec![
+                Field::text(fields::TITLE, "what needs doing", ""),
+                Field::choice(
+                    fields::PRIORITY,
+                    "return cycles",
+                    crate::vault::tasks::Priority::all()
+                        .iter()
+                        .map(|priority| priority.key().to_string())
+                        .collect(),
+                    crate::vault::tasks::Priority::Normal.key(),
+                ),
+                Field::choice(fields::PROJECT, "folders under Projects/", options, &current),
+                Field::text(fields::TAGS, "comma separated, optional", ""),
+                Field::action(fields::ADD, "write the task"),
+            ])
+            .titled("new task"),
+        );
+        self.form_purpose = FormPurpose::NewTask;
+        self.dirty = true;
+    }
+
     /// Opens the form for a new note, or for a new folder.
     ///
     /// **Two keys rather than a toggle inside one form.** "Make a new thing,
@@ -793,6 +920,9 @@ impl App {
             diff: None,
             worktrees: None,
             worktree_selected: 0,
+            tasks: Vec::new(),
+            task_selected: 0,
+            tasks_show_done: false,
             input_log: VecDeque::new(),
             show_inspector: false,
             // Never the real file under test. `remember_sessions` is called
@@ -930,6 +1060,9 @@ impl App {
         if tab == Tab::Worktrees {
             self.load_worktrees();
         }
+        if tab == Tab::Tasks {
+            self.load_tasks();
+        }
         if tab == Tab::Settings {
             self.detect_fonts();
         }
@@ -973,7 +1106,7 @@ impl App {
             return binds;
         }
 
-        let mut binds: Vec<(&'static str, &'static str)> = vec![("tab", "view"), ("1-4", "jump")];
+        let mut binds: Vec<(&'static str, &'static str)> = vec![("tab", "view"), ("1-6", "jump")];
         binds.extend(self.view_keybinds());
         binds.push(("q", "quit"));
         binds
@@ -1110,6 +1243,23 @@ impl App {
                     ]);
                 }
                 binds.push(("r", "refresh"));
+            }
+
+            Tab::Tasks => {
+                if self.tasks.is_empty() {
+                    binds.push(("n", "new task"));
+                } else {
+                    binds.extend([
+                        ("j/k", "select"),
+                        ("space", "done"),
+                        ("p", "priority"),
+                        ("c", "agent"),
+                        ("e", "edit"),
+                        ("n", "new"),
+                        ("x", "delete"),
+                    ]);
+                }
+                binds.push(("a", if self.tasks_show_done { "hide done" } else { "show done" }));
             }
 
             Tab::Vault if self.browser.is_some() => {

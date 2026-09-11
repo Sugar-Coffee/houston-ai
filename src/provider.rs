@@ -29,19 +29,66 @@ pub struct Provider {
     /// restore their directory and name and start fresh, which is honest —
     /// guessing an argument makes the agent fail to launch at all.
     pub resume_arg: Option<&'static str>,
+    /// How this agent takes an opening prompt on the command line.
+    pub prompt: Prompt,
+}
+
+/// How to hand an agent something to work on as it starts.
+///
+/// The same rule as `resume_arg`: only what has been checked. A guessed flag
+/// does not degrade into a plain session, it stops the agent launching at all,
+/// and "start an agent on this task" failing is worse than it starting without
+/// the task in hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Prompt {
+    /// `claude "do the thing"`.
+    Positional,
+    /// A flag, then the prompt.
+    Flag(&'static str),
+    /// Not checked. Start it plain and say so.
+    Unsupported,
 }
 
 /// Ordered by preference: the first one found on `PATH` becomes the default.
 pub const KNOWN: [Provider; 4] = [
-    Provider { label: "Claude Code", command: "claude", resume_arg: Some("--resume") },
-    Provider { label: "Codex", command: "codex", resume_arg: Some("resume") },
-    Provider { label: "Gemini", command: "gemini", resume_arg: None },
-    Provider { label: "opencode", command: "opencode", resume_arg: None },
+    Provider {
+        label: "Claude Code",
+        command: "claude",
+        resume_arg: Some("--resume"),
+        prompt: Prompt::Positional,
+    },
+    Provider {
+        label: "Codex",
+        command: "codex",
+        resume_arg: Some("resume"),
+        prompt: Prompt::Positional,
+    },
+    Provider { label: "Gemini", command: "gemini", resume_arg: None, prompt: Prompt::Flag("-i") },
+    Provider {
+        label: "opencode",
+        command: "opencode",
+        resume_arg: None,
+        prompt: Prompt::Unsupported,
+    },
 ];
 
 impl Provider {
     pub fn launch(self, cwd: PathBuf) -> LaunchSpec {
         LaunchSpec::command(self.command, Vec::new(), cwd)
+    }
+
+    /// A launch that opens with something to work on.
+    ///
+    /// Returns `None` when this agent has no checked way of taking one, so the
+    /// caller can start it plain and say what did not happen rather than
+    /// guessing at a flag.
+    pub fn launch_with_prompt(self, cwd: PathBuf, prompt: &str) -> Option<LaunchSpec> {
+        let args = match self.prompt {
+            Prompt::Positional => vec![prompt.to_string()],
+            Prompt::Flag(flag) => vec![flag.to_string(), prompt.to_string()],
+            Prompt::Unsupported => return None,
+        };
+        Some(LaunchSpec::command(self.command, args, cwd))
     }
 }
 

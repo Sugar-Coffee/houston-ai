@@ -9,6 +9,7 @@ pub mod files;
 pub mod markdown;
 pub mod scaffold;
 pub mod search;
+pub mod tasks;
 pub mod tree;
 
 pub use browser::Browser;

@@ -24,6 +24,7 @@ mkdir -p \
     "$VAULT/Knowledge/systems" \
     "$VAULT/Knowledge/howto" \
     "$VAULT/Daily" \
+    "$VAULT/Tasks" \
     "$VAULT/Workshop" \
     "$VAULT/Archive"
 
@@ -54,12 +55,14 @@ single flight.
 Dropped the Dynamo migration. See `Projects/acme-api/decisions/0001`.
 EOF
 
-cat > "$VAULT/Projects/acme-api/index.md" <<'EOF'
+cat > "$VAULT/Projects/acme-api/index.md" <<EOF
 # acme-api
 
-The public API. Rust, axum, Postgres. Deployed from `main` on merge.
+**Where the code lives:** \`$REPO\`
 
-- Auth lives in `src/auth/`, and the token rules are in [[token-refresh]]
+The public API. Rust, axum, Postgres. Deployed from \`main\` on merge.
+
+- Auth lives in \`src/auth/\`, and the token rules are in [[token-refresh]]
 - Rate limiting is per-key, not per-IP. See [[rate-limiting]]
 - Owner: platform team
 
@@ -67,9 +70,9 @@ The public API. Rust, axum, Postgres. Deployed from `main` on merge.
 
 | what | where |
 |---|---|
-| migrations | `migrations/`, sqlx, forward only |
-| integration tests | `tests/`, needs a live Postgres |
-| deploy | `.github/workflows/deploy.yml` |
+| migrations | \`migrations/\`, sqlx, forward only |
+| integration tests | \`tests/\`, needs a live Postgres |
+| deploy | \`.github/workflows/deploy.yml\` |
 EOF
 
 cat > "$VAULT/Projects/acme-api/build-log.md" <<'EOF'
@@ -156,6 +159,77 @@ cat > "$VAULT/Daily/2026-09-11.md" <<'EOF'
 
 - Landed refresh-on-401, numbers in `research/auth-latency.md`
 - Billing spike still parked, nobody has asked for it
+EOF
+
+# ── Tasks, in the shape the Tasks view reads ──────────────────────────────
+cat > "$VAULT/Tasks/0001-rotate-refresh-tokens.md" <<'EOF'
+---
+status: open
+priority: high
+project: acme-api
+tags: [auth, security]
+---
+
+# Rotate refresh tokens on use
+
+A stolen refresh token is currently worth thirty days. Rotating on use makes
+it worth one request.
+
+The single-flight lock from [[0002-refresh-on-401]] is already in place, so
+this is mostly the storage side.
+EOF
+
+cat > "$VAULT/Tasks/0002-rate-limit-headers.md" <<'EOF'
+---
+status: open
+priority: normal
+project: acme-api
+tags: [api]
+---
+
+# Return rate limit headers
+
+Customers are guessing at the limit. Send the three standard headers on every
+response so they do not have to.
+EOF
+
+cat > "$VAULT/Tasks/0003-billing-spike.md" <<'EOF'
+---
+status: open
+priority: low
+project: billing
+---
+
+# Decide whether billing is happening
+
+Picked up twice, dropped twice. Either write it down as a no, or give it a
+week.
+EOF
+
+cat > "$VAULT/Tasks/0004-soak-test-nightly.md" <<'EOF'
+---
+status: open
+priority: normal
+project: acme-api
+tags: [ci]
+---
+
+# Run the soak test nightly
+
+The auth latency numbers were measured by hand once. Nobody will do that
+twice, so it needs to run on its own.
+EOF
+
+cat > "$VAULT/Tasks/0005-drop-redis.md" <<'EOF'
+---
+status: done
+priority: normal
+project: acme-api
+---
+
+# Take the Redis session code back out
+
+Reverted, but the dependency stayed behind.
 EOF
 
 cat > "$VAULT/Projects/billing/index.md" <<'EOF'

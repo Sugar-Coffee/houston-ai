@@ -15,6 +15,46 @@
 //! Every file here is ordinary markdown. Delete any of it and nothing breaks
 //! except the convention it was describing.
 
+/// The note that greets somebody opening the vault for the first time.
+///
+/// Lives with the rest of the scaffold rather than beside the folder-creating
+/// code, so an older vault gaining the structure gains this too.
+const WELCOME: &str = r#"# Start here
+
+This vault is your knowledge base, and it is also where your agents should
+start. Press `c` on the Vault view and Houston opens an agent right here, with
+`AGENTS.md` already in its context.
+
+That matters more than it sounds. An agent started in this folder knows that
+`Projects/acme-api/index.md` says where the acme-api code actually lives, what
+has been decided about it, and what happened last time somebody worked on it.
+"Add a contact form to acme-web" becomes a sentence it can act on.
+
+## What is here
+
+- `AGENTS.md` — how agents should use this vault. Worth reading yourself
+- `Projects/` — one folder per project. Copy `_template.md` for a new one
+- `Tasks/` — one file per thing to do, and the Tasks view reads them
+- `Plans/` — work thought through but not started
+- `Knowledge/` — how you work, across every project
+- `Daily/`, `Inbox/`, `Archive/` — if you want them
+
+## Getting around
+
+- `/` find a note by name, `f` search inside notes
+- `↵` open, `e` edit, `n` new note, `N` new folder
+- `y` copy a note's path, `i` send it into a running agent
+- `c` start an agent in this vault
+
+## The habit that makes it worth having
+
+Tell your agents to write back. A project they have worked on should end up
+with an `index.md` that reflects what they learned, a `build-log.md` entry when
+something surprising happened, and a note in `decisions/` when something
+non-obvious was settled. `CLAUDE.md` already asks them to; the rest is you
+reminding them occasionally.
+"#;
+
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -57,6 +97,7 @@ skipped.
 | what happened | where it goes |
 |---|---|
 | anything at all | a line in today `Daily/` note |
+| work you found but did not do | a new file in `Tasks/` |
 | something the diff cannot explain | the project `build-log.md` |
 | a non-obvious decision | a numbered file in the project `decisions/` |
 | a fact you had to work out | the project `knowledge/` |
@@ -73,7 +114,8 @@ worth a paragraph.
 - `Projects/` — one folder per project. The code is elsewhere; this is what is
   known about it
 - `Tasks/` — one file per thing to do. Frontmatter carries status, priority,
-  project and tags
+  project and tags, and Houston has a view over it. Open one for a follow-up
+  you noticed rather than mentioning it in passing
 - `Plans/` — work thought through but not started. An approved plan usually
   becomes tasks
 - `Daily/` — one note per day. What happened, what is next
@@ -212,7 +254,8 @@ picks this up — including an agent, which can be started straight from here.
 const TASKS_README: &str = r"# Tasks
 
 One file per thing to do. Houston's Tasks view reads this folder, and you can
-equally edit these as notes: it is the same files either way.
+equally edit these as notes: it is the same files either way, and neither side
+owns them.
 
 The frontmatter Houston understands:
 
@@ -227,8 +270,26 @@ tags: [auth, tests]
 
 Everything after it is the description. The first `#` heading is the title.
 
-Nothing here is required. A file with no frontmatter is an open task with no
-project and no tags.
+**Nothing here is required.** A file with no frontmatter is an open task at
+normal priority. A priority Houston does not recognise is normal. A status it
+does not recognise stays open, so a task you marked `blocked` is visible rather
+than quietly gone. You cannot write a markdown file here that breaks the view.
+
+Houston edits one frontmatter line at a time and leaves the rest of the file
+alone, so keys it has never heard of survive. Add your own.
+
+## In Houston
+
+`3` opens the view. `space` marks something done, `p` cycles priority, `e`
+edits the description, `n` writes a new one, and `c` starts an agent on the
+task — in the project's own directory, with the task and the project write-up
+already in hand.
+
+## For agents
+
+Write tasks here. `0007-short-slug.md`, frontmatter as above, and a sentence
+saying what would count as done. A follow-up you noticed while doing something
+else belongs in a file, not at the end of a message nobody rereads.
 ";
 
 const GLOBAL_LOG: &str = r"# Work log
@@ -259,13 +320,33 @@ instead. The test: if it stops being true when the project is archived, it is
 project knowledge.
 ";
 
-/// Writes the starter vault into an empty directory.
+/// Whether this folder has already been given the structure.
 ///
-/// Only ever called on a directory Houston just created, so nothing here
-/// checks for existing files.
+/// `AGENTS.md` is the marker because it is the one file the whole convention
+/// depends on: everything else is described *by* it.
+pub fn is_scaffolded(root: &Path) -> bool {
+    root.join("AGENTS.md").is_file()
+}
+
+/// Writes the starter vault, skipping anything already there.
+///
+/// Called on a vault Houston just created, and on an older one that predates
+/// the structure — Houston 0.1 made a folder with a welcome note in it, and
+/// those vaults would otherwise never gain any of this. Existing files are
+/// never touched, so the backfill cannot overwrite something you wrote.
+///
+/// It only runs while [`is_scaffolded`] is false, which is what stops a file
+/// you deliberately deleted from reappearing on every launch.
 pub fn write(root: &Path) -> Result<()> {
+    if is_scaffolded(root) {
+        return Ok(());
+    }
+
     let file = |path: &str, body: &str| -> Result<()> {
         let full = root.join(path);
+        if full.exists() {
+            return Ok(());
+        }
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("could not create {}", parent.display()))?;
@@ -273,7 +354,7 @@ pub fn write(root: &Path) -> Result<()> {
         std::fs::write(&full, body).with_context(|| format!("could not write {}", full.display()))
     };
 
-    file("AGENTS.md", AGENTS_MD)?;
+    file("Welcome.md", WELCOME)?;
     file("CLAUDE.md", CLAUDE_MD)?;
     file("log.md", GLOBAL_LOG)?;
 
@@ -305,6 +386,11 @@ pub fn write(root: &Path) -> Result<()> {
             .with_context(|| format!("could not create {empty}"))?;
     }
 
+    // Last, because it is the marker `is_scaffolded` reads. Written first, a
+    // failure halfway through would leave a half-built vault that never gets
+    // finished.
+    file("AGENTS.md", AGENTS_MD)?;
+
     Ok(())
 }
 
@@ -317,6 +403,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    /// Houston 0.1 created a vault with one welcome note in it. Those vaults
+    /// exist on real machines and would otherwise never gain the structure.
+    #[test]
+    fn an_older_vault_gains_the_structure_without_losing_what_is_in_it() {
+        let root = scratch("backfill");
+        std::fs::write(root.join("Welcome.md"), "mine").unwrap();
+        std::fs::create_dir_all(root.join("Projects/acme")).unwrap();
+        std::fs::write(root.join("Projects/acme/index.md"), "real project").unwrap();
+
+        assert!(!is_scaffolded(&root), "a bare folder has not been given the structure");
+        write(&root).unwrap();
+
+        assert_eq!(std::fs::read_to_string(root.join("Welcome.md")).unwrap(), "mine");
+        assert_eq!(
+            std::fs::read_to_string(root.join("Projects/acme/index.md")).unwrap(),
+            "real project",
+            "a real project must survive the backfill untouched"
+        );
+        assert!(root.join("Tasks/README.md").is_file(), "and the missing parts arrive");
+        assert!(is_scaffolded(&root), "which is then recorded, so it happens once");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Otherwise deleting the example project would undelete it every launch.
+    #[test]
+    fn a_file_you_deleted_stays_deleted() {
+        let root = scratch("deleted");
+        write(&root).unwrap();
+        std::fs::remove_dir_all(root.join("Projects/example-project")).unwrap();
+
+        write(&root).unwrap();
+
+        assert!(
+            !root.join("Projects/example-project").exists(),
+            "the backfill runs once; after that the vault is yours"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The note that greets a new user has one job: say that agents should
+    /// start in this folder, and why that makes them useful.
+    #[test]
+    fn a_new_vault_greets_whoever_opens_it() {
+        let root = scratch("welcome");
+        write(&root).unwrap();
+
+        let welcome = std::fs::read_to_string(root.join("Welcome.md")).unwrap();
+        assert!(welcome.contains("Start here"));
+        assert!(welcome.contains("`c`"), "it names the key that starts an agent here");
+        assert!(welcome.contains("AGENTS.md"), "and what the agent reads when it does");
+        assert!(welcome.contains("Projects/"), "and how it finds the code from here");
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// The file every agent reads. Without it the vault is just a folder.

@@ -177,8 +177,25 @@ impl Form {
         self.fields.iter().find(|field| field.label == label)
     }
 
+    /// What the field *shows*, which for an empty text field is its hint.
+    ///
+    /// For drawing. Anything acting on what somebody typed wants
+    /// [`Self::entered`] — see the warning there.
     pub fn value(&self, label: &str) -> String {
         self.field(label).map(Field::display).unwrap_or_default()
+    }
+
+    /// What was actually typed. Empty is empty.
+    ///
+    /// **The distinction is not cosmetic.** The landing form read `value` for
+    /// the commit message, so leaving it blank committed with the message
+    /// "what the agent did" — the hint, borrowed from the placeholder and
+    /// written into somebody's history. `worktree::land` refuses an empty
+    /// message and has a test proving it; the refusal simply never fired,
+    /// because the form handed it a non-empty string. A function tested in
+    /// isolation cannot see a caller lying to it.
+    pub fn entered(&self, label: &str) -> String {
+        self.field(label).map_or_else(String::new, |field| field.value.trim().to_string())
     }
 
     pub fn is_on(&self, label: &str) -> bool {
@@ -280,6 +297,27 @@ impl Form {
 
 #[cfg(test)]
 mod tests {
+    /// The trap this pair of methods exists to close.
+    ///
+    /// `value` is for drawing, so an empty field shows its placeholder. Acting
+    /// on that string writes the placeholder into the world: the landing form
+    /// read `value` for the commit message, and a blank message committed as
+    /// "what the agent did". `worktree::land` refuses an empty message and has
+    /// a passing test saying so — it just never received one.
+    #[test]
+    fn an_empty_field_shows_its_hint_but_reports_nothing_entered() {
+        let form = super::Form::new(vec![super::Field::text("Message", "what the agent did", "")]);
+
+        assert_eq!(form.value("Message"), "what the agent did", "the placeholder is for the eye");
+        assert_eq!(form.entered("Message"), "", "and never for the commit");
+    }
+
+    #[test]
+    fn a_field_with_surrounding_space_reports_what_was_meant() {
+        let form = super::Form::new(vec![super::Field::text("Title", "hint", "  Ring the bank  ")]);
+        assert_eq!(form.entered("Title"), "Ring the bank");
+    }
+
     use super::*;
 
     fn form() -> Form {

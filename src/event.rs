@@ -298,6 +298,7 @@ fn on_mouse(app: &mut App, mouse: MouseEvent, area: Option<Rect>) {
             }
         }
         Tab::Worktrees => app.scroll_worktrees(scroll),
+        Tab::Tasks => app.scroll_tasks(scroll),
         Tab::Board | Tab::Settings => {}
     }
 }
@@ -594,6 +595,12 @@ fn close_editor(app: &mut App) {
 
     app.editor = None;
     app.dirty = true;
+
+    // A task you have just finished editing is a task whose title, priority or
+    // project may have changed. Rereading is cheaper than working out which.
+    if app.tab == Tab::Tasks {
+        app.load_tasks();
+    }
 }
 
 /// Forms: the new-session dialog and the Settings menu.
@@ -725,6 +732,7 @@ fn accept_form(app: &mut App) {
         FormPurpose::Land(name) => return accept_land(app, &name),
         FormPurpose::NewVaultEntry { folder } => return accept_new_vault_entry(app, folder),
         FormPurpose::RenameVaultEntry => return accept_rename_vault_entry(app),
+        FormPurpose::NewTask => return accept_new_task(app),
         FormPurpose::NewSession | FormPurpose::None => {}
     }
 
@@ -796,7 +804,7 @@ fn accept_land(app: &mut App, name: &str) {
     let Some(form) = app.form.as_ref() else { return };
 
     let request = crate::worktree::Land {
-        message: form.value(fields::MESSAGE),
+        message: form.entered(fields::MESSAGE),
         push: form.is_on(fields::PUSH),
         pull_request: form.is_on(fields::PULL_REQUEST),
         remove: form.is_on(fields::REMOVE),
@@ -1169,6 +1177,45 @@ fn accept_new_vault_entry(app: &mut App, folder: bool) {
 }
 
 /// Renames or moves whatever the vault has selected.
+/// Writes the new task the form describes.
+fn accept_new_task(app: &mut App) {
+    let Some(form) = app.form.as_ref() else { return };
+    let Some(root) = app.vault_root().map(std::path::Path::to_path_buf) else {
+        return app.notify("no vault to write a task into");
+    };
+
+    let title = form.entered(crate::app::fields::TITLE);
+    if title.is_empty() {
+        return app.notify("a task needs a title");
+    }
+
+    let priority = crate::vault::tasks::Priority::read(&form.value(crate::app::fields::PRIORITY));
+    let project = form.value(crate::app::fields::PROJECT);
+    let project = (project != crate::app::NO_PROJECT).then_some(project);
+
+    let tags: Vec<String> = form
+        .entered(crate::app::fields::TAGS)
+        .split(',')
+        .map(|tag| tag.trim().trim_start_matches('#').to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect();
+
+    match crate::vault::tasks::create(&root, &title, priority, project.as_deref(), &tags) {
+        Ok(path) => {
+            app.close_form();
+            app.select_tab(Tab::Tasks);
+            app.load_tasks();
+
+            // Land the cursor on what was just made, so the next keystroke —
+            // usually `e` or `c` — acts on it.
+            if let Some(index) = app.tasks.iter().position(|task| task.path == path) {
+                app.task_selected = index;
+            }
+        }
+        Err(error) => app.notify(error.to_string()),
+    }
+}
+
 fn accept_rename_vault_entry(app: &mut App) {
     let Some(form) = app.form.as_ref() else { return };
     let name = form.value(fields::NAME);
@@ -1207,6 +1254,7 @@ fn on_key_confirm(app: &mut App, key: KeyEvent) {
         crate::app::Pending::RemoveWorktree(name) => remove_worktree_now(app, &name),
         crate::app::Pending::OverwriteNote => save_editor(app, true),
         crate::app::Pending::RemoveVaultEntry(path) => remove_vault_entry(app, &path),
+        crate::app::Pending::RemoveTask(path) => remove_task(app, &path),
     }
 }
 
@@ -1415,7 +1463,7 @@ fn on_key_browsing(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') if ctrl => app.quit(),
         KeyCode::Tab => app.cycle_tab(true),
         KeyCode::BackTab => app.cycle_tab(false),
-        KeyCode::Char(digit @ '1'..='5') => {
+        KeyCode::Char(digit @ '1'..='6') => {
             let index = digit as usize - '1' as usize;
             app.select_tab(Tab::ALL[index]);
         }
@@ -1423,7 +1471,156 @@ fn on_key_browsing(app: &mut App, key: KeyEvent) {
         _ if app.tab == Tab::Vault => on_key_vault(app, key),
         _ if app.tab == Tab::Board => on_key_board(app, key),
         _ if app.tab == Tab::Worktrees => on_key_worktrees(app, key),
+        _ if app.tab == Tab::Tasks => on_key_tasks(app, key),
         _ => {}
+    }
+}
+
+/// The tasks view.
+fn on_key_tasks(app: &mut App, key: KeyEvent) {
+    app.dirty = true;
+
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => app.move_task_selection(true),
+        KeyCode::Char('k') | KeyCode::Up => app.move_task_selection(false),
+        KeyCode::Char('n') => app.open_new_task_form(),
+        KeyCode::Char('r') => app.load_tasks(),
+        KeyCode::Char('a') => {
+            app.tasks_show_done = !app.tasks_show_done;
+            app.load_tasks();
+        }
+        KeyCode::Char(' ') => toggle_task_done(app),
+        KeyCode::Char('p') => cycle_task_priority(app),
+        KeyCode::Char('c') => start_agent_on_task(app),
+        KeyCode::Char('x') => delete_task(app),
+        KeyCode::Char('e') | KeyCode::Enter => edit_task(app),
+        _ => {}
+    }
+}
+
+/// Applies a one-field change to the selected task and rereads the folder.
+///
+/// Rereading rather than patching the in-memory task: the file is the truth,
+/// and a model that drifts from it is the bug this whole module is arranged to
+/// avoid.
+fn amend_task(app: &mut App, key: &str, value: Option<&str>) {
+    let Some(path) = app.selected_task().map(|task| task.path.clone()) else {
+        return app.notify("no task selected");
+    };
+
+    if let Err(error) = crate::vault::tasks::edit(&path, key, value) {
+        return app.notify(error.to_string());
+    }
+    app.load_tasks();
+}
+
+fn toggle_task_done(app: &mut App) {
+    let Some(task) = app.selected_task() else { return app.notify("no task selected") };
+    let next = task.status.toggled();
+    let title = task.title.clone();
+
+    amend_task(app, "status", Some(next.key()));
+
+    // Ticking something off while done tasks are hidden makes it disappear,
+    // which reads as "deleted" unless you are told otherwise.
+    if next == crate::vault::tasks::Status::Done && !app.tasks_show_done {
+        app.notify(format!("done: {title} — a to see it"));
+    }
+}
+
+fn cycle_task_priority(app: &mut App) {
+    let Some(task) = app.selected_task() else { return app.notify("no task selected") };
+    let next = task.priority.next();
+    amend_task(app, "priority", Some(next.key()));
+}
+
+fn edit_task(app: &mut App) {
+    let Some(path) = app.selected_task().map(|task| task.path.clone()) else {
+        return app.notify("no task selected");
+    };
+
+    match crate::editor::Editor::open(&path) {
+        Ok(editor) => {
+            app.editor = Some(editor);
+            app.dirty = true;
+        }
+        Err(error) => app.notify(format!("could not open for editing: {error}")),
+    }
+}
+
+fn delete_task(app: &mut App) {
+    let Some(task) = app.selected_task() else { return app.notify("no task selected") };
+
+    app.ask(
+        format!("Delete {}?", task.title),
+        format!("{} goes with it.", relative_to_vault(app, &task.path)),
+        crate::app::Pending::RemoveTask(task.path.clone()),
+    );
+}
+
+fn remove_task(app: &mut App, path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            app.load_tasks();
+            app.notify("deleted");
+        }
+        Err(error) => app.notify(format!("could not delete: {error}")),
+    }
+}
+
+fn relative_to_vault(app: &App, path: &Path) -> String {
+    app.vault_root()
+        .and_then(|root| path.strip_prefix(root).ok())
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+/// Starts an agent on the selected task, in the project's own directory.
+///
+/// This is the reason tasks live in Houston rather than in a notes app. The
+/// task names a project, the project's `index.md` says where the code is, and
+/// the agent opens there already holding the task, the project write-up and
+/// the decisions behind it. Without the vault that is three things you would
+/// have to paste in by hand.
+fn start_agent_on_task(app: &mut App) {
+    let Some(task) = app.selected_task().cloned() else {
+        return app.notify("no task selected");
+    };
+    let Some(root) = app.vault_root().map(std::path::Path::to_path_buf) else {
+        return app.notify("no vault, so no task to work from");
+    };
+
+    // The vault is the fallback rather than an error: an agent standing in the
+    // vault can still read the task and find its own way, which is exactly
+    // what AGENTS.md tells it to do.
+    let directory = task
+        .project
+        .as_deref()
+        .and_then(|project| crate::vault::tasks::code_location(&root, project))
+        .unwrap_or_else(|| root.clone());
+
+    let briefing = task.briefing(&root);
+
+    app.select_tab(Tab::Sessions);
+    match app.sessions.spawn_agent_with_prompt(&directory, &briefing, Size::new(24, 80)) {
+        Ok(pasted) => {
+            if let Some(session) = app.sessions.selected_mut() {
+                session.rename(Some(task.title));
+            }
+            app.sessions.attach();
+            app.remember_sessions();
+            app.dirty = true;
+
+            if let Some(warning) = app.sessions.take_hook_warning() {
+                app.notify(warning);
+            } else if !pasted {
+                // Said out loud, because an agent that started without the
+                // briefing looks identical to one that started with it.
+                app.notify("started — this agent takes no opening prompt, so paste the task in");
+            }
+        }
+        Err(error) => app.notify(format!("could not start an agent: {error}")),
     }
 }
 
@@ -1844,6 +2041,23 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// Puts the vault cursor on a note rather than a folder.
+    ///
+    /// These tests run against whatever vault is on the machine, and the
+    /// starter vault's first row is `Archive/` — a folder. Assuming the top of
+    /// the tree is a note made two tests pass everywhere until the day the
+    /// scaffold added folders, then fail for a reason that had nothing to do
+    /// with what they were testing.
+    fn select_a_note(app: &mut App) -> bool {
+        for _ in 0..40 {
+            if app.browser.as_ref().is_some_and(|browser| browser.selected_note().is_some()) {
+                return true;
+            }
+            on_key(app, press(KeyCode::Char('j')));
+        }
+        false
+    }
+
     #[test]
     fn typing_a_query_does_not_trigger_commands() {
         let mut app = App::new();
@@ -1887,6 +2101,9 @@ mod tests {
             return;
         }
         app.select_tab(Tab::Vault);
+        if !select_a_note(&mut app) {
+            return;
+        }
         on_key(&mut app, press(KeyCode::Char('i')));
 
         assert!(app.notice.as_deref().is_some_and(|notice| notice.contains("no session")));
@@ -2236,7 +2453,7 @@ mod tests {
         on_key(&mut app, KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
         assert_eq!(app.tab, Tab::Sessions, "shift-W is not a binding any more");
 
-        on_key(&mut app, press(KeyCode::Char('4')));
+        on_key(&mut app, press(KeyCode::Char('5')));
         assert_eq!(app.tab, Tab::Worktrees, "the digit does it, like every other view");
         assert_eq!(app.focus(), InputFocus::Commands, "a view is not a modal");
 
@@ -2557,6 +2774,9 @@ mod tests {
         assert_eq!(app.sessions.len(), 2);
 
         app.select_tab(Tab::Vault);
+        if !select_a_note(&mut app) {
+            return;
+        }
         on_key(&mut app, press(KeyCode::Char('i')));
 
         assert!(app.picker.is_some(), "with a choice to make, ask");
@@ -2578,17 +2798,182 @@ mod tests {
         app.sessions.detach();
 
         app.select_tab(Tab::Vault);
+        if !select_a_note(&mut app) {
+            return;
+        }
         on_key(&mut app, press(KeyCode::Char('i')));
 
         assert!(app.picker.is_none(), "no choice to make, so no question asked");
         assert_eq!(app.tab, Tab::Sessions, "it jumps straight to the session");
     }
 
+    /// A vault of our own. Every task test writes files, and the suite must
+    /// never write into `~/.houston/vault` — see `Config::ensure_vault`.
+    fn app_with_tasks(name: &str, tasks: &[(&str, &str)]) -> App {
+        let root = std::env::temp_dir().join(format!("houston-taskview-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Tasks")).unwrap();
+        for (file, body) in tasks {
+            std::fs::write(root.join("Tasks").join(file), body).unwrap();
+        }
+
+        let mut app = App::new();
+        let vault = crate::vault::Vault::open(root).unwrap();
+        app.browser = Some(crate::vault::Browser::new(vault));
+        app.select_tab(Tab::Tasks);
+        app
+    }
+
+    fn discard(app: &App) {
+        if let Some(root) = app.vault_root() {
+            std::fs::remove_dir_all(root).ok();
+        }
+    }
+
+    /// The cursor must follow the task, not the row. Marking something done
+    /// moves it to the bottom of the list, and a cursor that stayed at index 1
+    /// would leave you pointing at whatever slid up — which is how you tick
+    /// off the wrong thing twice.
+    #[test]
+    fn marking_a_task_done_does_not_move_the_cursor_onto_a_different_task() {
+        let mut app = app_with_tasks(
+            "cursor",
+            &[
+                ("0001-a.md", "---\npriority: high\n---\n# Alpha\n"),
+                ("0002-b.md", "---\npriority: high\n---\n# Beta\n"),
+                ("0003-c.md", "---\npriority: high\n---\n# Gamma\n"),
+            ],
+        );
+        app.tasks_show_done = true;
+        app.load_tasks();
+
+        on_key(&mut app, press(KeyCode::Char('j')));
+        assert_eq!(app.selected_task().unwrap().title, "Beta");
+
+        on_key(&mut app, press(KeyCode::Char(' ')));
+
+        assert_eq!(app.selected_task().unwrap().title, "Beta", "still the one you ticked");
+        assert_eq!(app.selected_task().unwrap().status, crate::vault::tasks::Status::Done);
+
+        discard(&app);
+    }
+
+    /// Ticking something off while done tasks are hidden makes it vanish,
+    /// which reads as "deleted" unless somebody says otherwise.
+    #[test]
+    fn a_task_that_disappears_when_ticked_off_says_where_it_went() {
+        let mut app = app_with_tasks("vanish", &[("0001-a.md", "# Alpha\n")]);
+
+        on_key(&mut app, press(KeyCode::Char(' ')));
+
+        assert!(app.tasks.is_empty(), "done tasks are hidden by default");
+        assert!(
+            app.notice.as_deref().is_some_and(|notice| notice.contains("Alpha")),
+            "and you are told which one, and how to see it again"
+        );
+
+        discard(&app);
+    }
+
+    #[test]
+    fn priority_cycles_through_all_three_and_back() {
+        use crate::vault::tasks::Priority;
+
+        let mut app = app_with_tasks("priority", &[("0001-a.md", "# Alpha\n")]);
+
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.push(app.selected_task().unwrap().priority);
+            on_key(&mut app, press(KeyCode::Char('p')));
+        }
+
+        assert_eq!(seen, [Priority::Normal, Priority::Low, Priority::High, Priority::Normal]);
+
+        discard(&app);
+    }
+
+    /// Changing a field through the view must be the same surgical edit
+    /// `with_field` makes, all the way through the key handler.
+    #[test]
+    fn editing_through_the_view_leaves_the_rest_of_the_file_alone() {
+        let source = "---\nstatus: open\nsomebody-elses-key: keep me\n---\n\n# Alpha\n\nBody.\n";
+        let mut app = app_with_tasks("surgical", &[("0001-a.md", source)]);
+        let path = app.selected_task().unwrap().path.clone();
+
+        on_key(&mut app, press(KeyCode::Char(' ')));
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, source.replace("status: open", "status: done"));
+
+        discard(&app);
+    }
+
+    #[test]
+    fn deleting_a_task_asks_first_and_names_the_file() {
+        let mut app = app_with_tasks("delete", &[("0001-a.md", "# Alpha\n")]);
+        let path = app.selected_task().unwrap().path.clone();
+
+        on_key(&mut app, press(KeyCode::Char('x')));
+        assert!(path.exists(), "nothing happens until the question is answered");
+        assert!(app.confirm.as_ref().unwrap().detail.contains("Tasks/0001-a.md"));
+
+        on_key(&mut app, press(KeyCode::Char('y')));
+        assert!(!path.exists());
+        assert!(app.tasks.is_empty());
+
+        discard(&app);
+    }
+
+    /// The form is the reason the view exists: a priority you pick cannot be
+    /// spelled wrong, and a project you pick cannot name a folder that is not
+    /// there.
+    #[test]
+    fn the_new_task_form_writes_a_file_the_parser_reads_back() {
+        let mut app = app_with_tasks("form", &[]);
+        std::fs::create_dir_all(app.vault_root().unwrap().join("Projects/acme")).unwrap();
+
+        on_key(&mut app, press(KeyCode::Char('n')));
+        assert_eq!(app.focus(), InputFocus::Form);
+
+        let form = app.form.as_mut().unwrap();
+        form.fields[0].value = "Ring the bank".to_string();
+        form.fields[1].value = "high".to_string();
+        form.fields[2].value = "acme".to_string();
+        form.fields[3].value = "#money, admin".to_string();
+        accept_form(&mut app);
+
+        assert!(app.form.is_none(), "the form closes on success");
+        let task = app.selected_task().expect("the cursor lands on what you just made");
+        assert_eq!(task.title, "Ring the bank");
+        assert_eq!(task.priority, crate::vault::tasks::Priority::High);
+        assert_eq!(task.project.as_deref(), Some("acme"));
+        assert_eq!(task.tags, ["money", "admin"], "a hash somebody typed is not part of the tag");
+
+        discard(&app);
+    }
+
+    #[test]
+    fn a_task_with_no_title_is_refused_rather_than_written_as_untitled() {
+        let mut app = app_with_tasks("blank", &[]);
+
+        on_key(&mut app, press(KeyCode::Char('n')));
+        assert!(app.form.is_some(), "n opens it");
+        accept_form(&mut app);
+
+        assert!(app.form.is_some(), "the form stays open so you can fix it");
+        assert!(app.notice.is_some());
+        assert!(app.tasks.is_empty());
+
+        discard(&app);
+    }
+
     #[test]
     fn digits_jump_between_views() {
         let mut app = App::new();
-        on_key(&mut app, press(KeyCode::Char('3')));
-        assert_eq!(app.tab, Tab::Board);
+        for (digit, expected) in [('3', Tab::Tasks), ('4', Tab::Board), ('6', Tab::Settings)] {
+            on_key(&mut app, press(KeyCode::Char(digit)));
+            assert_eq!(app.tab, expected, "{digit} should reach {}", expected.title());
+        }
     }
 
     #[test]

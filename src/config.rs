@@ -12,40 +12,6 @@ use std::path::{Path, PathBuf};
 /// A brand new vault otherwise renders as "0 notes indexed", which reads as a
 /// bug rather than an empty state. This is an ordinary note — deleting it
 /// breaks nothing.
-const WELCOME: &str = r#"# Start here
-
-This vault is your knowledge base, and it is also where your agents should
-start. Press `c` on the Vault view and Houston opens an agent right here, with
-`CLAUDE.md` already in its context.
-
-That matters more than it sounds. An agent started in this folder knows that
-`Projects/acme-api/index.md` says where the acme-api code actually lives, what
-has been decided about it, and what happened last time somebody worked on it.
-"Add a contact form to acme-web" becomes a sentence it can act on.
-
-## What is here
-
-- `CLAUDE.md` — how agents should use this vault. Worth reading yourself
-- `Projects/` — one folder per project. Copy `_template.md` for a new one
-- `Tasks/` — one file per thing to do
-- `Knowledge/` — reference that outlives any project
-- `Daily/`, `Archive/` — if you want them
-
-## Getting around
-
-- `/` find a note by name, `f` search inside notes
-- `↵` open, `e` edit, `n` new note, `N` new folder
-- `y` copy a note's path, `i` send it into a running agent
-- `c` start an agent in this vault
-
-## The habit that makes it worth having
-
-Tell your agents to write back. A project they have worked on should end up
-with an `index.md` that reflects what they learned, a `build-log.md` entry when
-something surprising happened, and a note in `decisions/` when something
-non-obvious was settled. `CLAUDE.md` already asks them to; the rest is you
-reminding them occasionally.
-"#;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -194,19 +160,42 @@ impl Config {
     /// mistyped path would hide the typo.
     pub fn ensure_vault(&self) -> Result<PathBuf> {
         let root = self.vault_root()?;
-        if root.is_dir() {
-            return Ok(root);
-        }
 
-        if self.vault_is_explicit() {
+        if !root.is_dir() && self.vault_is_explicit() {
             anyhow::bail!("no vault at {} — check the path in Settings", root.display());
         }
 
-        std::fs::create_dir_all(&root)
-            .with_context(|| format!("could not create {}", root.display()))?;
-        std::fs::write(root.join("Welcome.md"), WELCOME)
-            .with_context(|| format!("could not write into {}", root.display()))?;
-        crate::vault::scaffold::write(&root)?;
+        // **A test must never write into the real vault.** Every `App::new()`
+        // in the suite reaches here, and without this guard the backfill below
+        // puts twenty files into whatever sits at `~/.houston/vault` on the
+        // machine running it. That is the `$HOME` trap `CLAUDE.md` records,
+        // one level further down than the last time it was paid for: the write
+        // is not in the test, it is three calls beneath a constructor the test
+        // happens to use. A machine with no vault then gets no browser and the
+        // vault tests skip themselves, which is the honest outcome.
+        if cfg!(test) {
+            return Ok(root);
+        }
+
+        if !root.is_dir() {
+            std::fs::create_dir_all(&root)
+                .with_context(|| format!("could not create {}", root.display()))?;
+        }
+
+        // Only ever Houston's own folder. Somebody who pointed Houston at
+        // their existing Obsidian vault gets an opinion about how to arrange
+        // it, not twenty files they did not ask for. `write` itself is a no-op
+        // once the vault has the structure.
+        //
+        // Compared against the default *path* rather than against
+        // `vault_is_explicit`, because Houston writes its own default into
+        // `config.toml` — so the folder Houston made for you reads as
+        // explicitly chosen, and the backfill it was written for skipped the
+        // one vault it was meant to reach.
+        if crate::hooks::state_dir().is_ok_and(|state| root == state.join("vault")) {
+            crate::vault::scaffold::write(&root)?;
+        }
+
         Ok(root)
     }
 }
@@ -313,27 +302,6 @@ mod tests {
     fn an_empty_config_file_is_valid() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.vault.is_none());
-    }
-
-    #[test]
-    fn creating_the_default_vault_leaves_a_welcome_note() {
-        let root = std::env::temp_dir().join("houston-vault-create-test");
-        let _ = std::fs::remove_dir_all(&root);
-
-        // Exercise the creation path directly; `ensure_vault` guards on the
-        // real home directory, which a test must not touch.
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("Welcome.md"), WELCOME).unwrap();
-
-        let welcome = std::fs::read_to_string(root.join("Welcome.md")).unwrap();
-        assert!(welcome.contains("Start here"));
-        // The note that greets a new user has one job: say that agents should
-        // start in this folder, and why that makes them useful.
-        assert!(welcome.contains("`c`"), "it names the key that starts an agent here");
-        assert!(welcome.contains("CLAUDE.md"), "and what the agent reads when it does");
-        assert!(welcome.contains("Projects/"), "and how it finds the code from here");
-
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

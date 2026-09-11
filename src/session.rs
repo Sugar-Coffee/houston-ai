@@ -705,6 +705,31 @@ impl Sessions {
         self.spawn_agent_as(kind, spec, cwd, size)
     }
 
+    /// Spawns an agent already holding something to work on.
+    ///
+    /// Returns whether the prompt made it: `false` means this agent has no
+    /// checked way of taking one and started plain. The prompt goes on the
+    /// command line rather than being typed into the session afterwards,
+    /// because "afterwards" is a race against the agent's own startup — paste
+    /// too early and it lands in a TUI that has not begun reading yet, and
+    /// there is no signal that says when it has.
+    pub fn spawn_agent_with_prompt(
+        &mut self,
+        cwd: &Path,
+        prompt: &str,
+        size: Size,
+    ) -> Result<bool> {
+        let (kind, plain) = agent_launch(cwd);
+
+        let spec = provider::default()
+            .filter(|_| matches!(kind, Kind::Agent { .. }))
+            .and_then(|provider| provider.launch_with_prompt(cwd.to_path_buf(), prompt));
+
+        let carried = spec.is_some();
+        self.spawn_agent_as(kind, spec.unwrap_or(plain), cwd, size)?;
+        Ok(carried)
+    }
+
     /// Spawns an agent session with the kind already decided.
     ///
     /// Split from [`Self::spawn_agent`] for the same reason `restore_spec` is

@@ -14,6 +14,7 @@ pub mod palettes;
 pub mod powerline;
 pub mod sessions;
 pub mod settings;
+pub mod tasks;
 pub mod terminal;
 pub mod theme;
 pub mod vault;
@@ -71,6 +72,20 @@ pub fn render(frame: &mut Frame, app: &App) {
         Tab::Vault => match &app.editor {
             Some(open) => editor::render(frame, body, open, theme),
             None => vault::render(frame, body, app.browser.as_ref(), theme),
+        },
+        // The editor opens over Tasks as well, because a task *is* a note and
+        // sending you to another tab to write two sentences in one is the kind
+        // of seam that makes a folder of markdown feel like a database.
+        Tab::Tasks => match &app.editor {
+            Some(open) => editor::render(frame, body, open, theme),
+            None => tasks::render(
+                frame,
+                body,
+                &app.tasks,
+                app.task_selected,
+                app.tasks_show_done,
+                theme,
+            ),
         },
         Tab::Board => board::render(frame, body, &app.sessions, theme),
         Tab::Worktrees => worktrees::render(
@@ -347,12 +362,83 @@ mod tests {
     #[test]
     fn a_newer_release_is_mentioned_once_and_quietly() {
         let mut app = App::new();
-        assert!(!draw(&app, 110, 20).contains("available"), "nothing to say by default");
+        assert!(!draw(&app, 130, 20).contains("available"), "nothing to say by default");
 
         app.update_available = Some("v9.9.9".to_string());
-        let rendered = draw(&app, 110, 20);
+        let rendered = draw(&app, 130, 20);
         assert!(rendered.contains("v9.9.9 available"), "it names the version");
         assert_eq!(rendered.matches("available").count(), 1, "once, not on every view");
+    }
+
+    /// Six tabs and a narrow terminal leave nothing for the update badge, and
+    /// half of one is worse than none. This is the shape of bug that only
+    /// shows up when a tab is added, which is exactly when nobody is looking
+    /// at the header.
+    #[test]
+    fn a_badge_that_does_not_fit_is_dropped_rather_than_cut_in_half() {
+        let mut app = App::new();
+        app.update_available = Some("v9.9.9".to_string());
+
+        let narrow = draw(&app, 80, 20);
+        assert!(!narrow.contains("v9.9"), "no fragment of the version survives");
+        assert!(narrow.contains("Sessions"), "and the tabs themselves are untouched");
+    }
+
+    /// The list answers "what is there" and the pane answers "what is this".
+    /// Both have to be on screen at once or the split is pointless.
+    #[test]
+    fn the_tasks_view_shows_the_list_and_the_selected_task_together() {
+        let root = std::env::temp_dir().join("houston-ui-tasks");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Tasks")).unwrap();
+        std::fs::write(
+            root.join("Tasks/0001-a.md"),
+            "---\npriority: high\nproject: acme\ntags: [auth]\n---\n\n# Ring the bank\n\nBefore Friday.\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("Tasks/0002-b.md"), "---\npriority: low\n---\n# Water plants\n")
+            .unwrap();
+
+        let mut app = App::new();
+        app.browser =
+            Some(crate::vault::Browser::new(crate::vault::Vault::open(root.clone()).unwrap()));
+        app.select_tab(Tab::Tasks);
+
+        let frame = draw(&app, 110, 24);
+
+        assert!(frame.contains("Ring the bank"), "the selected task is in the list");
+        assert!(frame.contains("Water plants"), "and so is the other one");
+        assert!(frame.contains("Before Friday"), "with the description beside it");
+        assert!(frame.contains("#auth"), "and its tags");
+        assert!(frame.contains("2 open"), "the header counts what is left");
+        assert!(frame.contains("high") && frame.contains("low"), "grouped by priority");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A done task hidden by the filter is not the same silence as an empty
+    /// folder, and telling them apart is the difference between "press a" and
+    /// "press n".
+    #[test]
+    fn an_empty_task_list_says_which_kind_of_empty_it_is() {
+        let root = std::env::temp_dir().join("houston-ui-tasks-empty");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Tasks")).unwrap();
+        std::fs::write(root.join("Tasks/0001-a.md"), "---\nstatus: done\n---\n# Done thing\n")
+            .unwrap();
+
+        let mut app = App::new();
+        app.browser =
+            Some(crate::vault::Browser::new(crate::vault::Vault::open(root.clone()).unwrap()));
+        app.select_tab(Tab::Tasks);
+
+        assert!(draw(&app, 110, 20).contains("press a"), "there is something behind the filter");
+
+        app.tasks_show_done = true;
+        app.load_tasks();
+        assert!(draw(&app, 110, 20).contains("Done thing"));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// The footer's caps follow the same setting as everything else.

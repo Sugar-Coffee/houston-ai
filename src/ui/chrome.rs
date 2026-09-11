@@ -33,7 +33,8 @@ pub fn tab_strip(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let tabs_row = if padded { area.y + 1 } else { area.y };
 
     frame.render_widget(
-        Paragraph::new(tab_line(app, theme)).style(Style::default().bg(theme.raised)),
+        Paragraph::new(tab_line(app, theme, area.width as usize))
+            .style(Style::default().bg(theme.raised)),
         Rect { y: tabs_row, height: 1, ..area },
     );
 
@@ -88,7 +89,7 @@ fn push_flowing_tabs(
     spans.push(Span::styled(glyphs.cap, Style::default().fg(last).bg(theme.raised)));
 }
 
-fn tab_line<'a>(app: &App, theme: Theme) -> Line<'a> {
+fn tab_line<'a>(app: &App, theme: Theme, width: usize) -> Line<'a> {
     // The wordmark is deliberately quiet. It is the one thing on screen you
     // never need to find, so it does not get a fill — the active tab does.
     let mut spans = vec![Span::styled(
@@ -116,20 +117,33 @@ fn tab_line<'a>(app: &App, theme: Theme) -> Line<'a> {
         }
     }
 
+    // Both of these are afterthoughts on the row, and six tabs on a narrow
+    // terminal leave no space for an afterthought. Dropped rather than
+    // truncated: half a word of a status badge is worse than none.
+    let mut room = width.saturating_sub(spans.iter().map(Span::width).sum::<usize>());
+
+    // Attached first, because it is the one that changes what your keystrokes
+    // do. An update is news you can read tomorrow.
+    if app.is_attached() {
+        // Green: your keystrokes are reaching a live child.
+        let badge = "   ● attached";
+        if badge.chars().count() <= room {
+            room -= badge.chars().count();
+            spans.push(Span::styled(
+                badge,
+                Style::default().fg(theme.running).add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+
     // A newer release, said once and quietly. It is news, not a problem, so it
     // takes `link` — the hue for "there is something here you can follow" —
     // rather than `attention`, which means an agent is waiting on you.
     if let Some(version) = &app.update_available {
-        spans
-            .push(Span::styled(format!("   {version} available"), Style::default().fg(theme.link)));
-    }
-
-    if app.is_attached() {
-        // Green: your keystrokes are reaching a live child.
-        spans.push(Span::styled(
-            "   ● attached",
-            Style::default().fg(theme.running).add_modifier(Modifier::BOLD),
-        ));
+        let badge = format!("   {version} available");
+        if badge.chars().count() <= room {
+            spans.push(Span::styled(badge, Style::default().fg(theme.link)));
+        }
     }
 
     Line::from(spans)

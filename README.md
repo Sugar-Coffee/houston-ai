@@ -89,6 +89,22 @@ place.
 `y` copies a note's path. `i` drops `@that/path` into a running agent's prompt
 without pressing Return, so you can finish the sentence.
 
+## A to-do list your agents can also read
+
+Tasks are markdown files in the vault, one per thing to do, and Houston has a
+view over them. Priorities, project tags, a description you edit in place.
+
+<p align="center"><img src="media/tasks.gif" alt="The tasks view" width="900"></p>
+
+The good bit is `c`. Press it on a task and Houston starts an agent **in that
+project's own directory**, already holding the task, the project write-up and
+the decisions behind it. You picked a line off a list; it turns up briefed.
+
+And because they are only files, an agent that notices a follow-up can open a
+task for it, and you will see it next time you look. Hand-edit them, or don't.
+Houston changes one frontmatter line at a time and leaves the rest of the file
+exactly as you wrote it.
+
 ## Which one needs you
 
 Sessions carry a state, and it comes from the agent's own **hooks** rather than
@@ -192,33 +208,47 @@ is a hundred lines of POSIX sh, short on purpose.
 
 ## Setting up a vault worth having
 
-On first run Houston makes one at `~/.houston/vault/` and touches nothing else.
-Already have an Obsidian vault? Point Settings at it. Nothing is copied, moved
-or converted.
-
-A vault earns its keep when agents both *read* it and *write back to it*. That
-takes a bit of shape. Roughly:
+Houston builds one for you at `~/.houston/vault/` on first run. Not an empty
+folder — a working one, with the structure already in it:
 
 ```
 vault/
-├── CLAUDE.md              how agents should use this vault
+├── AGENTS.md              the operating manual. Every agent reads this
+├── CLAUDE.md              four lines pointing at AGENTS.md
 ├── log.md                 global work log, newest first
 │
 ├── Projects/
 │   └── acme-api/
-│       ├── index.md       what it is, where things live, who cares
+│       ├── index.md       what it is, and where the code lives on disk
 │       ├── build-log.md   what happened here, newest first
 │       ├── decisions/     one file per decision, numbered
+│       ├── knowledge/     facts about this project
 │       └── research/      measurements, dated
 │
-├── Knowledge/             durable reference that outlives any project
+├── Tasks/                 one file per thing to do
+├── Plans/                 thought through, not started yet
+├── Knowledge/             how *you* work, across every project
 ├── Daily/                 one note per day
+├── Inbox/                 anything you cannot place yet
 └── Archive/               finished, kept because search does not care
 ```
 
-The bit that matters is that **each project carries its own log, decisions and
-research**. An agent starting work reads `index.md` and `decisions/`. An agent
-finishing work appends to `build-log.md`.
+Opinionated on purpose. "Point Houston at your Obsidian vault and we'll figure
+it out" gives every user a different layout, and then nothing downstream can
+assume anything — not the agent instructions, not the Tasks view. You can still
+point Settings at an existing vault, and Houston will leave it completely alone.
+
+The manual is the part that does the work. It tells an agent to check today's
+daily note before starting, read the project's `decisions/` before proposing
+anything, and write back afterwards — with a table saying exactly what goes
+where. It is `AGENTS.md` rather than `CLAUDE.md` because that is the [open
+standard](https://agents.md/) now, read by Codex, Cursor, Gemini, Copilot, Amp
+and Zed. Claude Code gets a four-line `CLAUDE.md` that imports it.
+
+The bit that matters is that **each project carries its own log, decisions,
+knowledge and research**, and its `index.md` says where the code actually
+lives. That last line is what makes "add a contact form to acme-web" a complete
+instruction: the agent reads the path out of the vault and goes there.
 
 Two habits make the whole thing worth having:
 
@@ -250,7 +280,7 @@ becomes somewhere your agents work.
 
 ## Keys
 
-`tab` between views, `1`–`5` to jump. The bar at the bottom always shows what
+`tab` between views, `1`–`6` to jump. The bar at the bottom always shows what
 the current context accepts, so there is nothing to memorise.
 
 <details>
@@ -262,6 +292,7 @@ the current context accepts, so there is nothing to memorise.
 | `↵` · `ctrl-\` | attach · detach |
 | `v` · `c` | review the diff · copy text out |
 | `2` then `c` | agent in the vault |
+| `3` then `c` | agent on a task, in that project's directory |
 | `2` then `/` | find a note (picking one shows you where it lives) |
 | `f` in the editor | jump mode |
 | `l` in Worktrees | land it |
