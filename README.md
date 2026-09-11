@@ -2,7 +2,7 @@
 
 # Houston
 
-### Run a pile of coding agents without losing track of them.
+### A terminal workspace for running coding agents, and the notes they work from.
 
 [![CI](https://github.com/Sugar-Coffee/houston-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/Sugar-Coffee/houston-ai/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Sugar-Coffee/houston-ai?color=blue&label=release)](https://github.com/Sugar-Coffee/houston-ai/releases/latest)
@@ -26,21 +26,91 @@ meanwhile. Delete this line when it goes public.</sub>
 
 ---
 
-You have Claude Code open in four terminal tabs. One is stuck on a permission
-prompt, one finished eight minutes ago, one is still churning, and the fourth
-is a shell you opened for something and forgot about.
+Three agents going at once. One rewriting an API, one grinding through a
+migration, one you started an hour ago and half forgot about. Plus the shell
+where the dev server lives.
 
-Which one needs you? No way to tell without clicking through all four, and by
-the time you have, another one has stopped.
+Houston is one window for all of them. One keystroke to move between them.
+Quit, come back tomorrow, and they are all still there, still mid-conversation.
 
-Houston puts them in one window and tells you.
+## Every session, one key away
 
-## Which agent needs you
+A sidebar of everything running, and a pane showing whichever one you are
+looking at. `j` and `k` move, `↵` attaches, `ctrl-\` gets you back out.
 
-Every session has a state, and that state comes from the agent's own **hooks**,
-not from squinting at its output. Working, waiting on you, idle, done.
+No tab bar to hunt through, no wondering which window had the API rewrite in
+it. Each card carries the name you gave it, the directory it is in, its branch,
+and what it has changed so far:
 
-The board is that in one glance:
+```
+  · 1 api-rewrite  ◆                    ┌───────────────────────────────────┐
+      ~/work/acme-api                   │ ● Running                         │
+      ⑂ agent/auth  +142 −31            │                                   │
+                                        │ I have updated the token refresh  │
+  · 2 migrations   ○                    │ logic and added tests. Want me to │
+      ~/work/acme-api                   │ run the suite?                    │
+      ⑂ agent/migrate  +18 −4           │                                   │
+                                        │ > _                               │
+  · 3 dev-server   $                    │                                   │
+      ~/work/acme-web                   └───────────────────────────────────┘
+```
+
+Full scrollback in every one. Drag with the mouse to select and it copies on
+release, double-click for a word, triple-click for a line. Paste a 200 line
+block and it lands instantly, as one write rather than 200 keystrokes.
+
+## Close it. Come back. Still there.
+
+This is the part that surprised me most in daily use.
+
+Quit Houston and reopen it, and the whole set comes back: names, directories,
+worktrees, and the **conversations themselves**. Claude Code resumes with
+`--resume`, Codex from its rollout files. Not a fresh agent in the same folder,
+the actual thread you were in.
+
+Shells come back in the directory you left them in, not the one they started
+in, because Houston reads where the process actually got to. It cannot bring
+back the dev server that was running in there, and does not pretend it can.
+
+## A vault that is a genuinely good editor
+
+Houston has a markdown vault built in. Plain files in a folder, so Obsidian can
+stay open on the same directory and neither of you will notice. Folder tree,
+fuzzy find, full text search, `[[wikilinks]]`, backlinks.
+
+The editor is modal and vim-shaped, and deliberately not a code editor. It
+edits prose, and it is good at it.
+
+The bit worth showing off is **jump mode**: press `f` and every word on screen
+grows a two letter tag. Type one and the cursor is there. The tags sit *on top
+of* the text rather than being inserted into it, so nothing shifts under the
+word you were aiming at while you are deciding. Stolen fair and square from
+[amp](https://github.com/jmacdonald/amp).
+
+Soft wrapping that pages in visual rows. Atomic saves, and it notices if
+Obsidian changed the file under you. Undo bounded at a thousand steps, because
+this is a workspace you leave open for days.
+
+<!--
+  `vhs media/editor.tape`
+
+<p align="center"><img src="media/editor.gif" width="900"></p>
+-->
+
+## Agents that know your notes
+
+Press `c` in the vault and you get an agent **running in the vault directory**.
+It has already read your `CLAUDE.md`, your skills, your rules about where
+things live. No path to type, no context to paste. It turns up knowing the
+place.
+
+`y` copies a note's path. `i` drops `@that/path` into a running agent's prompt
+without pressing Return, so you can finish the sentence.
+
+## Which one needs you
+
+Sessions carry a state, and it comes from the agent's own **hooks** rather than
+from squinting at its output. The board is that in one glance:
 
 ```
   Needs you          Working            Shells             Finished
@@ -50,72 +120,29 @@ The board is that in one glance:
   └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
 ```
 
-Only "Needs you" gets the loud colour, because it is the only column that is
-asking you for something.
-
-When a hook stops arriving, Houston says **status frozen** rather than leaving
-a stale value up pretending to be current. A shell gets no agent status at all,
-because it does not have one.
-
-## Your notes are in here too
-
-Houston has a markdown vault built in. Plain files in a folder, so Obsidian can
-stay open on the same directory and neither of you will notice.
-
-The useful part is `c`. Press it in the vault and you get an agent **running in
-the vault directory**, which means it has already read your `CLAUDE.md`, your
-skills, your rules about where things live. No path to type, no context to
-paste. It shows up knowing the place.
-
-`y` copies a note's path. `i` drops `@that/path` straight into a running
-agent's prompt without pressing Return, so you can finish the sentence.
-
-## Quit it and nothing is lost
-
-Close Houston, reopen it, and your sessions come back. Names, directories,
-worktrees, and the **conversations themselves**: Claude Code resumes with
-`--resume`, Codex from its rollout files.
-
-Shells come back in the directory you left them in, not the one they started
-in, because Houston reads where the process actually got to. It cannot bring
-back the dev server that was running in there, and does not pretend it can.
+Only "Needs you" gets the loud colour. When a hook stops arriving Houston says
+**status frozen** rather than leaving a stale value up pretending to be
+current, and a shell gets no agent status at all, because it does not have one.
 
 ## Agents that do not tread on each other
 
 Start a session in its own git worktree, so three agents can work on one repo
-without fighting. The Worktrees view tells you which ones are in use, which
-have uncommitted work sitting in them, and which are orphaned because you
-deleted the repo they came from.
+without fighting. The Worktrees view says which are in use, which have
+uncommitted work sitting in them, and which are orphaned because you deleted
+the repo they came from.
 
 Press `l` on one and Houston commits it, pushes it, opens a PR and removes the
 tree. Press `v` to read the diff first, which you probably should.
 
-## The editor
-
-Modal, vim-shaped, and deliberately not a code editor. It edits prose.
-
-The good bit is **jump mode**: press `f`, every word on screen grows a
-two-letter tag, type one and you are there. The tags sit *on top of* the text
-rather than being inserted into it, so nothing shifts under the word you were
-aiming at while you decide.
-
-<!--
-  `vhs media/editor.tape`
-
-<p align="center"><img src="media/editor.gif" width="900"></p>
--->
-
 ## Oh, and
 
-- **Select text with the mouse.** Drag inside a pane, double-click a word,
-  triple-click a line. It copies on release. Your terminal cannot do this,
-  because it does not know a pane from a sidebar.
 - **Nineteen themes.** Dracula, Tokyo Night, Catppuccin, Gruvbox, Rosé Pine,
   Kanagawa and friends. The picker repaints the whole app as you scroll it.
 - **Nothing is deleted without asking**, and the question tells you what you
   are about to lose.
-- **Paste is instant**, even a 200 line paste, because it is one write rather
-  than 200 keystrokes.
+- **Mouse selection works inside a pane**, which your terminal cannot manage on
+  its own, because it does not know a pane from a sidebar.
+- **Runs Claude Code, Codex, Gemini and opencode**, or a plain shell.
 
 ## Install
 
@@ -224,7 +251,6 @@ Pre-release, and used every day by the person who wrote it. Rust,
 emulation. `unsafe_code = "forbid"`, clippy pedantic clean, ~430 tests, CI on
 macOS and Linux.
 
-Jump mode is [amp](https://github.com/jmacdonald/amp)'s idea.
 [Chloe](https://github.com/KevinEdry/chloe) worked out that agent status should
 come from hooks, and Houston does it the same way.
 
