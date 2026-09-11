@@ -1,61 +1,92 @@
-# Several agents at once, and the board.
+# Two real Claude Code agents, a shell, the diff, and the board.
 #
-# Run from the repository root, after `cargo build --release`.
+#   sh media/fixture.sh    builds the workspace this records
+#   vhs media/sessions.tape
+#
+# The agents are real, so the timings below are guesses with slack in them.
+# If a GIF catches one mid-thought, lengthen the Sleep rather than trimming it:
+# a recording that cuts an agent off is worse than one that waits.
 
 Output media/sessions.gif
 
 Set Shell "bash"
 Set FontSize 15
-Set Width 1500
-Set Height 820
-Set Padding 18
+Set Width 1600
+Set Height 900
+Set Padding 20
+Set Margin 50
+Set MarginFill "#181825"
+Set BorderRadius 12
+Set WindowBar "Colorful"
+Set WindowBarSize 42
 Set Theme "Catppuccin Mocha"
+Set Framerate 24
 Set TypingSpeed 45ms
 
-# A throwaway state directory, so this never touches a real ~/.houston.
 Hide
-Type `export HOUSTON_STATE_DIR=$(mktemp -d) && cd "$(mktemp -d)" && git init -q`
+Type `eval "$(sh media/fixture.sh)"`
 Enter
-Type `printf 'one\ntwo\nthree\n' > notes.txt && git add -A && git commit -qm first`
+Type `printf 'theme = "Catppuccin Mocha"\nvault = "%s"\n' "$VAULT" > "$STATE/config.toml"`
 Enter
-Type "clear"
+Type `export HOUSTON_STATE_DIR=$STATE && cd "$REPO" && clear`
 Enter
 Show
 
-Type "./target/release/houston"
+Type "houston"
+Enter
+Sleep 3s
+
+# First agent. `n` asks where and whether to isolate it.
+Type "n"
+Sleep 1500ms
+Enter
+Type "auth-refresh"
+Enter
+Sleep 800ms
+Down
+Down
+Down
+Enter
+Sleep 6s
+
+Type "What is the p99 auth latency after the refresh change? One sentence."
+Enter
+Sleep 20s
+Ctrl+\
+Sleep 1500ms
+
+# Second agent, in the vault, so it has the CLAUDE.md to hand.
+Type "2"
+Sleep 1500ms
+Type "c"
+Sleep 8s
+Type "Give me one line from Macbeth, nothing else."
+Enter
+Sleep 18s
+Ctrl+\
+Sleep 1500ms
+
+# A shell, for the third card.
+Type "1"
+Sleep 800ms
+Type "s"
+Sleep 2s
+Type "cargo test --quiet"
 Enter
 Sleep 2s
-
-# A shell, then a second one, so the sidebar has something to show.
-Type "s"
-Sleep 1500ms
-Type "echo 'agents run here'"
-Enter
-Sleep 1s
 Ctrl+\
+Sleep 2s
+
+# What an agent changed.
+Type "k"
 Sleep 800ms
-
-Type "s"
-Sleep 1500ms
-Type "printf 'four\nfive\n' >> notes.txt"
-Enter
-Sleep 1s
-Ctrl+\
-Sleep 1s
-
-# The diff each session has produced.
 Type "v"
-Sleep 2500ms
+Sleep 4s
 Escape
-Sleep 800ms
+Sleep 1s
 
 # The board.
 Type "3"
-Sleep 2500ms
-
-# Worktrees.
-Type "4"
-Sleep 2s
-
+Sleep 4s
 Type "1"
-Sleep 1500ms
+Sleep 2s

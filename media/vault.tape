@@ -1,60 +1,78 @@
-# The vault as a folder tree, and starting an agent inside it.
+# The vault: a folder tree, a note, find, and an agent that knows the place.
+#
+#   sh media/fixture.sh && vhs media/vault.tape
 
 Output media/vault.gif
 
 Set Shell "bash"
 Set FontSize 15
-Set Width 1500
-Set Height 820
-Set Padding 18
+Set Width 1600
+Set Height 900
+Set Padding 20
+Set Margin 50
+Set MarginFill "#181825"
+Set BorderRadius 12
+Set WindowBar "Colorful"
+Set WindowBarSize 42
 Set Theme "Catppuccin Mocha"
-Set TypingSpeed 55ms
+Set Framerate 24
+Set TypingSpeed 45ms
 
 Hide
-Type `export HOUSTON_STATE_DIR=$(mktemp -d) VAULT=$(mktemp -d)`
+Type `eval "$(sh media/fixture.sh)"`
 Enter
-Type `mkdir -p "$VAULT/Projects/acme-api/decisions" "$VAULT/Knowledge" "$VAULT/Daily"`
+Type `printf 'theme = "Catppuccin Mocha"\nvault = "%s"\n' "$VAULT" > "$STATE/config.toml"`
 Enter
-Type `printf '# How agents use this vault\n' > "$VAULT/CLAUDE.md"`
-Enter
-Type `printf '# acme-api\n' > "$VAULT/Projects/acme-api/index.md"`
-Enter
-Type `printf '# Postgres over Dynamo\n' > "$VAULT/Projects/acme-api/decisions/0001-postgres.md"`
-Enter
-Type `printf 'vault = "%s"\n' "$VAULT" > "$HOUSTON_STATE_DIR/config.toml"`
-Enter
-Type "clear"
+Type `export HOUSTON_STATE_DIR=$STATE && cd "$REPO" && clear`
 Enter
 Show
 
-Type "./target/release/houston"
-Enter
-Sleep 1500ms
-
-Type "2"
-Sleep 1200ms
-
-# Walk into the tree.
-Enter
-Sleep 1s
-Down
-Enter
-Sleep 1s
-Down
-Enter
-Sleep 1500ms
-
-# A new note, in the folder you were looking at.
-Type "n"
-Sleep 800ms
-Enter
-Sleep 500ms
-Type "0002-caching"
-Sleep 800ms
-Enter
-Sleep 500ms
-Down
+Type "houston"
 Enter
 Sleep 2s
-Escape
+Type "2"
+Sleep 2s
+
+# Walk into a project.
+Down
+Down
+Down
+Down
+Enter
 Sleep 1500ms
+Down
+Enter
+Sleep 1500ms
+Down
+Enter
+Sleep 2500ms
+
+# Read a decision.
+Down
+Enter
+Sleep 4s
+
+# Find by name. Picking a result drops the filter and shows where it lives.
+Type "/"
+Sleep 800ms
+Type "latency"
+Sleep 2s
+Enter
+Sleep 800ms
+Enter
+Sleep 4s
+
+# A new note lands beside what you were looking at.
+Type "n"
+Sleep 1s
+Enter
+Sleep 600ms
+Type "0003-single-flight"
+Sleep 1s
+Enter
+Sleep 600ms
+Down
+Enter
+Sleep 3s
+Escape
+Sleep 2s

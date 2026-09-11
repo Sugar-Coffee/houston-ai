@@ -109,7 +109,15 @@ Three things that have already caught people out:
 - **Escape-stripped pty output proves presence, never absence.** ratatui only
   re-emits changed cells, so a string can be split across escapes and fail a
   naive `grep` while being perfectly visible.
-- **A cumulative capture holds every frame ever drawn.** Finding a line in it
+- **Reconstruct the frame rather than stripping escapes.** ratatui re-emits only
+the cells that changed, so text arrives split around cursor moves: "all notes"
+comes out as `all n`, a jump to column 8, then `tes`. Grepping a
+stripped capture reports that missing and it is on screen. Apply the cursor
+positioning instead — a sixty-line Python script that handles `CSI H`, `\r`,
+`\n` and skips OSC is enough, and it turns every one of these checks from a
+guess into a look.
+
+**A cumulative capture holds every frame ever drawn.** Finding a line in it
   says nothing about what is on screen now. Use a differential: capture with
   and without the action, and compare.
 - **`FOO=bar keygen | script -c houston` sets the variable on the wrong side of
