@@ -55,9 +55,8 @@ and what it has changed so far:
       ~/work/acme-web                   └───────────────────────────────────┘
 ```
 
-Full scrollback in every one. Drag with the mouse to select and it copies on
-release, double-click for a word, triple-click for a line. Paste a 200 line
-block and it lands instantly, as one write rather than 200 keystrokes.
+Scrolling, selecting text and copying all work the way you would expect, with
+the mouse or the keyboard.
 
 ## Close it. Come back. Still there.
 
@@ -69,8 +68,8 @@ worktrees, and the **conversations themselves**. Claude Code resumes with
 the actual thread you were in.
 
 Shells come back in the directory you left them in, not the one they started
-in, because Houston reads where the process actually got to. It cannot bring
-back the dev server that was running in there, and does not pretend it can.
+in. It cannot bring back the dev server that was running in there, and does not
+pretend it can.
 
 ## A vault that is a genuinely good editor
 
@@ -81,15 +80,15 @@ fuzzy find, full text search, `[[wikilinks]]`, backlinks.
 The editor is modal and vim-shaped, and deliberately not a code editor. It
 edits prose, and it is good at it.
 
-The bit worth showing off is **jump mode**: press `f` and every word on screen
-grows a two letter tag. Type one and the cursor is there. The tags sit *on top
-of* the text rather than being inserted into it, so nothing shifts under the
-word you were aiming at while you are deciding. Stolen fair and square from
+The bit worth showing off is **jump mode**. Press `f` and every word on screen
+grows a two letter tag. Type one and your cursor is there. The tags sit on top
+of the text rather than pushing it around, so nothing moves under the word you
+were aiming at while you are deciding. Stolen fair and square from
 [amp](https://github.com/jmacdonald/amp).
 
-Soft wrapping that pages in visual rows. Atomic saves, and it notices if
-Obsidian changed the file under you. Undo bounded at a thousand steps, because
-this is a workspace you leave open for days.
+Long lines wrap properly. It notices if Obsidian changed a file under you
+instead of quietly flattening your work. Undo goes back further than you will
+need.
 
 <!--
   `vhs media/editor.tape`
@@ -120,9 +119,8 @@ from squinting at its output. The board is that in one glance:
   └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
 ```
 
-Only "Needs you" gets the loud colour. When a hook stops arriving Houston says
-**status frozen** rather than leaving a stale value up pretending to be
-current, and a shell gets no agent status at all, because it does not have one.
+Only "Needs you" gets the loud colour. If a hook stops arriving Houston admits
+the status is stale rather than leaving an old one up looking current.
 
 ## Agents that do not tread on each other
 
@@ -140,8 +138,6 @@ tree. Press `v` to read the diff first, which you probably should.
   Kanagawa and friends. The picker repaints the whole app as you scroll it.
 - **Nothing is deleted without asking**, and the question tells you what you
   are about to lose.
-- **Mouse selection works inside a pane**, which your terminal cannot manage on
-  its own, because it does not know a pane from a sidebar.
 - **Runs Claude Code, Codex, Gemini and opencode**, or a plain shell.
 
 ## Install
