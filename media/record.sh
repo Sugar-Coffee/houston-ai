@@ -25,14 +25,13 @@ TARGET_WIDTH=1040
 # for something a README loads on sight.
 COLOURS=128
 
-# Playback speed per tape. The sessions recording is mostly time spent waiting
-# for an agent to answer, which is honest and extremely boring: five minutes of
-# real time is not a README image. The others run at life speed because they
-# are already short.
+# Playback speed per tape. Everything runs at life speed now: the tapes do
+# their setup inside `Hide`, which vhs executes without capturing, so what
+# gets recorded is only the part worth watching. Speeding a recording up is
+# what you reach for when it is too long, and it makes typing unreadable.
 speed_for() {
     case "$1" in
-        sessions) echo 2.6 ;;
-        *)        echo 1 ;;
+        *) echo 1 ;;
     esac
 }
 

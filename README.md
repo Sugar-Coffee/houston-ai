@@ -19,8 +19,6 @@ meanwhile. Delete this line when it goes public.</sub>
 
 </div>
 
-<p align="center"><img src="media/sessions.gif" alt="Two agents and a shell running in Houston" width="900"></p>
-
 ---
 
 Three agents going at once. One rewriting an API, one grinding through a
@@ -37,20 +35,10 @@ looking at. `j` and `k` move, `↵` attaches, `ctrl-\` gets you back out.
 
 No tab bar to hunt through, no wondering which window had the API rewrite in
 it. Each card carries the name you gave it, the directory it is in, its branch,
-and what it has changed so far:
+and what it has changed so far.
 
-```
-  · 1 api-rewrite  ◆                    ┌───────────────────────────────────┐
-      ~/work/acme-api                   │ ● Running                         │
-      ⑂ agent/auth  +142 −31            │                                   │
-                                        │ I have updated the token refresh  │
-  · 2 migrations   ○                    │ logic and added tests. Want me to │
-      ~/work/acme-api                   │ run the suite?                    │
-      ⑂ agent/migrate  +18 −4           │                                   │
-                                        │ > _                               │
-  · 3 dev-server   $                    │                                   │
-      ~/work/acme-web                   └───────────────────────────────────┘
-```
+<p align="center"><img src="media/sessions.gif" alt="Three sessions, one key between them" width="900"></p>
+
 
 Scrolling, selecting text and copying all work the way you would expect, with
 the mouse or the keyboard.

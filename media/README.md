@@ -45,6 +45,17 @@ palette. The text layer is glyphs on transparency, which is the one thing to
 know if you touch that filter chain: composite it straight onto the backdrop
 and the backdrop colour shows between every letter.
 
+## Everything before `Show` is free
+
+Each tape does its setup inside `Hide`: starting Houston, starting agents,
+asking them questions, waiting for answers. vhs runs hidden commands without
+capturing frames, so none of that lands in the file. `sessions.tape` spends
+about three minutes arranging a workspace and records fourteen seconds of it.
+
+That is the whole trick to a short GIF. Speeding a long one up is the other
+option and it is worse: the typing becomes unreadable and it still shows a
+minute of somebody waiting.
+
 ## The agents are real
 
 `sessions.tape` starts actual Claude Code sessions and asks them short
