@@ -341,7 +341,44 @@ impl Browser {
             return Ok(());
         }
         let Some(Entry::Note { id, .. }) = self.entries.get(self.selected) else { return Ok(()) };
-        self.open_note(*id, theme)
+        let id = *id;
+
+        // A query has done its job once you have picked from it. Leaving the
+        // list filtered means the sidebar keeps answering a question you have
+        // already finished asking, and — worse — hides where the note you just
+        // opened actually lives.
+        //
+        // Links and backlinks are left alone: those are a list you traverse,
+        // and folding it away after one selection would make following a
+        // chain of links impossible.
+        if matches!(self.source, Source::Filtered(_) | Source::Grep(_)) {
+            self.show_in_tree(id);
+        }
+
+        self.open_note(id, theme)
+    }
+
+    /// Returns to the tree with a note revealed and selected.
+    ///
+    /// The point is orientation: you asked for a name, and the answer is worth
+    /// more when you can see which folder it came out of.
+    fn show_in_tree(&mut self, id: NoteId) {
+        let Some(relative) = self.vault.get(id).map(|note| note.relative.clone()) else { return };
+
+        self.query.clear();
+        self.hits.clear();
+        self.source = Source::All;
+        self.results = (0..self.vault.len().min(RESULT_LIMIT)).map(NoteId).collect();
+        self.tree.reveal(parent_of(&relative));
+        self.rebuild();
+
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| matches!(entry, Entry::Note { id: other, .. } if *other == id))
+        {
+            self.selected = index;
+        }
     }
 
     pub fn open_note(&mut self, id: NoteId, theme: Theme) -> Result<()> {
@@ -509,6 +546,88 @@ mod tests {
 
     fn browser(root: &std::path::Path) -> Browser {
         Browser::new(Vault::open(root).unwrap())
+    }
+
+    /// Picking a result answers the question, so the filter comes off and the
+    /// tree shows you where the answer lives.
+    #[test]
+    fn choosing_a_find_result_returns_to_the_tree_with_it_revealed() {
+        let root = scratch(
+            "findreveal",
+            &[("Projects/deep/kickoff.md", "# kickoff"), ("other.md", "# other")],
+        );
+        let mut browser = browser(&root);
+
+        browser.begin_find();
+        for character in "kickoff".chars() {
+            browser.push_query(character);
+        }
+        browser.end_query();
+
+        assert_eq!(browser.entries().len(), 1, "the filter narrowed to one");
+
+        browser.open_selected(Theme::default()).unwrap();
+
+        // Back to every top-level row, plus the folders opened on the way.
+        let names: Vec<String> = browser
+            .entries()
+            .iter()
+            .map(|entry| match entry {
+                Entry::Folder { name, .. } | Entry::Note { name, .. } => name.clone(),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Projects", "deep", "kickoff", "other"],
+            "the whole vault is back, with the path to the note opened"
+        );
+
+        assert_eq!(
+            browser.selected_relative().as_deref(),
+            Some("Projects/deep/kickoff.md"),
+            "and the selection is on what you picked, so you can see where it is"
+        );
+        assert!(browser.query().is_empty(), "the query is spent");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Links are a list you traverse. Folding it away after one selection
+    /// would make following a chain of them impossible.
+    #[test]
+    fn following_a_link_leaves_the_links_list_alone() {
+        let root = scratch(
+            "linkstay",
+            &[
+                ("hub.md", "# hub\n\n[[one]] and [[two]]\n"),
+                ("one.md", "# one"),
+                ("two.md", "# two"),
+            ],
+        );
+        let mut browser = browser(&root);
+
+        // Open the hub so its links are recorded, then list them.
+        let hub = browser
+            .entries()
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Note { id, name, .. } if name == "hub" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        browser.open_note(hub, Theme::default()).unwrap();
+        assert!(browser.show_links(), "the hub has links");
+
+        let before = browser.entries().len();
+        browser.open_selected(Theme::default()).unwrap();
+
+        assert_eq!(
+            browser.entries().len(),
+            before,
+            "still the links list, so the next one is one keypress away"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A note made three folders deep must end up visible, or "new note"
