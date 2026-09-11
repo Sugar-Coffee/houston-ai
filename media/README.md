@@ -5,15 +5,17 @@ without anyone having to remember what was in the last one.
 
 ```sh
 brew install vhs          # pulls ttyd and ffmpeg
-cargo build --release
-export PATH="$PWD/target/release:$PATH"
-
-vhs media/sessions.tape
-vhs media/vault.tape
-vhs media/editor.tape
+sh media/record.sh        # builds, records all three, checks the output
 ```
 
 Then uncomment the `<img>` tags in `README.md`.
+
+## It has to be a terminal you are sitting in front of
+
+vhs drives a headless Chrome, and Chrome needs a macOS window server session to
+render. Run this over SSH, from a daemon, or from anything else without one and
+**vhs reports success, captures zero frames, and writes nothing**. `record.sh`
+checks the file is non-empty and says so, because vhs itself will not.
 
 ## What gets recorded
 
