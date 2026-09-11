@@ -3,9 +3,9 @@
 Output media/tasks.gif
 
 Set Shell "bash"
-Set FontSize 15
+Set FontSize 16
 Set Width 1600
-Set Height 900
+Set Height 680
 Set Padding 20
 Set Theme "Catppuccin Mocha"
 Set Framerate 24

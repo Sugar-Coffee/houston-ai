@@ -4,38 +4,45 @@
 //! Same split as the Vault view, for the same reason — the list answers "what
 //! is there" and the pane answers "what is this", and needing a keystroke
 //! between those two questions makes a list of twenty things unreadable.
+//!
+//! **A task is a card rather than a row.** The first version put the title,
+//! the project and the priority marker on one line, which meant the title got
+//! whatever was left: about twenty characters, so "Rotate refresh tokens on
+//! use" arrived as "Rotate refresh token…". A task's title is the only part of
+//! it you read while scanning, and it was the part being cut. Two lines and a
+//! gap costs a third of the visible list and buys the whole title plus room to
+//! say the status and the tags in words instead of in glyphs.
 
 use crate::{
-    ui::{Theme, keycap},
+    ui::{Theme, keycap, powerline::Glyphs},
     vault::tasks::{Priority, Status, Task},
 };
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
 };
 
 /// How much of the width the list takes, and the range it is held to.
 ///
-/// Proportional rather than fixed: a fixed 40 columns is a third of a laptop
+/// Proportional rather than fixed: a fixed column is a third of a laptop
 /// terminal and a fifth of a wide one, so titles were being cut short beside a
 /// mostly empty description pane.
-const LIST_SHARE: u16 = 38;
-const LIST_MIN: u16 = 32;
-const LIST_MAX: u16 = 58;
+const LIST_SHARE: u16 = 42;
+const LIST_MIN: u16 = 34;
+const LIST_MAX: u16 = 66;
 
-/// Everything on a row that is not the title: the marker, the gap, the project
-/// column and both borders.
-const ROW_FURNITURE: usize = 16;
+/// Rows a card occupies: the title, its details, and air.
+///
+/// The gap is outside the selection fill on purpose. Filling three rows makes
+/// a block; filling two and leaving one makes a card with space around it,
+/// which is what lets a list of them be read down rather than parsed.
+const CARD_HEIGHT: usize = 3;
 
-/// A row in the left column. Headings are not selectable, which is the only
-/// reason the list is not just the task vector.
-enum Row<'a> {
-    Heading(&'a str),
-    Task(usize),
-}
+/// Where the details line starts, under the title rather than under the caret.
+const INDENT: &str = "   ";
 
 pub fn render(
     frame: &mut Frame,
@@ -43,6 +50,7 @@ pub fn render(
     tasks: &[Task],
     selected: usize,
     showing_done: bool,
+    glyphs: Glyphs,
     theme: Theme,
 ) {
     let list_width = (area.width * LIST_SHARE / 100).clamp(LIST_MIN, LIST_MAX).min(area.width);
@@ -53,29 +61,7 @@ pub fn render(
         .split(area);
 
     render_list(frame, columns[0], tasks, selected, showing_done, theme);
-    render_detail(frame, columns[1], tasks.get(selected), theme);
-}
-
-/// Groups the list under its own sort order, so the shape of the sort is
-/// visible rather than something you have to infer from the markers.
-fn rows<'a>(tasks: &[Task]) -> Vec<Row<'a>> {
-    let mut rows = Vec::with_capacity(tasks.len() + 4);
-    let mut group: Option<(Status, Priority)> = None;
-
-    for (index, task) in tasks.iter().enumerate() {
-        let here = (task.status, task.priority);
-        if group != Some(here) {
-            rows.push(Row::Heading(match here {
-                (Status::Done, _) => "done",
-                (_, Priority::High) => "high",
-                (_, Priority::Normal) => "normal",
-                (_, Priority::Low) => "low",
-            }));
-            group = Some(here);
-        }
-        rows.push(Row::Task(index));
-    }
-    rows
+    render_detail(frame, columns[1], tasks.get(selected), glyphs, theme);
 }
 
 fn render_list(
@@ -103,7 +89,7 @@ fn render_list(
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
-            if showing_done { " showing done " } else { "" },
+            if showing_done { " including done " } else { "" },
             Style::default().fg(theme.dim),
         ));
 
@@ -115,36 +101,23 @@ fn render_list(
         return;
     }
 
-    let rows = rows(tasks);
-    let cursor = rows
-        .iter()
-        .position(|row| matches!(row, Row::Task(index) if *index == selected))
-        .unwrap_or(0);
-
-    let visible = inner.height as usize;
-    let start = cursor
+    let visible = (inner.height as usize / CARD_HEIGHT).max(1);
+    let start = selected
         .saturating_sub(visible.saturating_sub(1) / 2)
-        .min(rows.len().saturating_sub(visible));
+        .min(tasks.len().saturating_sub(visible));
 
-    let lines: Vec<Line<'_>> = rows
-        .iter()
-        .skip(start)
-        .take(visible)
-        .map(|row| match row {
-            Row::Heading(label) => Line::from(Span::styled(
-                format!(" {label}"),
-                Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
-            )),
-            Row::Task(index) => {
-                let line = entry(&tasks[*index], inner.width as usize, theme);
-                if *index == selected {
-                    keycap::fill(line, inner.width).style(keycap::selected_row(theme))
-                } else {
-                    line
-                }
-            }
-        })
-        .collect();
+    let mut lines = Vec::with_capacity(visible * CARD_HEIGHT);
+    for (index, task) in tasks.iter().enumerate().skip(start).take(visible) {
+        let chosen = index == selected;
+        for line in card(task, chosen, inner.width as usize, theme) {
+            lines.push(if chosen {
+                keycap::fill(line, inner.width).style(keycap::selected_row(theme))
+            } else {
+                line
+            });
+        }
+        lines.push(Line::from(""));
+    }
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -152,7 +125,7 @@ fn render_list(
 /// Priority takes the attention hue rather than a new one. "This wants you" is
 /// what `attention` already means on the session cards, and a high-priority
 /// task is the same claim about a different object — see `ui::theme`.
-const fn priority_colour(task: &Task, theme: Theme) -> ratatui::style::Color {
+const fn priority_colour(task: &Task, theme: Theme) -> Color {
     match (task.status, task.priority) {
         (Status::Done, _) | (_, Priority::Low) => theme.dim,
         (_, Priority::High) => theme.attention,
@@ -160,36 +133,63 @@ const fn priority_colour(task: &Task, theme: Theme) -> ratatui::style::Color {
     }
 }
 
-fn entry<'a>(task: &Task, width: usize, theme: Theme) -> Line<'a> {
-    let colour = priority_colour(task, theme);
+const fn status_colour(status: Status, theme: Theme) -> Color {
+    match status {
+        Status::Open => theme.running,
+        Status::Done => theme.dim,
+    }
+}
 
-    let title = if task.status == Status::Done {
+/// One task as two lines: what it is, then everything about it.
+fn card<'a>(task: &Task, chosen: bool, width: usize, theme: Theme) -> [Line<'a>; 2] {
+    let title_style = if task.status == Status::Done {
         Style::default().fg(theme.dim).add_modifier(Modifier::CROSSED_OUT)
     } else {
-        Style::default().fg(theme.text)
+        Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
     };
 
-    // Padded rather than just truncated, so the projects form a column. A
-    // ragged right edge on twenty rows reads as noise, and which project a
-    // task belongs to is the question you scan for.
-    let budget = width.saturating_sub(ROW_FURNITURE).max(8);
-    let name = truncate(&task.title, budget);
-    let padding = " ".repeat(budget.saturating_sub(name.chars().count()));
+    // The title gets the line to itself, minus the caret. It is the only part
+    // of a task you read while scanning, so it is the last thing to be cut.
+    let title = Line::from(vec![
+        Span::styled(if chosen { " \u{25b8} " } else { INDENT }, Style::default().fg(theme.accent)),
+        Span::styled(truncate(&task.title, width.saturating_sub(4)), title_style),
+    ]);
 
-    let mut spans = vec![
-        Span::styled(format!(" {} ", task.priority.marker()), Style::default().fg(colour)),
-        Span::styled(name, title),
+    let mut details = vec![
+        Span::raw(INDENT),
+        Span::styled(
+            format!("{} {}", task.priority.marker(), task.priority.key()),
+            Style::default().fg(priority_colour(task, theme)),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            task.status.key(),
+            Style::default().fg(status_colour(task.status, theme)).add_modifier(Modifier::BOLD),
+        ),
     ];
 
+    // Project and tags in the order you ask for them, and dropped rather than
+    // squeezed when the column is narrow — a half-written tag is noise.
+    let mut room = width.saturating_sub(details.iter().map(Span::width).sum::<usize>());
+
     if let Some(project) = &task.project {
-        spans.push(Span::raw(padding));
-        spans.push(Span::styled(
-            format!("  {}", truncate(project, 10)),
-            Style::default().fg(theme.link),
-        ));
+        let text = format!("  {project}");
+        if text.chars().count() <= room {
+            room -= text.chars().count();
+            details.push(Span::styled(text, Style::default().fg(theme.link)));
+        }
     }
 
-    Line::from(spans)
+    for tag in &task.tags {
+        let text = format!("  #{tag}");
+        if text.chars().count() > room {
+            break;
+        }
+        room -= text.chars().count();
+        details.push(Span::styled(text, Style::default().fg(theme.dim)));
+    }
+
+    [title, Line::from(details)]
 }
 
 fn empty_state<'a>(showing_done: bool, theme: Theme) -> Vec<Line<'a>> {
@@ -222,7 +222,95 @@ fn empty_state<'a>(showing_done: bool, theme: Theme) -> Vec<Line<'a>> {
     lines
 }
 
-fn render_detail(frame: &mut Frame, area: Rect, task: Option<&Task>, theme: Theme) {
+/// A block in the stat bar: some text, and the colour it sits on.
+struct Chip {
+    label: String,
+    background: Color,
+    text: Color,
+}
+
+/// Draws the chips as one flowing run, or as separated words without the font.
+///
+/// The separator is drawn in the *outgoing* chip's background on the
+/// *incoming* chip's background — the same rule as the tab strip, and getting
+/// those two the wrong way round is the classic seam.
+fn stat_bar<'a>(chips: &[Chip], glyphs: Glyphs, theme: Theme) -> Line<'a> {
+    if !glyphs.segmented {
+        let mut spans = Vec::with_capacity(chips.len() * 2);
+        for (index, chip) in chips.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled("  ·  ", Style::default().fg(theme.dim)));
+            }
+            spans.push(Span::styled(
+                chip.label.clone(),
+                Style::default().fg(chip.background).add_modifier(Modifier::BOLD),
+            ));
+        }
+        return Line::from(spans);
+    }
+
+    let mut spans = Vec::with_capacity(chips.len() * 2 + 2);
+    for (index, chip) in chips.iter().enumerate() {
+        // The bar's own background stands in for a chip that is not there.
+        let before =
+            index.checked_sub(1).map_or(theme.surface, |previous| chips[previous].background);
+        let separator = if index == 0 { glyphs.notch } else { glyphs.cap };
+        spans.push(Span::styled(
+            separator,
+            Style::default()
+                .fg(if index == 0 { chip.background } else { before })
+                .bg(if index == 0 { theme.surface } else { chip.background }),
+        ));
+        spans.push(Span::styled(
+            format!(" {} ", chip.label),
+            Style::default().fg(chip.text).bg(chip.background).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    if let Some(last) = chips.last() {
+        spans
+            .push(Span::styled(glyphs.cap, Style::default().fg(last.background).bg(theme.surface)));
+    }
+    Line::from(spans)
+}
+
+/// Everything known about the task, as one bar.
+///
+/// Status, priority, project and tags each get their own block, in the order
+/// you would ask for them. A block that has nothing to say is absent rather
+/// than empty — "no project" is not a fact worth a segment.
+fn chips(task: &Task, theme: Theme) -> Vec<Chip> {
+    let mut chips = vec![
+        Chip {
+            label: task.status.key().to_string(),
+            background: status_colour(task.status, theme),
+            text: theme.surface,
+        },
+        Chip {
+            label: format!("{} {}", task.priority.marker(), task.priority.key()),
+            background: priority_colour(task, theme),
+            text: theme.surface,
+        },
+    ];
+
+    if let Some(project) = &task.project {
+        chips.push(Chip { label: project.clone(), background: theme.link, text: theme.surface });
+    }
+
+    if !task.tags.is_empty() {
+        // The one block that is not a status, so it takes a surface tone and
+        // keeps ordinary text on it rather than inverting like the rest.
+        chips.push(Chip {
+            label: task.tags.iter().map(|tag| format!("#{tag}")).collect::<Vec<_>>().join(" "),
+            background: theme.highlight,
+            text: theme.text,
+        });
+    }
+
+    chips
+}
+
+fn render_detail(frame: &mut Frame, area: Rect, task: Option<&Task>, glyphs: Glyphs, theme: Theme) {
     let title = task.map_or_else(
         || " no task ".to_string(),
         |task| {
@@ -237,7 +325,11 @@ fn render_detail(frame: &mut Frame, area: Rect, task: Option<&Task>, theme: Them
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.dim))
         .title(Span::styled(title, Style::default().fg(theme.dim).add_modifier(Modifier::BOLD)));
+    // A column of air on the left, so the heading and the description are not
+    // flush against the border. Done with the rect rather than by prefixing
+    // every line, because the markdown renderer produces lines of its own.
     let inner = block.inner(area);
+    let inner = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
     frame.render_widget(block, area);
 
     let Some(task) = task else {
@@ -254,11 +346,13 @@ fn render_detail(frame: &mut Frame, area: Rect, task: Option<&Task>, theme: Them
     };
 
     let mut lines = vec![
+        Line::from(""),
         Line::from(Span::styled(
             task.title.clone(),
             Style::default().fg(theme.heading).add_modifier(Modifier::BOLD),
         )),
-        metadata(task, theme),
+        Line::from(""),
+        stat_bar(&chips(task, theme), glyphs, theme),
         Line::from(""),
     ];
 
@@ -276,31 +370,6 @@ fn render_detail(frame: &mut Frame, area: Rect, task: Option<&Task>, theme: Them
     }
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
-}
-
-/// Status, priority, project and tags on one line, in that order.
-fn metadata<'a>(task: &Task, theme: Theme) -> Line<'a> {
-    let (label, colour) = match task.status {
-        Status::Open => ("open", theme.running),
-        Status::Done => ("done", theme.dim),
-    };
-
-    let mut spans = vec![
-        Span::styled(label.to_string(), Style::default().fg(colour).add_modifier(Modifier::BOLD)),
-        Span::styled(
-            format!("  {} {}", task.priority.marker(), task.priority.key()),
-            Style::default().fg(priority_colour(task, theme)),
-        ),
-    ];
-
-    if let Some(project) = &task.project {
-        spans.push(Span::styled(format!("  {project}"), Style::default().fg(theme.link)));
-    }
-    for tag in &task.tags {
-        spans.push(Span::styled(format!("  #{tag}"), Style::default().fg(theme.dim)));
-    }
-
-    Line::from(spans)
 }
 
 fn truncate(text: &str, limit: usize) -> String {

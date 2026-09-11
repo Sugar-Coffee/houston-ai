@@ -84,6 +84,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 &app.tasks,
                 app.task_selected,
                 app.tasks_show_done,
+                glyphs,
                 theme,
             ),
         },
@@ -411,7 +412,71 @@ mod tests {
         assert!(frame.contains("Before Friday"), "with the description beside it");
         assert!(frame.contains("#auth"), "and its tags");
         assert!(frame.contains("2 open"), "the header counts what is left");
-        assert!(frame.contains("high") && frame.contains("low"), "grouped by priority");
+        assert!(frame.contains("high") && frame.contains("low"), "each card says its own priority");
+        assert!(frame.contains("acme"), "and which project it belongs to");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The title is the only part of a task you read while scanning, and the
+    /// one-line version was cutting it at about twenty characters to make room
+    /// for a project column. Two lines gives the title the whole width.
+    #[test]
+    fn a_card_shows_the_whole_title_rather_than_making_room_for_the_metadata() {
+        let root = std::env::temp_dir().join("houston-ui-tasks-long");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Tasks")).unwrap();
+        std::fs::write(
+            root.join("Tasks/0001-a.md"),
+            "---\nproject: acme-api\ntags: [auth]\n---\n# Rotate refresh tokens on use\n",
+        )
+        .unwrap();
+
+        let mut app = App::new();
+        app.browser =
+            Some(crate::vault::Browser::new(crate::vault::Vault::open(root.clone()).unwrap()));
+        app.select_tab(Tab::Tasks);
+
+        let frame = draw(&app, 110, 20);
+        assert!(frame.contains("Rotate refresh tokens on use"), "not a character of it is cut");
+        assert!(frame.contains("acme-api"), "and the project still fits, on its own line");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The stat bar says the same four things whether or not the terminal has
+    /// the font. Powerline is a setting, so the plain style is a real style
+    /// rather than a fallback nobody looked at.
+    #[test]
+    fn the_stat_bar_says_the_same_things_in_both_styles() {
+        let root = std::env::temp_dir().join("houston-ui-tasks-bar");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Tasks")).unwrap();
+        std::fs::write(
+            root.join("Tasks/0001-a.md"),
+            "---\npriority: high\nproject: acme-api\ntags: [auth]\n---\n# Alpha\n",
+        )
+        .unwrap();
+
+        let mut app = App::new();
+        app.browser =
+            Some(crate::vault::Browser::new(crate::vault::Vault::open(root.clone()).unwrap()));
+        app.select_tab(Tab::Tasks);
+
+        for powerline in [false, true] {
+            app.config.powerline = Some(powerline);
+            let frame = draw(&app, 110, 20);
+            for fact in ["open", "high", "acme-api", "#auth"] {
+                assert!(frame.contains(fact), "{fact} is missing with powerline {powerline}");
+            }
+            // Otherwise both halves of this test draw the same screen and it
+            // proves nothing about either.
+            assert_eq!(
+                frame.contains(crate::ui::powerline::POWERLINE.cap),
+                powerline,
+                "the separator follows the setting"
+            );
+        }
 
         std::fs::remove_dir_all(&root).ok();
     }
