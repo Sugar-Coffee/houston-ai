@@ -18,52 +18,103 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-/// The operating manual. An agent started in the vault reads this first.
-const CLAUDE_MD: &str = r#"# How agents work in this vault
+/// The operating manual, in the file every agent looks for.
+///
+/// `AGENTS.md` rather than `CLAUDE.md` because it is an open standard rather
+/// than one vendor's filename: donated to the Linux Foundation, and read by
+/// Codex, Cursor, Gemini, Copilot, Amp, Zed and others. Houston does not care
+/// which agent you run, so the instructions should not either.
+const AGENTS_MD: &str = r"# Working in this vault
 
-This vault is the home base. You were probably started here rather than in a
-project, and that is deliberate: this folder knows where the projects are and
-what has already been decided about them.
+You are probably running *in this folder* rather than in a project. That is
+deliberate. This vault knows where the code lives, what has been decided, and
+what happened last time. Start here, then go where the work is.
 
-## Finding a project
+## At the start of a session
 
-`Projects/` holds one folder per project. Each has an `index.md` whose first
-job is to say **where the code actually lives on disk**. Read it before you go
-anywhere.
+1. **Check today's daily note.** `Daily/YYYY-MM-DD.md`. If there is not one and
+   the person is starting work, offer to make it, and read yesterday's for
+   anything left open.
+2. **Read the task**, if there is one in `Tasks/` for this work.
+3. **Read the project**: `Projects/<name>/index.md` for where the code lives,
+   then its `decisions/` for what has already been argued.
 
-So "add a contact form to acme-web" means: read `Projects/acme-web/index.md`,
-find the path, work there.
+Do not skip the third. Proposing something that was rejected two months ago
+wastes an afternoon, and the reason it was rejected is written down.
 
-## Before you start
+## Finding the code
 
-Read the project's `index.md`, and everything in its `decisions/`. Most large
-questions have been argued already, and the argument that lost is recorded
-next to the one that won. Proposing a rewrite that was rejected in March
-wastes everybody's afternoon.
-
-If there is a `Tasks/` item pointing at this work, read that too.
+Every folder in `Projects/` has an `index.md`, and its first job is to say
+**where that project lives on disk**. So `add a contact form to acme-web` is a
+complete instruction: read `Projects/acme-web/index.md`, take the path, work
+there.
 
 ## When you finish
 
-Append to the project's `build-log.md`, newest first, dated absolutely
-(`2026-09-11`, not "today"). **Write an entry only if it says something the
-diff cannot**: a dead end, a measurement that settled an argument, a library
-that behaved unexpectedly. "Added the contact form" is already in the commit.
+Write back. This is what makes the vault worth having, and the part that gets
+skipped.
 
-If you decided something non-obvious, add a numbered file to `decisions/`.
-Record the argument that lost as well as the one that won.
+| what happened | where it goes |
+|---|---|
+| anything at all | a line in today `Daily/` note |
+| something the diff cannot explain | the project `build-log.md` |
+| a non-obvious decision | a numbered file in the project `decisions/` |
+| a fact you had to work out | the project `knowledge/` |
+| a measurement | the project `research/`, dated |
+| how this person likes to work | root `Knowledge/` |
 
-If you measured something, put the numbers in `research/`. Any load-bearing
-claim needs one: "this is slow" needs a benchmark, "nobody uses this" needs a
-count.
+**Only write an entry if it says something the diff cannot.** `Added the
+contact form` is already in the commit and helps nobody. `The form submits
+through the legacy endpoint because the new one drops the honeypot field` is
+worth a paragraph.
 
-## Keep this vault up to date
+## Where things go
 
-You are expected to write here, not just read. A project you have worked on
-and learned something about should have an `index.md` that reflects what you
-now know. If you had to work something out that was not written down, write it
-down.
-"#;
+- `Projects/` — one folder per project. The code is elsewhere; this is what is
+  known about it
+- `Tasks/` — one file per thing to do. Frontmatter carries status, priority,
+  project and tags
+- `Plans/` — work thought through but not started. An approved plan usually
+  becomes tasks
+- `Daily/` — one note per day. What happened, what is next
+- `Knowledge/` — how *this person* works: their standards, preferences and
+  conventions, across every project. Facts about one project belong in that
+  project own `knowledge/`
+- `Inbox/` — anything you cannot place yet. Better here than nowhere
+- `Archive/` — finished, kept because search does not care
+
+## Frontmatter
+
+Notes may carry it; nothing requires it.
+
+    ---
+    project: acme-api
+    tags: [auth, postgres]
+    ---
+
+Tasks use a little more. See `Tasks/README.md`.
+
+## Two habits worth holding
+
+**Record the losing argument.** A decision that says only what was chosen
+invites somebody to re-derive the alternative and propose it again.
+
+**A load-bearing claim needs a number.** `This is slow` needs a benchmark.
+`Nobody uses this` needs a count. Put them in `research/` and link them.
+";
+
+/// Claude Code reads `CLAUDE.md`, so point it at the real thing.
+///
+/// An `@` import and a sentence saying the same: the import is what Claude
+/// Code understands, and the sentence keeps the file useful to anything that
+/// reads it without knowing the syntax.
+const CLAUDE_MD: &str = r"# Claude
+
+The operating manual for this vault is `AGENTS.md`. Read it before doing
+anything here.
+
+@AGENTS.md
+";
 
 /// A template for a new project, and an example of what one looks like filled in.
 const PROJECT_TEMPLATE: &str = r"# Project name
@@ -186,14 +237,26 @@ Across all projects, newest first. Project-specific detail belongs in that
 project's own `build-log.md`; this is for the things that span them.
 ";
 
+const PLANS_README: &str = r"# Plans
+
+Work thought through but not started. A plan is what you write before
+committing an afternoon to something, and what you hand an agent when you want
+it built rather than explored.
+
+An approved plan usually turns into files in `Tasks/`. Keep it either way: it
+says why those tasks look like they do.
+";
+
 const KNOWLEDGE_README: &str = r"# Knowledge
 
-Reference that outlives any one project. How the infrastructure actually
-works, who owns what, the thing you look up every six months and can never
-find.
+**How you work**, rather than what you are working on. Standards you hold,
+tools you prefer, conventions you apply everywhere, the review checklist you
+keep in your head. An agent that reads this should end up working the way you
+would.
 
-If a note here only makes sense inside one project, it belongs in that
-project's folder instead.
+Facts about a particular project go in that project own `knowledge/` folder
+instead. The test: if it stops being true when the project is archived, it is
+project knowledge.
 ";
 
 /// Writes the starter vault into an empty directory.
@@ -210,6 +273,7 @@ pub fn write(root: &Path) -> Result<()> {
         std::fs::write(&full, body).with_context(|| format!("could not write {}", full.display()))
     };
 
+    file("AGENTS.md", AGENTS_MD)?;
     file("CLAUDE.md", CLAUDE_MD)?;
     file("log.md", GLOBAL_LOG)?;
 
@@ -225,11 +289,18 @@ pub fn write(root: &Path) -> Result<()> {
     file("Tasks/0001-replace-the-example-project.md", EXAMPLE_TASK)?;
 
     file("Knowledge/README.md", KNOWLEDGE_README)?;
+    file("Plans/README.md", PLANS_README)?;
 
     // Empty, but present: a folder that exists is an invitation, and a folder
     // that has to be created first is a decision nobody makes at the moment
     // they want to write something down.
-    for empty in ["Projects/example-project/research", "Daily", "Archive"] {
+    for empty in [
+        "Projects/example-project/research",
+        "Projects/example-project/knowledge",
+        "Daily",
+        "Inbox",
+        "Archive",
+    ] {
         std::fs::create_dir_all(root.join(empty))
             .with_context(|| format!("could not create {empty}"))?;
     }
@@ -248,16 +319,53 @@ mod tests {
         root
     }
 
-    /// The file an agent reads first. Without it the vault is just a folder.
+    /// The file every agent reads. Without it the vault is just a folder.
     #[test]
     fn a_new_vault_tells_agents_how_to_use_it() {
-        let root = scratch("claude");
+        let root = scratch("agents");
         write(&root).unwrap();
 
-        let guide = std::fs::read_to_string(root.join("CLAUDE.md")).unwrap();
-        assert!(guide.contains("where the code actually lives"), "the point of Projects/");
+        let guide = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        assert!(guide.contains("where that project lives on disk"), "the point of Projects/");
+        assert!(guide.contains("daily note"), "check the day before starting");
         assert!(guide.contains("build-log.md"), "and what to write when finishing");
         assert!(guide.contains("decisions/"), "and what to read before starting");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Houston does not care which agent you run, so the instructions must not
+    /// live in one vendor's filename. AGENTS.md is the open standard; CLAUDE.md
+    /// exists only to send Claude Code to it.
+    #[test]
+    fn the_instructions_are_not_locked_to_one_agent() {
+        let root = scratch("crossagent");
+        write(&root).unwrap();
+
+        let claude = std::fs::read_to_string(root.join("CLAUDE.md")).unwrap();
+        assert!(claude.contains("@AGENTS.md"), "Claude Code imports it");
+        assert!(claude.contains("AGENTS.md"), "and is told about it in prose too");
+        assert!(
+            claude.len() < 400,
+            "CLAUDE.md is a pointer; two copies of the manual would drift apart"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Knowledge about how somebody works and knowledge about a project are
+    /// different things, and putting them in one folder loses both.
+    #[test]
+    fn knowledge_is_split_between_the_person_and_the_project() {
+        let root = scratch("knowledge");
+        write(&root).unwrap();
+
+        let general = std::fs::read_to_string(root.join("Knowledge/README.md")).unwrap();
+        assert!(general.contains("How you work"), "the root one is about the person");
+        assert!(
+            root.join("Projects/example-project/knowledge").is_dir(),
+            "and each project carries its own"
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -311,7 +419,7 @@ mod tests {
             .filter(|entry| entry.file_type().is_file())
             .collect();
 
-        assert!(files.len() >= 8, "a starter vault with almost nothing in it is an empty state");
+        assert!(files.len() >= 10, "a starter vault with almost nothing in it is an empty state");
         for entry in files {
             assert_eq!(
                 entry.path().extension().and_then(|e| e.to_str()),
