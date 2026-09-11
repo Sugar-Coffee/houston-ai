@@ -7,6 +7,7 @@
 pub mod browser;
 pub mod files;
 pub mod markdown;
+pub mod scaffold;
 pub mod search;
 pub mod tree;
 
@@ -127,6 +128,52 @@ impl Vault {
 
     pub fn notes(&self) -> &[Note] {
         &self.notes
+    }
+
+    /// A cheap signature of the vault's shape, for noticing outside changes.
+    ///
+    /// **Directories only, on purpose.** A directory's mtime changes when a
+    /// file inside it is created, deleted or renamed, which is exactly the set
+    /// of changes the note list is wrong about. Editing a note's *contents*
+    /// does not move it, and does not need to: the list shows names, and the
+    /// editor already notices when the file it has open changes underneath it.
+    ///
+    /// A thousand-note vault is a few dozen directories, so this is a few
+    /// dozen stats. Walking every file to stat it would be a thousand, sixty
+    /// times a second, to answer a question that changes about once an hour.
+    #[must_use]
+    pub fn fingerprint(&self) -> u64 {
+        Self::fingerprint_of(&self.root)
+    }
+
+    /// The same signature for a root that has not been opened yet.
+    #[must_use]
+    pub fn fingerprint_of(root: &Path) -> u64 {
+        let mut signature: u64 = 0;
+        let mut directories: u64 = 0;
+
+        for entry in WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !is_skipped(entry.file_name().to_string_lossy().as_ref()))
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_dir())
+        {
+            directories += 1;
+            let moved = entry
+                .metadata()
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |since| since.as_secs());
+
+            // Wrapping, and order-independent: `WalkDir` makes no promise about
+            // the order it yields, and a signature that changed with the order
+            // would reindex the vault at random.
+            signature = signature.wrapping_add(moved.rotate_left(7));
+        }
+
+        signature.wrapping_add(directories.rotate_left(31))
     }
 
     /// Every folder under the root, relative and sorted.

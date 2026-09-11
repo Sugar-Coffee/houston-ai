@@ -12,34 +12,40 @@ use std::path::{Path, PathBuf};
 /// A brand new vault otherwise renders as "0 notes indexed", which reads as a
 /// bug rather than an empty state. This is an ordinary note — deleting it
 /// breaks nothing.
-const WELCOME: &str = "\
-# Welcome to your Houston vault
+const WELCOME: &str = r#"# Start here
 
-This folder is your knowledge base. Houston created it and nothing else touches
-it.
+This vault is your knowledge base, and it is also where your agents should
+start. Press `c` on the Vault view and Houston opens an agent right here, with
+`CLAUDE.md` already in its context.
 
-Notes are plain markdown files. Make as many folders as you like — Houston
-indexes everything ending in `.md`, however deep.
+That matters more than it sounds. An agent started in this folder knows that
+`Projects/acme-api/index.md` says where the acme-api code actually lives, what
+has been decided about it, and what happened last time somebody worked on it.
+"Add a contact form to acme-web" becomes a sentence it can act on.
+
+## What is here
+
+- `CLAUDE.md` — how agents should use this vault. Worth reading yourself
+- `Projects/` — one folder per project. Copy `_template.md` for a new one
+- `Tasks/` — one file per thing to do
+- `Knowledge/` — reference that outlives any project
+- `Daily/`, `Archive/` — if you want them
 
 ## Getting around
 
-- `/` fuzzy-find a note by name
-- `f` search inside notes
-- `↵` open the selected note
-- `y` copy its path to the clipboard
-- `i` send its path straight into a running agent session
+- `/` find a note by name, `f` search inside notes
+- `↵` open, `e` edit, `n` new note, `N` new folder
+- `y` copy a note's path, `i` send it into a running agent
+- `c` start an agent in this vault
 
-## Linking notes
+## The habit that makes it worth having
 
-Write `[[note name]]` to link to another note. Houston resolves those, and `l`
-lists the links going out of the note you are reading while `b` shows the ones
-coming in.
-
-## Already have an Obsidian vault?
-
-Open Settings (`4`) and point Houston at it. Nothing is copied or moved — it
-reads the folder where it sits.
-";
+Tell your agents to write back. A project they have worked on should end up
+with an `index.md` that reflects what they learned, a `build-log.md` entry when
+something surprising happened, and a note in `decisions/` when something
+non-obvious was settled. `CLAUDE.md` already asks them to; the rest is you
+reminding them occasionally.
+"#;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -200,6 +206,7 @@ impl Config {
             .with_context(|| format!("could not create {}", root.display()))?;
         std::fs::write(root.join("Welcome.md"), WELCOME)
             .with_context(|| format!("could not write into {}", root.display()))?;
+        crate::vault::scaffold::write(&root)?;
         Ok(root)
     }
 }
@@ -319,9 +326,12 @@ mod tests {
         std::fs::write(root.join("Welcome.md"), WELCOME).unwrap();
 
         let welcome = std::fs::read_to_string(root.join("Welcome.md")).unwrap();
-        assert!(welcome.contains("Welcome to your Houston vault"));
-        assert!(welcome.contains("[[note name]]"), "the note explains wikilinks");
-        assert!(welcome.contains("Settings"), "it says how to point elsewhere");
+        assert!(welcome.contains("Start here"));
+        // The note that greets a new user has one job: say that agents should
+        // start in this folder, and why that makes them useful.
+        assert!(welcome.contains("`c`"), "it names the key that starts an agent here");
+        assert!(welcome.contains("CLAUDE.md"), "and what the agent reads when it does");
+        assert!(welcome.contains("Projects/"), "and how it finds the code from here");
 
         std::fs::remove_dir_all(&root).ok();
     }

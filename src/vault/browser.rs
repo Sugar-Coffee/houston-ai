@@ -95,6 +95,8 @@ pub struct Browser {
     tree: crate::vault::tree::Tree,
     /// What the sidebar draws, rebuilt whenever it could have changed.
     entries: Vec<Entry>,
+    /// The vault's shape when it was last read, for noticing outside edits.
+    fingerprint: u64,
     matcher: Matcher,
     source: Source,
     results: Vec<NoteId>,
@@ -116,6 +118,7 @@ impl Browser {
             vault,
             tree: crate::vault::tree::Tree::default(),
             entries: Vec::new(),
+            fingerprint: 0,
             matcher: Matcher::new(),
             source: Source::All,
             results,
@@ -127,6 +130,7 @@ impl Browser {
             query: String::new(),
             wrap: true,
         };
+        browser.fingerprint = browser.vault.fingerprint();
         browser.rebuild();
         browser
     }
@@ -245,6 +249,26 @@ impl Browser {
         }
     }
 
+    /// Re-reads the vault if something outside Houston has changed it.
+    ///
+    /// Obsidian is probably open on the same folder, and agents are now asked
+    /// to write here. A list that only refreshes when you press `r` was fine
+    /// when the vault was read-only and is wrong now that it is not.
+    ///
+    /// Keeps the selection on the same note where it can, because a reindex
+    /// that moves the cursor while you are reading is worse than a stale list.
+    pub fn refresh_if_changed(&mut self) -> bool {
+        let current = self.vault.fingerprint();
+        if current == self.fingerprint {
+            return false;
+        }
+        self.fingerprint = current;
+
+        let focus = self.selected_relative();
+        let _ = self.reindex_keeping(focus.as_deref());
+        true
+    }
+
     /// Re-reads the vault from disk and puts the selection back where it was.
     ///
     /// Called after anything that changes the files. `reveal` opens the
@@ -252,8 +276,14 @@ impl Browser {
     /// rather than hidden behind a closed folder — which is what makes "new
     /// note" look like it did nothing.
     pub fn reindex(&mut self, focus: Option<&str>) -> Result<()> {
+        self.reindex_keeping(focus)
+    }
+
+    /// The body of a reindex, shared by the explicit and automatic paths.
+    fn reindex_keeping(&mut self, focus: Option<&str>) -> Result<()> {
         let root = self.vault.root().to_path_buf();
         self.vault = Vault::open(root)?;
+        self.fingerprint = self.vault.fingerprint();
 
         if let Some(focus) = focus {
             self.tree.reveal(parent_of(focus));
@@ -546,6 +576,48 @@ mod tests {
 
     fn browser(root: &std::path::Path) -> Browser {
         Browser::new(Vault::open(root).unwrap())
+    }
+
+    /// The case this exists for: Obsidian, or an agent, writes a note while
+    /// Houston is open.
+    #[test]
+    fn a_note_written_from_outside_turns_up_on_its_own() {
+        let root = scratch("watch", &[("one.md", "# one")]);
+        let mut browser = browser(&root);
+
+        assert_eq!(browser.entries().len(), 1);
+        assert!(!browser.refresh_if_changed(), "nothing has happened yet");
+
+        // Written by somebody else entirely.
+        std::fs::create_dir_all(root.join("Inbox")).unwrap();
+        std::fs::write(root.join("Inbox/from-obsidian.md"), "# hello").unwrap();
+
+        assert!(browser.refresh_if_changed(), "the vault changed shape");
+        assert_eq!(browser.entries().len(), 2, "the new folder is in the tree");
+        assert!(!browser.refresh_if_changed(), "and it settles rather than reindexing forever");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A reindex that moves your cursor while you are reading is worse than a
+    /// list that is a few seconds stale.
+    #[test]
+    fn refreshing_leaves_the_selection_where_it_was() {
+        let root =
+            scratch("watchsel", &[("alpha.md", "# a"), ("beta.md", "# b"), ("gamma.md", "# g")]);
+        let mut browser = browser(&root);
+
+        browser.select_next();
+        let before = browser.selected_relative();
+        assert_eq!(before.as_deref(), Some("beta.md"));
+
+        std::fs::create_dir_all(root.join("Later")).unwrap();
+        std::fs::write(root.join("Later/new.md"), "# new").unwrap();
+        browser.refresh_if_changed();
+
+        assert_eq!(browser.selected_relative(), before, "still on the note you were looking at");
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Picking a result answers the question, so the filter comes off and the

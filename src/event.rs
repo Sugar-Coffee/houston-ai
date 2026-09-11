@@ -97,6 +97,12 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
             _ = branches.tick() => {
                 app.sessions.refresh_branches();
                 app.sessions.refresh_selected_changes();
+
+                // Obsidian is probably open on the same folder, and agents are
+                // asked to write here. Cheap: a few dozen directory stats.
+                if let Some(browser) = app.browser.as_mut() {
+                    browser.refresh_if_changed();
+                }
                 app.dirty = true;
             }
 
