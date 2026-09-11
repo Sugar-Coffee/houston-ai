@@ -220,4 +220,13 @@ pub struct SingleFlight {
 EOF
 printf 'CREATE INDEX sessions_expires_idx ON sessions (expires_at);\n' > migrations/0002_index.sql
 
+# New agent sessions default to the fixture repo. Without this the form
+# defaults to $HOME, the recording shows somebody's actual home directory, and
+# Claude Code greets them by name in a file destined for a public README.
+cat > "$STATE/config.toml" <<CONF
+theme = "Catppuccin Mocha"
+vault = "$VAULT"
+agent_directory = "$REPO"
+CONF
+
 printf 'ROOT=%s VAULT=%s REPO=%s STATE=%s\n' "$ROOT" "$VAULT" "$REPO" "$STATE"

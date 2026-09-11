@@ -19,11 +19,7 @@ meanwhile. Delete this line when it goes public.</sub>
 
 </div>
 
-<!--
-  `brew install vhs && vhs media/sessions.tape`, then uncomment.
-
-<p align="center"><img src="media/sessions.gif" width="900"></p>
--->
+<p align="center"><img src="media/sessions.gif" alt="Two agents and a shell running in Houston" width="900"></p>
 
 ---
 
@@ -78,6 +74,8 @@ Houston has a markdown vault built in. Plain files in a folder, so Obsidian can
 stay open on the same directory and neither of you will notice. Folder tree,
 fuzzy find, full text search, `[[wikilinks]]`, backlinks.
 
+<p align="center"><img src="media/vault.gif" alt="The vault as a folder tree" width="900"></p>
+
 The editor is modal and vim-shaped, and deliberately not a code editor. It
 edits prose, and it is good at it.
 
@@ -91,11 +89,7 @@ Long lines wrap properly. It notices if Obsidian changed a file under you
 instead of quietly flattening your work. Undo goes back further than you will
 need.
 
-<!--
-  `vhs media/editor.tape`
-
-<p align="center"><img src="media/editor.gif" width="900"></p>
--->
+<p align="center"><img src="media/editor.gif" alt="Jump mode in the editor" width="900"></p>
 
 ## Agents that know your notes
 

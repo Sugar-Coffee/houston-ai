@@ -26,8 +26,6 @@ Set TypingSpeed 45ms
 Hide
 Type `eval "$(sh media/fixture.sh)"`
 Enter
-Type `printf 'theme = "Catppuccin Mocha"\nvault = "%s"\n' "$VAULT" > "$STATE/config.toml"`
-Enter
 Type `export HOUSTON_STATE_DIR=$STATE PATH="$PWD/target/release:$PATH" && cd "$REPO" && clear`
 Enter
 Show
@@ -47,11 +45,30 @@ Down
 Down
 Down
 Enter
-Sleep 6s
+Sleep 7s
 
-Type "What is the p99 auth latency after the refresh change? One sentence."
+# Claude Code asks whether it trusts a folder the first time it sees one.
+# Without this, everything typed below lands in that prompt and the agent
+# never answers anything. "Yes" is already selected.
 Enter
-Sleep 20s
+Sleep 5s
+
+# Claude Code opens on a splash that greets you by name and names your
+# organisation. `/clear` redraws it rather than removing it, so the way to get
+# it off screen is conversation: it scrolls away after two exchanges. Hence a
+# warm-up question that is worth asking anyway.
+# Ask each agent about what it can actually see. This one is in the
+# repository, so it gets asked about the code; the vault agent below gets
+# asked about the notes. Asking the repo agent about decision records it has
+# no access to records an agent saying it cannot find them, which demonstrates
+# the wrong thing.
+Type "What does src/auth/refresh.rs do? One sentence."
+Enter
+Sleep 30s
+
+Type "What is uncommitted right now? Just the filenames."
+Enter
+Sleep 30s
 Ctrl+\
 Sleep 1500ms
 
@@ -60,9 +77,15 @@ Type "2"
 Sleep 1500ms
 Type "c"
 Sleep 8s
+
+# Same prompt again: a different directory is a different question.
+Enter
+Sleep 5s
+
+# This one is in the vault, so it has the CLAUDE.md and the notes.
 Type "Give me one line from Macbeth, nothing else."
 Enter
-Sleep 18s
+Sleep 26s
 Ctrl+\
 Sleep 1500ms
 

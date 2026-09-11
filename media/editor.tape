@@ -21,8 +21,6 @@ Set TypingSpeed 70ms
 Hide
 Type `eval "$(sh media/fixture.sh)"`
 Enter
-Type `printf 'theme = "Catppuccin Mocha"\nvault = "%s"\n' "$VAULT" > "$STATE/config.toml"`
-Enter
 Type `export HOUSTON_STATE_DIR=$STATE PATH="$PWD/target/release:$PATH" && cd "$REPO" && clear`
 Enter
 Show

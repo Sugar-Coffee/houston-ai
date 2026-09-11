@@ -29,6 +29,22 @@ Everything lands in a `mktemp -d`, including `HOUSTON_STATE_DIR`. **Do not
 remove that.** Without it a recording writes demo sessions into your real
 session list.
 
+## Why the encode is ours
+
+vhs captures the frames and this repo's `record.sh` runs ffmpeg, rather than
+letting vhs do both.
+
+vhs 0.12 will not encode against ffmpeg 9. It captures every frame correctly,
+prints `Creating x.gif...`, exits 0, and writes nothing — it never invokes
+ffmpeg at all, and never says why. Diagnosing that cost an hour: ffmpeg was
+fine, the frames were fine, and the failure was invisible from both ends.
+
+So each tape's `Output` is rewritten to a frames directory, and the encode
+composites the text and cursor layers over a background, pads, and builds a
+palette. The text layer is glyphs on transparency, which is the one thing to
+know if you touch that filter chain: composite it straight onto the backdrop
+and the backdrop colour shows between every letter.
+
 ## The agents are real
 
 `sessions.tape` starts actual Claude Code sessions and asks them short
