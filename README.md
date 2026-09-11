@@ -74,6 +74,8 @@ Five views, one keyboard: **Sessions**, **Vault**, **Board**, **Worktrees**,
   the same time
 - Folder tree: expand, collapse, create, rename, move, delete
 - Fuzzy find by name (`/`), full-text search (`f`), `[[wikilinks]]` and backlinks
+- Picking a result drops the filter and reveals it in the tree, so you see
+  where it lives
 - `y` copies a note's path, `i` sends `@path` straight into a running agent
 - **`c` starts an agent in the vault**, so it arrives already knowing your
   `CLAUDE.md`, skills and rules
