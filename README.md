@@ -14,6 +14,9 @@
 curl -fsSL https://raw.githubusercontent.com/Sugar-Coffee/houston-ai/main/install.sh | sh
 ```
 
+<sub>**The repository is private, so that URL does not resolve yet.**
+[Build from source](#install) meanwhile. Delete this line when it goes public.</sub>
+
 </div>
 
 <!--
@@ -105,6 +108,19 @@ Intel, Linux on x86-64.
 
 `houston update` installs the latest release over whichever copy you are
 running. Houston checks once a day and says so in the tab strip.
+
+> **While the repository is private**, neither of those can reach GitHub —
+> `raw.githubusercontent.com` and the release downloads both need
+> authentication, so the installer 404s and `houston update` reports no
+> releases. Releases are built and published (`v0.0.1` onwards, three targets
+> with checksums); they simply are not fetchable anonymously yet. Build from
+> source until then:
+>
+> ```sh
+> git clone https://github.com/Sugar-Coffee/houston-ai
+> cd houston-ai && cargo build --release
+> ./target/release/houston
+> ```
 
 <details>
 <summary>Other ways</summary>
