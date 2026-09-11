@@ -2,101 +2,120 @@
 
 # Houston
 
-**A terminal workspace for running coding agents and the notes they work from.**
+### Run a pile of coding agents without losing track of them.
 
 [![CI](https://github.com/Sugar-Coffee/houston-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/Sugar-Coffee/houston-ai/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Sugar-Coffee/houston-ai?color=blue&label=release)](https://github.com/Sugar-Coffee/houston-ai/releases/latest)
 [![Licence](https://img.shields.io/github/license/Sugar-Coffee/houston-ai?color=blue)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#install)
+[![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux-lightgrey.svg)](#install)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Sugar-Coffee/houston-ai/main/install.sh | sh
 ```
 
-<sub>**The repository is private, so that URL does not resolve yet.**
-[Build from source](#install) meanwhile. Delete this line when it goes public.</sub>
+<sub>**Repo is private for now, so that URL 404s.** [Build from source](#install)
+meanwhile. Delete this line when it goes public.</sub>
 
 </div>
 
 <!--
-  Recorded with vhs: `brew install vhs && vhs media/sessions.tape`
-  Uncomment once media/sessions.gif exists.
+  `brew install vhs && vhs media/sessions.tape`, then uncomment.
 
-<p align="center"><img src="media/sessions.gif" alt="Running several agents in Houston" width="900"></p>
+<p align="center"><img src="media/sessions.gif" width="900"></p>
 -->
-
-Five views, one keyboard: **Sessions**, **Vault**, **Board**, **Worktrees**,
-**Settings**. Runs Claude Code, Codex, Gemini and opencode, or a plain shell.
 
 ---
 
-## Sessions
+You have Claude Code open in four terminal tabs. One is stuck on a permission
+prompt, one finished eight minutes ago, one is still churning, and the fourth
+is a shell you opened for something and forgot about.
 
-- Several agents at once, each in its own pane, switched with one key
-- Status comes from agent **hooks**, not from parsing the screen: working,
-  waiting on you, idle, exited
-- Sessions survive a restart — names, directories, worktrees, and the
-  conversation itself. Claude Code resumes via `--resume`, Codex via its
-  rollout files
-- A shell comes back in the directory you left it in, not the one it started in
-- Select text with the mouse inside a pane — drag, double-click a word,
-  triple-click a line, copies on release. Or `c` for a keyboard copy mode
-- Full scrollback, keyboard or wheel
-- Paste is a single write, so a 200-line paste arrives as one event
+Which one needs you? No way to tell without clicking through all four, and by
+the time you have, another one has stopped.
 
-## Board
+Houston puts them in one window and tells you.
 
-- Kanban of every session: **Needs you** / **Working** / **Shells** / **Finished**
-- Driven by hooks, so it does not guess. A shell gets no agent status rather
-  than an invented one
-- If Houston loses its hooks it says **status frozen** instead of showing a
-  value that stopped being true an hour ago
+## Which agent needs you
 
-## Worktrees
+Every session has a state, and that state comes from the agent's own **hooks**,
+not from squinting at its output. Working, waiting on you, idle, done.
 
-- Start an agent in an isolated git worktree so several can work on one repo
-- Each row says what it is for: **in use**, **uncommitted work**, **idle**, or
-  **repository gone**
-- `↑ahead ↓behind`, and the diff for each
-- `l` lands one: commit, push, open a PR, remove the tree
-- `v` reviews the diff without needing a session in it
+The board is that in one glance:
 
-## Review
+```
+  Needs you          Working            Shells             Finished
+  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+  │ ◆ auth-fix   │   │ ● api-rewrite│   │ $ dev-server │   │ × migrations │
+  │   +142 −31   │   │   +18 −4     │   │              │   │              │
+  └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
+```
 
-- Every session card shows `+142 −31` for what its agent has changed
-- `v` opens the full diff in a pane, untracked files included
-- Nothing destructive happens without a question naming what would be lost
+Only "Needs you" gets the loud colour, because it is the only column that is
+asking you for something.
 
-## Vault
+When a hook stops arriving, Houston says **status frozen** rather than leaving
+a stale value up pretending to be current. A shell gets no agent status at all,
+because it does not have one.
 
-- A folder of plain markdown. No database, no lock-in — open it in Obsidian at
-  the same time
-- Folder tree: expand, collapse, create, rename, move, delete
-- Fuzzy find by name (`/`), full-text search (`f`), `[[wikilinks]]` and backlinks
-- Picking a result drops the filter and reveals it in the tree, so you see
-  where it lives
-- `y` copies a note's path, `i` sends `@path` straight into a running agent
-- **`c` starts an agent in the vault**, so it arrives already knowing your
-  `CLAUDE.md`, skills and rules
+## Your notes are in here too
 
-## Editor
+Houston has a markdown vault built in. Plain files in a folder, so Obsidian can
+stay open on the same directory and neither of you will notice.
 
-- Modal, vim-shaped: `i` `a` `o`, `[` `]` between headings, `t` toggles a task
-- **Jump mode** — press `f`, every word head gets a tag, type it to go there.
-  Tags overlay the text rather than being inserted, so the line does not shift
-  under the target you are aiming at
-- Soft wrapping that pages and moves in visual rows (91% of a real vault's
-  notes have a line over 120 characters)
-- Atomic saves and external-modification detection, because Obsidian is
-  probably open on the same file
-- Undo over rope snapshots, bounded at 1,000 steps
+The useful part is `c`. Press it in the vault and you get an agent **running in
+the vault directory**, which means it has already read your `CLAUDE.md`, your
+skills, your rules about where things live. No path to type, no context to
+paste. It shows up knowing the place.
+
+`y` copies a note's path. `i` drops `@that/path` straight into a running
+agent's prompt without pressing Return, so you can finish the sentence.
+
+## Quit it and nothing is lost
+
+Close Houston, reopen it, and your sessions come back. Names, directories,
+worktrees, and the **conversations themselves**: Claude Code resumes with
+`--resume`, Codex from its rollout files.
+
+Shells come back in the directory you left them in, not the one they started
+in, because Houston reads where the process actually got to. It cannot bring
+back the dev server that was running in there, and does not pretend it can.
+
+## Agents that do not tread on each other
+
+Start a session in its own git worktree, so three agents can work on one repo
+without fighting. The Worktrees view tells you which ones are in use, which
+have uncommitted work sitting in them, and which are orphaned because you
+deleted the repo they came from.
+
+Press `l` on one and Houston commits it, pushes it, opens a PR and removes the
+tree. Press `v` to read the diff first, which you probably should.
+
+## The editor
+
+Modal, vim-shaped, and deliberately not a code editor. It edits prose.
+
+The good bit is **jump mode**: press `f`, every word on screen grows a
+two-letter tag, type one and you are there. The tags sit *on top of* the text
+rather than being inserted into it, so nothing shifts under the word you were
+aiming at while you decide.
 
 <!--
   `vhs media/editor.tape`
 
-<p align="center"><img src="media/editor.gif" alt="Jump mode in the editor" width="900"></p>
+<p align="center"><img src="media/editor.gif" width="900"></p>
 -->
+
+## Oh, and
+
+- **Select text with the mouse.** Drag inside a pane, double-click a word,
+  triple-click a line. It copies on release. Your terminal cannot do this,
+  because it does not know a pane from a sidebar.
+- **Nineteen themes.** Dracula, Tokyo Night, Catppuccin, Gruvbox, Rosé Pine,
+  Kanagawa and friends. The picker repaints the whole app as you scroll it.
+- **Nothing is deleted without asking**, and the question tells you what you
+  are about to lose.
+- **Paste is instant**, even a 200 line paste, because it is one write rather
+  than 200 keystrokes.
 
 ## Install
 
@@ -104,198 +123,109 @@ Five views, one keyboard: **Sessions**, **Vault**, **Board**, **Worktrees**,
 curl -fsSL https://raw.githubusercontent.com/Sugar-Coffee/houston-ai/main/install.sh | sh
 ```
 
-Detects your platform, downloads the matching build from the latest release,
-verifies its checksum, installs to `~/.local/bin`. macOS on Apple silicon or
-Intel, Linux on x86-64.
+Works out your platform, grabs the right build, checks the checksum, drops it
+in `~/.local/bin`. macOS (both chips) and Linux x86-64. Later on,
+`houston update` does the same thing over the top.
 
-`houston update` installs the latest release over whichever copy you are
-running. Houston checks once a day and says so in the tab strip.
-
-> **While the repository is private**, neither of those can reach GitHub —
-> `raw.githubusercontent.com` and the release downloads both need
-> authentication, so the installer 404s and `houston update` reports no
-> releases. Releases are built and published (`v0.0.1` onwards, three targets
-> with checksums); they simply are not fetchable anonymously yet. Build from
-> source until then:
+> **While the repo is private** neither of those can reach GitHub, so build it
+> yourself:
 >
 > ```sh
 > git clone https://github.com/Sugar-Coffee/houston-ai
-> cd houston-ai && cargo build --release
-> ./target/release/houston
+> cd houston-ai && cargo build --release && ./target/release/houston
 > ```
 
-<details>
-<summary>Other ways</summary>
+## Setting up a vault worth having
 
-```sh
-# somewhere else
-curl -fsSL .../install.sh | HOUSTON_INSTALL_DIR=/usr/local/bin sh
+On first run Houston makes one at `~/.houston/vault/` and touches nothing else.
+Already have an Obsidian vault? Point Settings at it. Nothing is copied, moved
+or converted.
 
-# a specific version
-curl -fsSL .../install.sh | HOUSTON_VERSION=v0.0.1 sh
-
-# from source
-cargo install --git https://github.com/Sugar-Coffee/houston-ai
-```
-
-[Read the script first](install.sh) if you would rather not pipe one into a
-shell — it is a hundred lines of POSIX sh, short on purpose.
-
-</details>
-
-## Working with the vault
-
-The vault is a folder of markdown. On first launch Houston makes one at
-`~/.houston/vault/` and touches nothing else; point it at an existing Obsidian
-vault in Settings and nothing is copied or moved.
-
-The reason it is in the same app as the agents: **a vault set up with its own
-`CLAUDE.md` and skills makes an agent launched inside it useful immediately.**
-It knows how your knowledge base is organised, where things live, and what to
-do when you ask for certain things. Press `c` in the vault and you get exactly
-that agent, in that directory.
-
-### Laying it out
-
-A vault earns its keep when it is both a **knowledge base** and a **work log**:
-when an agent can read what was decided six weeks ago and append what it just
-learned. A layout that supports that:
+A vault earns its keep when agents both *read* it and *write back to it*. That
+takes a bit of shape. Roughly:
 
 ```
 vault/
 ├── CLAUDE.md              how agents should use this vault
 ├── log.md                 global work log, newest first
 │
-├── Daily/                 one note per day: what happened, what is next
-│   └── 2026-09-09.md
-│
 ├── Projects/
 │   └── acme-api/
 │       ├── index.md       what it is, where things live, who cares
-│       ├── build-log.md   what happened on this project, newest first
+│       ├── build-log.md   what happened here, newest first
 │       ├── decisions/     one file per decision, numbered
-│       │   └── 0001-postgres-over-dynamo.md
-│       └── research/      measurements and findings, dated
+│       └── research/      measurements, dated
 │
 ├── Knowledge/             durable reference that outlives any project
-│   ├── systems/           how the infrastructure actually works
-│   ├── people/            who owns what
-│   └── howto/
-│
-├── Workshop/              long-running thinking, half-formed on purpose
-├── Inbox/                 unsorted, to be filed
+├── Daily/                 one note per day
 └── Archive/               finished, kept because search does not care
 ```
 
-The shape that matters is **project folders each carrying their own log,
-decisions and research**, plus a global log across all of them. An agent
-starting work reads `index.md` and `decisions/`; an agent finishing work
-appends to `build-log.md`. Everything else is preference.
+The bit that matters is that **each project carries its own log, decisions and
+research**. An agent starting work reads `index.md` and `decisions/`. An agent
+finishing work appends to `build-log.md`.
 
-Two habits make it worth having at all:
+Two habits make the whole thing worth having:
 
-- **Write the log entry in the same commit as the work**, not afterwards, and
-  only when it says something the diff cannot — what you tried that failed, a
-  measurement that decided something, a library that behaved unexpectedly.
-- **Record the losing argument** in a decision, not just the winning one.
-  Someone will re-derive it otherwise, and should be able to see it was already
-  considered.
+Write the log entry in the same commit as the work, and only when it says
+something the diff cannot. A dead end, a measurement that settled an argument,
+a library that behaved unexpectedly.
 
-### Telling your projects about it
+Record the losing argument in a decision, not just the winning one. Somebody
+will re-derive it otherwise, and they deserve to know it was already
+considered.
 
-For agents to use the vault on their own — reading context before they start,
-writing back what they learned — each project needs to know it exists. Add
-something like this to your project's `CLAUDE.md`:
+Then tell your projects the vault exists. Something like this in a project's
+`CLAUDE.md`:
 
 ```markdown
+## Knowledge base
+
+Notes for this project live in `~/houston-vault/Projects/acme-api/`.
+
+Before starting: read `index.md`, and `decisions/` before proposing anything
+architectural. Most big questions have been argued already.
+
+When finishing: append to `build-log.md` in the same commit as the work. Only
+write an entry if it says something the diff cannot.
+```
+
+That is the whole trick. The vault stops being somewhere you file things and
+becomes somewhere your agents work.
 
 ## Keys
 
-`tab` moves between views, `1`–`5` jump to one, and the bottom bar always shows
-what the current context accepts.
+`tab` between views, `1`–`5` to jump. The bar at the bottom always shows what
+the current context accepts, so there is nothing to memorise.
 
 <details>
-<summary>The keys worth knowing</summary>
-
-**Anywhere**
+<summary>But here are the good ones</summary>
 
 | | |
 |---|---|
-| `tab` · `1`–`5` | next view · jump to one |
-| `q q` | quit — twice, so one keystroke cannot take down a workspace |
-
-**Sessions**
-
-| | |
-|---|---|
-| `n` · `s` | new agent (asks where, and whether to make a worktree) · new shell |
+| `n` · `s` | new agent · new shell |
 | `↵` · `ctrl-\` | attach · detach |
-| `v` · `c` | review its diff · copy text out of its output |
-| `r` · `x` | rename · close |
-| `u` `d` `g` `G` | scroll its output |
+| `v` · `c` | review the diff · copy text out |
+| `2` then `c` | agent in the vault |
+| `2` then `/` | find a note (picking one shows you where it lives) |
+| `f` in the editor | jump mode |
+| `l` in Worktrees | land it |
+| `q q` | quit, twice, so one keystroke cannot take down a workspace |
 
-**Vault**
-
-| | |
-|---|---|
-| `↵` · `→` `←` | open a note, or open/close a folder · expand · collapse |
-| `c` | start an agent in the vault |
-| `n` · `N` | new note · new folder |
-| `r` · `x` | rename or move · delete |
-| `/` · `f` | find by name · search inside notes |
-| `y` · `i` | copy the path · send it to a session |
-| `l` · `b` | links out · backlinks |
-
-**Editor**
-
-| | |
-|---|---|
-| `i` `a` `o` | insert here · after · on a new line |
-| `f` | jump mode — type a tag to teleport |
-| `[` `]` · `↵` | previous/next heading · follow the link under the cursor |
-| `t` · `s` | toggle a task · save |
-
-**Worktrees**
-
-| | |
-|---|---|
-| `↵` · `v` | go to its session · review its diff |
-| `l` · `d` | land it · remove it |
-
-Full reference: [`docs/keybindings.md`](docs/keybindings.md).
+Everything else: [`docs/keybindings.md`](docs/keybindings.md).
 
 </details>
 
-## Themes
-
-Nineteen built in — Dracula, Monokai, Nord, One Dark, Tokyo Night, Catppuccin,
-Gruvbox, Solarized, Rosé Pine, Kanagawa, Everforest, Ayu, Night Owl, GitHub,
-and a monochrome. Press `↵` on the Theme row in Settings and the app repaints
-as you move through the list.
-
-Every hue means one thing everywhere: purple is *you are here*, orange is *this
-wants you*, green is *live*, cyan is *followable*. A test enforces a contrast
-floor so nothing ships with unreadable text. These are homages rather than
-ports — see [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md).
-
-Your own themes are `.toml` files in `~/.houston/themes/`; a documented template
-is written there on first run. Turn on **Powerline separators** in Settings if
-you run a patched font.
-
 ## Status
 
-**Pre-release, in daily use by its author.** Rust 2024,
-[ratatui](https://ratatui.rs) and
-[alacritty_terminal](https://github.com/alacritty/alacritty).
-`unsafe_code = "forbid"`, clippy pedantic and nursery clean, ~430 tests, CI on
+Pre-release, and used every day by the person who wrote it. Rust,
+[ratatui](https://ratatui.rs), and
+[alacritty_terminal](https://github.com/alacritty/alacritty) doing the terminal
+emulation. `unsafe_code = "forbid"`, clippy pedantic clean, ~430 tests, CI on
 macOS and Linux.
 
-## Credits
-
 Jump mode is [amp](https://github.com/jmacdonald/amp)'s idea.
-[Chloe](https://github.com/KevinEdry/chloe) got hook-driven agent status right,
-and Houston does it the same way.
-
-## Licence
+[Chloe](https://github.com/KevinEdry/chloe) worked out that agent status should
+come from hooks, and Houston does it the same way.
 
 MIT. See [LICENSE](LICENSE).
