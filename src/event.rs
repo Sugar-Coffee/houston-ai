@@ -2480,6 +2480,24 @@ mod tests {
         MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
     }
 
+    /// Puts a known line at the top of a spawned session's screen.
+    ///
+    /// **The clear is the point.** These tests spawn a real login shell, and a
+    /// shell writes a prompt whenever it gets round to it — so feeding a line
+    /// and asserting it is on row 0 is a race with somebody else's `.zshrc`.
+    /// It passed on this laptop for weeks and failed on the macOS runner the
+    /// first day CI was allowed to run. Erasing first makes row 0 ours, and
+    /// anything the shell prints afterwards lands on row 1 where it is
+    /// harmless.
+    fn put_on_screen(app: &App, line: &str) {
+        let session = app.sessions.selected().expect("a session to write into");
+        // A full reset rather than an erase: `\x1b[2J` pushes the screen into
+        // scrollback rather than dropping it, so `g` in copy mode then jumps
+        // to the top of a history full of blank lines instead of to the text.
+        session.feed("\x1bc");
+        session.feed(line);
+    }
+
     /// The complaint this fixes: dragging in your terminal selects a whole
     /// Houston row, sidebar included, because your terminal has no idea a pane
     /// exists. Houston does.
@@ -2487,7 +2505,7 @@ mod tests {
     fn dragging_inside_the_pane_selects_and_copies_on_release() {
         let mut app = App::new();
         on_key(&mut app, press(KeyCode::Char('s')));
-        app.sessions.selected().unwrap().feed("copy this line\r\n");
+        put_on_screen(&app, "copy this line\r\n");
 
         // A pane occupying the right-hand side, as the real layout gives it.
         let pane = Rect { x: 40, y: 3, width: 60, height: 20 };
@@ -2622,7 +2640,7 @@ mod tests {
         app.sessions.detach();
 
         // Put something known on the session's screen, the way the child would.
-        app.sessions.selected().unwrap().feed("hello copy mode\r\n");
+        put_on_screen(&app, "hello copy mode\r\n");
 
         on_key(&mut app, press(KeyCode::Char('c')));
         assert_eq!(app.focus(), InputFocus::Copy, "c takes the keyboard");
