@@ -40,9 +40,6 @@ Up
 Sleep 400ms
 Type "e"
 Sleep 700ms
-Escape
-Sleep 300ms
-Type "gg"
 Type "A"
 Sleep 300ms
 Type " on use"

@@ -85,6 +85,9 @@ pub fn picker(frame: &mut Frame, area: Rect, picker: &Picker, sessions: &Session
 ///
 /// Sized to its content so it reads as a dialog rather than a second screen —
 /// you are answering a handful of questions, and what is behind stays visible.
+/// Both dialogs are this wide. See [`options`] for why they have to match.
+const FORM_WIDTH: u16 = 64;
+
 pub fn form(frame: &mut Frame, area: Rect, form: &Form, theme: Theme) {
     let completions =
         form.focused().map_or(0, |field| u16::try_from(field.completions.len()).unwrap_or(0));
@@ -92,7 +95,7 @@ pub fn form(frame: &mut Frame, area: Rect, form: &Form, theme: Theme) {
         u16::try_from(form.fields.iter().filter(|field| field.visible).count()).unwrap_or(4);
 
     let height = (visible + completions.min(7) + 2).min(area.height);
-    let width = 64.min(area.width);
+    let width = FORM_WIDTH.min(area.width);
 
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
@@ -316,6 +319,98 @@ pub fn themes(
 ///
 /// Deliberately small and central. It is the only thing on screen that is not
 /// a view, and the one moment where reading before pressing matters.
+/// A filtered list of options, over the form that asked for one.
+pub fn options(frame: &mut Frame, area: Rect, picker: &crate::app::OptionPicker, theme: Theme) {
+    let matches = picker.matches();
+
+    // As wide as the form it opens over, so it covers rather than crashes into
+    // it. A narrower box leaves the form's labels poking out down one side,
+    // which reads as two dialogs fighting rather than one step after another.
+    let width = FORM_WIDTH.min(area.width);
+    let rows = u16::try_from(matches.len().clamp(1, 12)).unwrap_or(1);
+    let height = (rows + 4).min(area.height);
+
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .style(Style::default().bg(theme.raised))
+        .title(Span::styled(
+            format!(" {} ", picker.title),
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            " type to filter · ↑↓ move · ↵ choose · esc cancel ",
+            Style::default().fg(theme.dim),
+        ));
+
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.height == 0 {
+        return;
+    }
+
+    // The query on its own row with a cursor block, so an empty filter still
+    // looks like somewhere you can type.
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(picker.query.clone(), Style::default().fg(theme.text)),
+            Span::styled("\u{258f}", Style::default().fg(theme.accent)),
+        ]),
+        Line::from(""),
+    ];
+
+    if matches.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  nothing matches",
+            Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
+        )));
+    }
+
+    // The window follows the selection rather than the other way round, so the
+    // list never jumps under a held key.
+    let visible = (inner.height as usize).saturating_sub(2);
+    let start = picker
+        .selected
+        .saturating_sub(visible / 2)
+        .min(matches.len().saturating_sub(visible.max(1)));
+
+    for (index, option) in matches.iter().enumerate().skip(start).take(visible) {
+        let chosen = index == picker.selected;
+        let line = Line::from(vec![
+            Span::styled(
+                if chosen { "  \u{25b8} " } else { "    " },
+                Style::default().fg(theme.accent),
+            ),
+            Span::styled(
+                truncate(option, inner.width.saturating_sub(6) as usize),
+                if chosen {
+                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text)
+                },
+            ),
+        ]);
+        lines.push(if chosen {
+            keycap::fill(line, inner.width).style(keycap::selected_row(theme))
+        } else {
+            line
+        });
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 pub fn confirm(frame: &mut Frame, area: Rect, confirm: &crate::app::Confirm, theme: Theme) {
     let width = 62.min(area.width);
     let height = 7.min(area.height);

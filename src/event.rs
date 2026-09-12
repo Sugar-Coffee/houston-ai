@@ -741,6 +741,7 @@ fn on_key_form(app: &mut App, key: KeyEvent) {
             match activation {
                 Activation::Submitted => accept_form(app),
                 Activation::Toggled => apply_form_field(app, modal),
+                Activation::Picking => open_option_picker(app),
                 // **Nothing has changed yet.** Opening a text field for
                 // editing used to apply the settings anyway, which was
                 // harmless right up until one of them was wrong: press Return
@@ -755,6 +756,49 @@ fn on_key_form(app: &mut App, key: KeyEvent) {
         KeyCode::Esc if modal => app.close_form(),
         KeyCode::Char('q') if !modal => app.request_quit(),
         _ if !modal => on_key_browsing(app, key),
+        _ => {}
+    }
+}
+
+/// Opens the list picker over whichever field asked for one.
+fn open_option_picker(app: &mut App) {
+    let form = app.form.as_ref().unwrap_or(&app.settings);
+    let Some(field) = form.focused() else { return };
+
+    let selected = field.options.iter().position(|option| *option == field.value).unwrap_or(0);
+    app.options = Some(crate::app::OptionPicker {
+        title: field.label.to_lowercase(),
+        all: field.options.clone(),
+        query: String::new(),
+        selected,
+        field: field.label,
+    });
+    app.dirty = true;
+}
+
+/// The list picker: type to filter, Return to choose.
+fn on_key_options(app: &mut App, key: KeyEvent) {
+    app.dirty = true;
+    let Some(picker) = app.options.as_mut() else { return };
+
+    match key.code {
+        KeyCode::Esc => app.options = None,
+        KeyCode::Down | KeyCode::Tab => picker.move_selection(true),
+        KeyCode::Up | KeyCode::BackTab => picker.move_selection(false),
+        KeyCode::Backspace => picker.retype(|query| {
+            query.pop();
+        }),
+        KeyCode::Char(character) => picker.retype(|query| query.push(character)),
+        KeyCode::Enter => {
+            let Some(chosen) = picker.chosen() else { return };
+            let label = picker.field;
+            app.options = None;
+
+            let form = app.form.as_mut().unwrap_or(&mut app.settings);
+            if let Some(field) = form.fields.iter_mut().find(|field| field.label == label) {
+                field.value = chosen;
+            }
+        }
         _ => {}
     }
 }
@@ -827,6 +871,7 @@ fn accept_form(app: &mut App) {
         FormPurpose::NewVaultEntry { folder } => return accept_new_vault_entry(app, folder),
         FormPurpose::RenameVaultEntry => return accept_rename_vault_entry(app),
         FormPurpose::NewTask => return accept_new_task(app),
+        FormPurpose::EditTask(path) => return accept_task_details(app, &path),
         FormPurpose::NewSession | FormPurpose::None => {}
     }
 
@@ -1287,12 +1332,7 @@ fn accept_new_task(app: &mut App) {
     let project = form.value(crate::app::fields::PROJECT);
     let project = (project != crate::app::NO_PROJECT).then_some(project);
 
-    let tags: Vec<String> = form
-        .entered(crate::app::fields::TAGS)
-        .split(',')
-        .map(|tag| tag.trim().trim_start_matches('#').to_string())
-        .filter(|tag| !tag.is_empty())
-        .collect();
+    let tags = tags_from(&form.entered(crate::app::fields::TAGS));
 
     match crate::vault::tasks::create(&root, &title, priority, project.as_deref(), &tags) {
         Ok(path) => {
@@ -1308,6 +1348,44 @@ fn accept_new_task(app: &mut App) {
         }
         Err(error) => app.notify(error.to_string()),
     }
+}
+
+/// Writes the details form back into the task's frontmatter.
+///
+/// One field at a time through [`with_field`], so the keys Houston does not
+/// know about survive a trip through a dialog that never showed them.
+///
+/// [`with_field`]: crate::vault::tasks::with_field
+fn accept_task_details(app: &mut App, path: &Path) {
+    let Some(form) = app.form.as_ref() else { return };
+
+    let project = form.value(crate::app::fields::PROJECT);
+    let tags = tags_from(&form.entered(crate::app::fields::TAGS));
+
+    let changes: [(&str, Option<String>); 4] = [
+        ("status", Some(form.value(crate::app::fields::STATUS))),
+        ("priority", Some(form.value(crate::app::fields::PRIORITY))),
+        ("project", (project != crate::app::NO_PROJECT).then_some(project)),
+        ("tags", (!tags.is_empty()).then(|| format!("[{}]", tags.join(", ")))),
+    ];
+
+    for (key, value) in changes {
+        if let Err(error) = crate::vault::tasks::edit(path, key, value.as_deref()) {
+            return app.notify(error.to_string());
+        }
+    }
+
+    app.close_form();
+    app.load_tasks();
+}
+
+/// Tags as typed: comma separated, hashes optional, blanks dropped.
+fn tags_from(typed: &str) -> Vec<String> {
+    typed
+        .split(',')
+        .map(|tag| tag.trim().trim_start_matches('#').to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect()
 }
 
 fn accept_rename_vault_entry(app: &mut App) {
@@ -1403,6 +1481,9 @@ fn on_key_diff(app: &mut App, key: KeyEvent, page: usize) {
 fn on_key_picker(app: &mut App, key: KeyEvent) {
     if app.confirm.is_some() {
         return on_key_confirm(app, key);
+    }
+    if app.options.is_some() {
+        return on_key_options(app, key);
     }
     if app.theme_picker.is_some() {
         return on_key_theme_picker(app, key);
@@ -1587,7 +1668,8 @@ fn on_key_tasks(app: &mut App, key: KeyEvent) {
         KeyCode::Char('p') => cycle_task_priority(app),
         KeyCode::Char('c') => start_agent_on_task(app),
         KeyCode::Char('x') => delete_task(app),
-        KeyCode::Char('e') | KeyCode::Enter => edit_task(app),
+        KeyCode::Char('e') => edit_task(app),
+        KeyCode::Enter => task_details(app),
         _ => {}
     }
 }
@@ -1649,13 +1731,19 @@ fn edit_task(app: &mut App) {
     // text and makes an unedited task look modified.
     let (path, original) = (task.path.clone(), task.body().to_string());
 
-    let mut editor = crate::editor::Editor::with_buffer(Buffer::from_str(&original));
-    editor.buffer.move_buffer_end();
-    editor.enter_insert();
-
-    app.editor = Some(editor);
+    // Normal mode, at the top, exactly like opening a note. `e` was landing in
+    // insert mode on the theory that a key meaning "write" should let you
+    // write — but this is the same editor with the same modes everywhere else
+    // in Houston, and an editor that is modal in one place and not in another
+    // is worse than either.
+    app.editor = Some(crate::editor::Editor::with_buffer(Buffer::from_str(&original)));
     app.task_edit = Some(crate::app::TaskEdit { path, original });
     app.dirty = true;
+}
+
+fn task_details(app: &mut App) {
+    let Some(task) = app.selected_task().cloned() else { return app.notify("no task selected") };
+    app.open_task_details_form(&task);
 }
 
 fn delete_task(app: &mut App) {
@@ -3112,6 +3200,12 @@ mod tests {
         on_key(&mut app, press(KeyCode::Char('e')));
         assert_eq!(app.focus(), InputFocus::Editor, "the editor has the keyboard");
 
+        // `j` means "next task" in the list and "down a line" in the editor.
+        on_key(&mut app, press(KeyCode::Char('j')));
+        assert_eq!(app.task_selected, 0, "j moved the cursor, not the selection");
+
+        on_key(&mut app, press(KeyCode::Char('G')));
+        on_key(&mut app, press(KeyCode::Char('A')));
         on_key(&mut app, press(KeyCode::Char(' ')));
         on_key(&mut app, press(KeyCode::Char('!')));
 
@@ -3156,9 +3250,8 @@ mod tests {
         let path = app.selected_task().unwrap().path.clone();
 
         on_key(&mut app, press(KeyCode::Char('e')));
-        let editor = app.editor.as_mut().unwrap();
-        editor.buffer.move_buffer_start();
-        editor.buffer.move_line_end();
+        on_key(&mut app, press(KeyCode::Char('g')));
+        on_key(&mut app, press(KeyCode::Char('A')));
         for character in " the second".chars() {
             on_key(&mut app, press(KeyCode::Char(character)));
         }
@@ -3186,18 +3279,21 @@ mod tests {
         discard(&app);
     }
 
-    /// You pressed a key that means "write". Landing in normal mode would make
-    /// the next thing you type a series of commands.
+    /// The same editor as the vault's, opened the same way. It briefly landed
+    /// in insert mode here on the theory that `e` means "write" — but an
+    /// editor that is modal in one place and not in another is worse than
+    /// either, and the muscle memory belongs to the editor rather than to the
+    /// key that opened it.
     #[test]
-    fn editing_starts_in_insert_mode_with_the_cursor_at_the_end() {
+    fn editing_starts_in_normal_mode_at_the_top() {
         let mut app = app_with_tasks("insert", &[("0001-a.md", "# Alpha\n\nBody.\n")]);
 
         on_key(&mut app, press(KeyCode::Char('e')));
 
         let editor = app.editor.as_ref().unwrap();
-        assert_eq!(editor.mode, crate::editor::Mode::Insert);
-        assert_eq!(editor.buffer.cursor.column, "Body.".len(), "ready to carry on writing");
-        assert_eq!(editor.buffer.cursor.line, 2, "at the end of the body, not the end of a title");
+        assert_eq!(editor.mode, crate::editor::Mode::Normal);
+        assert_eq!(editor.buffer.cursor.line, 0);
+        assert_eq!(editor.buffer.cursor.column, 0);
 
         discard(&app);
     }
@@ -3211,6 +3307,8 @@ mod tests {
         let path = app.selected_task().unwrap().path.clone();
 
         on_key(&mut app, press(KeyCode::Char('e')));
+        on_key(&mut app, press(KeyCode::Char('G')));
+        on_key(&mut app, press(KeyCode::Char('A')));
         for character in " More.".chars() {
             on_key(&mut app, press(KeyCode::Char(character)));
         }
@@ -3237,6 +3335,7 @@ mod tests {
         let path = app.selected_task().unwrap().path.clone();
 
         on_key(&mut app, press(KeyCode::Char('e')));
+        on_key(&mut app, press(KeyCode::Char('i')));
         on_key(&mut app, press(KeyCode::Char('!')));
 
         std::fs::write(&path, "# Alpha\n\nSomebody else got here first.\n").unwrap();
@@ -3247,7 +3346,7 @@ mod tests {
         assert!(app.editor.is_some(), "and stays open, so the answer has something to apply to");
 
         on_key(&mut app, press(KeyCode::Char('y')));
-        assert!(std::fs::read_to_string(&path).unwrap().contains("Body.!"), "yes means yes");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("!# Alpha"), "yes means yes");
 
         discard(&app);
     }
@@ -3260,6 +3359,7 @@ mod tests {
         let path = app.selected_task().unwrap().path.clone();
 
         on_key(&mut app, press(KeyCode::Char('e')));
+        on_key(&mut app, press(KeyCode::Char('i')));
         on_key(&mut app, press(KeyCode::Char('!')));
         std::fs::remove_file(&path).unwrap();
 
@@ -3272,6 +3372,111 @@ mod tests {
         assert!(app.editor.is_none(), "and a second press lets go");
 
         discard(&app);
+    }
+
+    /// The metadata half of a task. The body is prose and wants the editor;
+    /// these are four values from fixed vocabularies and want a dialog.
+    #[test]
+    fn the_details_form_writes_every_field_back_to_the_frontmatter() {
+        let mut app = app_with_tasks(
+            "details",
+            &[("0001-a.md", "---\nstatus: open\npriority: low\nkeep-me: 42\n---\n# Alpha\n")],
+        );
+        std::fs::create_dir_all(app.vault_root().unwrap().join("Projects/acme")).unwrap();
+        let path = app.selected_task().unwrap().path.clone();
+
+        on_key(&mut app, press(KeyCode::Enter));
+        assert_eq!(app.focus(), InputFocus::Form, "Return on a task opens its details");
+
+        let form = app.form.as_mut().unwrap();
+        form.fields[0].value = "done".to_string();
+        form.fields[1].value = "high".to_string();
+        form.fields[2].value = "acme".to_string();
+        form.fields[3].value = "auth, #tests".to_string();
+        accept_form(&mut app);
+
+        let source = std::fs::read_to_string(&path).unwrap();
+        assert!(source.contains("keep-me: 42"), "a key the dialog never showed still survives it");
+
+        app.tasks_show_done = true;
+        app.load_tasks();
+        let task = app.selected_task().unwrap();
+        assert_eq!(task.status, crate::vault::tasks::Status::Done);
+        assert_eq!(task.priority, crate::vault::tasks::Priority::High);
+        assert_eq!(task.project.as_deref(), Some("acme"));
+        assert_eq!(task.tags, ["auth", "tests"], "a hash somebody typed is not part of the tag");
+
+        discard(&app);
+    }
+
+    /// Clearing a field has to remove the line, not write an empty one.
+    #[test]
+    fn clearing_the_project_and_tags_removes_them_rather_than_emptying_them() {
+        let mut app = app_with_tasks(
+            "clear",
+            &[("0001-a.md", "---\nproject: acme\ntags: [auth]\n---\n# Alpha\n")],
+        );
+        let path = app.selected_task().unwrap().path.clone();
+
+        on_key(&mut app, press(KeyCode::Enter));
+        let form = app.form.as_mut().unwrap();
+        form.fields[2].value = crate::app::NO_PROJECT.to_string();
+        form.fields[3].value = String::new();
+        accept_form(&mut app);
+
+        let source = std::fs::read_to_string(&path).unwrap();
+        assert!(!source.contains("project:"), "not `project:` with nothing after it");
+        assert!(!source.contains("tags:"));
+
+        discard(&app);
+    }
+
+    /// Cycling a long list one keypress at a time is not a choice, it is an
+    /// endurance test — the same argument that took themes off a cycling row.
+    #[test]
+    fn the_project_row_opens_a_list_rather_than_cycling() {
+        let mut app = app_with_tasks("pick", &[("0001-a.md", "# Alpha\n")]);
+        for name in ["acme-api", "acme-web", "billing"] {
+            std::fs::create_dir_all(app.vault_root().unwrap().join("Projects").join(name)).unwrap();
+        }
+
+        on_key(&mut app, press(KeyCode::Char('n')));
+        app.form.as_mut().unwrap().move_focus(true); // Priority
+        app.form.as_mut().unwrap().move_focus(true); // Project
+        on_key(&mut app, press(KeyCode::Enter));
+
+        let picker = app.options.as_ref().expect("Return on the project row opens the list");
+        assert_eq!(picker.matches().len(), 4, "three projects and 'none'");
+
+        // Typing filters, and the answer goes back into the field it came from.
+        for character in "web".chars() {
+            on_key(&mut app, press(KeyCode::Char(character)));
+        }
+        assert_eq!(app.options.as_ref().unwrap().matches(), [&"acme-web".to_string()]);
+        on_key(&mut app, press(KeyCode::Enter));
+
+        assert!(app.options.is_none(), "choosing closes it");
+        assert_eq!(app.form.as_ref().unwrap().value(crate::app::fields::PROJECT), "acme-web");
+
+        discard(&app);
+    }
+
+    /// The filter has to bring the cursor back with it, or Return chooses row
+    /// five of a list that now has two rows.
+    #[test]
+    fn narrowing_the_list_moves_the_cursor_back_to_the_top() {
+        let mut picker = crate::app::OptionPicker {
+            title: "project".to_string(),
+            all: ["alpha", "beta", "gamma", "delta"].map(String::from).to_vec(),
+            query: String::new(),
+            selected: 3,
+            field: "Project",
+        };
+
+        picker.retype(|query| query.push('a'));
+
+        assert_eq!(picker.selected, 0);
+        assert_eq!(picker.chosen().as_deref(), Some("alpha"));
     }
 
     #[test]

@@ -101,8 +101,13 @@ project's own directory**, already holding the task, the project write-up and
 the decisions behind it. You picked a line off a list; it turns up briefed.
 
 `e` edits the task where it sits — the border goes green, the stat bar stays
-put, and you are in the editor. The title is just the first markdown heading,
-so renaming is typing over it and the list keeps up as you go.
+put, and you are in the editor, same modes and all. The title is just the first
+markdown heading, so renaming is typing over it and the list keeps up as you go.
+
+`↵` opens the details: status, priority, project, tags. The project row is a
+filtered list rather than something you cycle through thirty times, and tags
+complete against the ones already in your vault, so you get reminded you have
+`auth` before you invent `authentication`.
 
 And because they are only files, an agent that notices a follow-up can open a
 task for it, and you will see it next time you look. Hand-edit them, or don't.

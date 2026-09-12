@@ -518,6 +518,28 @@ pub fn edit(path: &Path, key: &str, value: Option<&str>) -> Result<()> {
         .with_context(|| format!("could not write {}", path.display()))
 }
 
+/// Every tag already in use, commonest first.
+///
+/// The vocabulary a tag field completes against. Ordered by how often a tag
+/// appears rather than alphabetically, because the tag you want next is much
+/// more likely to be one you reach for a lot than one starting with `a`.
+///
+/// Read from the tasks themselves rather than kept in a list somewhere. A tag
+/// index would be a second thing to keep true, and the only way it could ever
+/// disagree with the files is by being wrong.
+pub fn tags_in_use(vault_root: &Path) -> Vec<String> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for task in load(vault_root) {
+        for tag in task.tags {
+            *counts.entry(tag).or_default() += 1;
+        }
+    }
+
+    let mut tags: Vec<(String, usize)> = counts.into_iter().collect();
+    tags.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    tags.into_iter().map(|(tag, _)| tag).collect()
+}
+
 /// Folder names under `Projects/`, which is the list of projects a task can
 /// belong to.
 pub fn projects(vault_root: &Path) -> Vec<String> {
@@ -722,6 +744,29 @@ mod tests {
         let path = Path::new("/v/Tasks/0007-ring-the-bank.md");
         assert_eq!(title_from_body(path, "# Halfway through a ren"), "Halfway through a ren");
         assert_eq!(title_from_body(path, "no heading yet"), "Ring the bank");
+    }
+
+    /// The vocabulary a tag field completes against. Commonest first, because
+    /// the next tag you type is far more likely to be one you use a lot than
+    /// one that happens to start with an early letter.
+    #[test]
+    fn the_tag_vocabulary_is_ordered_by_how_often_each_is_used() {
+        let root = scratch("vocab");
+        let write = |name: &str, tags: &str| {
+            std::fs::write(
+                root.join(FOLDER).join(name),
+                format!("---\ntags: [{tags}]\n---\n# T\n"),
+            )
+            .unwrap();
+        };
+        write("0001-a.md", "auth, tests");
+        write("0002-b.md", "auth");
+        write("0003-c.md", "auth, zebra");
+        write("0004-d.md", "tests");
+
+        assert_eq!(tags_in_use(&root), ["auth", "tests", "zebra"]);
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

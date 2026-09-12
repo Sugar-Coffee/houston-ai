@@ -147,6 +147,8 @@ pub struct App {
     pub confirm: Option<Confirm>,
     /// The open theme picker, if any.
     pub theme_picker: Option<ThemePicker>,
+    /// A list being chosen from, over whichever form asked for it.
+    pub options: Option<OptionPicker>,
     /// The open diff, if any. Captured once on open; see [`crate::diff::View`].
     pub diff: Option<crate::diff::View>,
     /// The worktree manager's contents, loaded when it opens.
@@ -205,6 +207,8 @@ pub enum FormPurpose {
     RenameVaultEntry,
     /// Write a new task into the vault's `Tasks/` folder.
     NewTask,
+    /// Change the frontmatter of the task at this path.
+    EditTask(std::path::PathBuf),
 }
 
 /// A question standing between you and something irreversible.
@@ -239,6 +243,57 @@ pub enum Pending {
     RemoveVaultEntry(std::path::PathBuf),
     /// Delete the task file.
     RemoveTask(std::path::PathBuf),
+}
+
+/// A list of options, filtered as you type, over the form field that wants one.
+///
+/// The theme row got a picker of its own because nineteen themes cycled one
+/// keypress at a time is not a choice. Projects hit the same wall — this is
+/// that idea with the specifics taken out, so the next long list does not need
+/// a third implementation.
+#[derive(Debug, Clone)]
+pub struct OptionPicker {
+    pub title: String,
+    /// Every option, unfiltered.
+    pub all: Vec<String>,
+    pub query: String,
+    /// Index into [`Self::matches`], not into `all` — the filter moves things.
+    pub selected: usize,
+    /// The field the answer goes back into.
+    pub field: &'static str,
+}
+
+impl OptionPicker {
+    /// The options matching the query, in the order they were given.
+    ///
+    /// A plain case-insensitive substring match rather than the fuzzy matcher
+    /// the vault uses. These lists are short and their items are things you
+    /// named yourself; fuzzy matching earns its keep over a thousand notes,
+    /// and over twelve projects it mostly ranks surprises to the top.
+    pub fn matches(&self) -> Vec<&String> {
+        let query = self.query.to_lowercase();
+        self.all.iter().filter(|option| option.to_lowercase().contains(&query)).collect()
+    }
+
+    pub fn chosen(&self) -> Option<String> {
+        self.matches().get(self.selected).map(|option| (*option).clone())
+    }
+
+    pub fn move_selection(&mut self, forward: bool) {
+        let count = self.matches().len();
+        if count == 0 {
+            return;
+        }
+        self.selected =
+            if forward { (self.selected + 1) % count } else { (self.selected + count - 1) % count };
+    }
+
+    /// Typing narrows the list, so the cursor has to come back to the top —
+    /// otherwise it sits on row 5 of a list that now has two rows.
+    pub fn retype(&mut self, edit: impl FnOnce(&mut String)) {
+        edit(&mut self.query);
+        self.selected = 0;
+    }
 }
 
 /// A description being edited in the Tasks pane.
@@ -288,6 +343,8 @@ pub mod fields {
     pub const PROJECT: &str = "Project";
     pub const TAGS: &str = "Tags";
     pub const ADD: &str = "Add";
+    pub const STATUS: &str = "Status";
+    pub const SAVE: &str = "Save";
 }
 
 impl App {
@@ -744,6 +801,71 @@ impl App {
         self.reload_theme_from_list();
     }
 
+    /// The rows both task forms share, so they cannot drift apart.
+    ///
+    /// One shape for "describe this task" whether the task exists yet or not.
+    /// Two hand-written lists would have grown different hints and, eventually,
+    /// different fields.
+    fn task_fields(
+        &self,
+        priority: crate::vault::tasks::Priority,
+        project: Option<&str>,
+        tags: &[String],
+    ) -> Vec<Field> {
+        let root = self.vault_root().map(std::path::Path::to_path_buf);
+        let projects = root.as_deref().map(crate::vault::tasks::projects).unwrap_or_default();
+        let vocabulary = root.as_deref().map(crate::vault::tasks::tags_in_use).unwrap_or_default();
+
+        let current = project
+            .filter(|project| projects.iter().any(|known| known == project))
+            .unwrap_or(NO_PROJECT)
+            .to_string();
+
+        let mut options = vec![NO_PROJECT.to_string()];
+        options.extend(projects);
+
+        vec![
+            Field::choice(
+                fields::PRIORITY,
+                "return cycles",
+                crate::vault::tasks::Priority::all()
+                    .iter()
+                    .map(|priority| priority.key().to_string())
+                    .collect(),
+                priority.key(),
+            ),
+            Field::pick(fields::PROJECT, "folders under Projects/", options, &current),
+            Field::tags(
+                fields::TAGS,
+                "comma separated · tab completes",
+                tags.join(", "),
+                vocabulary,
+            ),
+        ]
+    }
+
+    /// Opens the form for changing a task's frontmatter.
+    ///
+    /// The body is edited in the pane and the metadata in a dialog, which
+    /// sounds like two doors onto one thing until you look at what each half
+    /// is. The body is prose: you want the editor, with its modes and its
+    /// jumps. The metadata is four values from three fixed vocabularies, where
+    /// free text is not freedom, it is the opportunity to type `hihg`.
+    pub fn open_task_details_form(&mut self, task: &crate::vault::tasks::Task) {
+        let mut rows = vec![Field::choice(
+            fields::STATUS,
+            "return cycles",
+            vec!["open".to_string(), "done".to_string()],
+            task.status.key(),
+        )];
+        rows.extend(self.task_fields(task.priority, task.project.as_deref(), &task.tags));
+        rows.push(Field::action(fields::SAVE, "write it back"));
+
+        self.form = Some(Form::new(rows).titled("details"));
+        self.form_purpose = FormPurpose::EditTask(task.path.clone());
+        self.dirty = true;
+    }
+
     /// Opens the form for a new task.
     ///
     /// Priority and project are pickers rather than free text, which is the
@@ -756,37 +878,19 @@ impl App {
     /// Tags stay free text. There is no fixed vocabulary of them and inventing
     /// one on somebody's behalf is how a tag system stops being used.
     pub fn open_new_task_form(&mut self) {
-        let projects = self.vault_root().map(crate::vault::tasks::projects).unwrap_or_default();
-
         // The project the cursor is already on, since a run of tasks for one
         // project is the normal way this gets used.
-        let current = self
-            .selected_task()
-            .and_then(|task| task.project.clone())
-            .filter(|project| projects.contains(project))
-            .unwrap_or_else(|| NO_PROJECT.to_string());
+        let current = self.selected_task().and_then(|task| task.project.clone());
 
-        let mut options = vec![NO_PROJECT.to_string()];
-        options.extend(projects);
+        let mut rows = vec![Field::text(fields::TITLE, "what needs doing", "")];
+        rows.extend(self.task_fields(
+            crate::vault::tasks::Priority::Normal,
+            current.as_deref(),
+            &[],
+        ));
+        rows.push(Field::action(fields::ADD, "write the task"));
 
-        self.form = Some(
-            Form::new(vec![
-                Field::text(fields::TITLE, "what needs doing", ""),
-                Field::choice(
-                    fields::PRIORITY,
-                    "return cycles",
-                    crate::vault::tasks::Priority::all()
-                        .iter()
-                        .map(|priority| priority.key().to_string())
-                        .collect(),
-                    crate::vault::tasks::Priority::Normal.key(),
-                ),
-                Field::choice(fields::PROJECT, "folders under Projects/", options, &current),
-                Field::text(fields::TAGS, "comma separated, optional", ""),
-                Field::action(fields::ADD, "write the task"),
-            ])
-            .titled("new task"),
-        );
+        self.form = Some(Form::new(rows).titled("new task"));
         self.form_purpose = FormPurpose::NewTask;
         self.dirty = true;
     }
@@ -936,6 +1040,7 @@ impl App {
             font_detection: crate::fonts::Detection::Unknown,
             font_install: None,
             theme_picker: None,
+            options: None,
             diff: None,
             worktrees: None,
             worktree_selected: 0,
@@ -987,6 +1092,11 @@ impl App {
             return InputFocus::Overlay;
         }
         if self.picker.is_some() {
+            return InputFocus::Overlay;
+        }
+        // Before the form, because it opens *over* one — a picker whose keys
+        // reached the form underneath would type its query into a field.
+        if self.options.is_some() {
             return InputFocus::Overlay;
         }
         if self.form.is_some() {
@@ -1186,6 +1296,16 @@ impl App {
                 ("g/G", "top/bottom"),
                 ("esc", "close"),
             ]),
+            // Overlay covers several dialogs, and they do not take the same
+            // keys. The session chooser jumps by digit; the option picker
+            // types a filter, so a digit is part of the query rather than a
+            // shortcut, and saying "1-9 jump" there would be a lie.
+            InputFocus::Overlay if self.options.is_some() => Some(vec![
+                ("type", "filter"),
+                ("\u{2191}\u{2193}", "move"),
+                ("\u{21b5}", "choose"),
+                ("esc", "cancel"),
+            ]),
             InputFocus::Overlay => Some(vec![
                 ("j/k", "choose"),
                 ("1-9", "jump"),
@@ -1222,8 +1342,12 @@ impl App {
         let form = self.form.as_ref().unwrap_or(&self.settings);
 
         if form.is_editing() {
-            let completes =
-                form.focused().is_some_and(|f| f.kind == crate::form::FieldKind::Directory);
+            let completes = form.focused().is_some_and(|field| {
+                matches!(
+                    field.kind,
+                    crate::form::FieldKind::Directory | crate::form::FieldKind::Tags
+                )
+            });
             let mut binds = vec![("\u{21b5}", "done"), ("esc", "cancel")];
             if completes {
                 binds.insert(0, ("tab", "complete"));
@@ -1282,10 +1406,11 @@ impl App {
                 } else {
                     binds.extend([
                         ("j/k", "select"),
+                        ("\u{21b5}", "details"),
+                        ("e", "edit"),
                         ("space", "done"),
                         ("p", "priority"),
                         ("c", "agent"),
-                        ("e", "edit"),
                         ("n", "new"),
                         ("x", "delete"),
                     ]);

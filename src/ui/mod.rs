@@ -98,6 +98,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let Some(picker) = &app.theme_picker {
         overlay::themes(frame, body, picker, &app.themes, theme);
     }
+    // Above the form, because it is opened from one.
+    if let Some(picker) = &app.options {
+        overlay::options(frame, body, picker, theme);
+    }
     if let Some(view) = &app.diff {
         overlay::diff(frame, body, view, theme);
     }

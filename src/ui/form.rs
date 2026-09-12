@@ -73,11 +73,15 @@ pub fn render(frame: &mut Frame, area: Rect, form: &Form, theme: Theme, title: &
             line
         });
 
-        // Candidates from the last Tab, indented under the field they belong to.
+        // Candidates, indented under the field they belong to.
         if focused && !field.completions.is_empty() {
+            // A trailing slash says "this is a folder, there is more path to
+            // come". A tag is the whole thing, so it does not get one.
+            let suffix = if field.kind == crate::form::FieldKind::Tags { "" } else { "/" };
+
             for candidate in field.completions.iter().take(6) {
                 lines.push(Line::from(Span::styled(
-                    format!("{:>width$}{candidate}/", "", width = LABEL_WIDTH + 4),
+                    format!("{:>width$}{candidate}{suffix}", "", width = LABEL_WIDTH + 4),
                     Style::default().fg(theme.link),
                 )));
             }

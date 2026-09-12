@@ -17,6 +17,16 @@ pub enum FieldKind {
     /// A cycle rather than a popup: the lists here are short, and seeing the
     /// result immediately is the point — you pick a theme by looking at it.
     Choice,
+    /// One of a list too long to cycle. Return opens a picker.
+    ///
+    /// The dividing line between this and [`Self::Choice`] is whether you can
+    /// hold the whole list in your head. Three priorities, yes. Every project
+    /// in the vault, no — and cycling thirty of them one keypress at a time is
+    /// not a choice, it is an endurance test, which is the same argument that
+    /// took the theme row off `Choice`.
+    Pick,
+    /// Comma-separated words, completed against the ones already in use.
+    Tags,
     /// A button. Return on it submits the form.
     ///
     /// A row rather than a modifier chord because most terminals send Ctrl-Enter
@@ -31,8 +41,10 @@ pub enum FieldKind {
 pub enum Activation {
     /// The field now has the keyboard.
     Editing,
-    /// A toggle flipped; nothing else changed.
+    /// A toggle flipped, or a choice cycled; nothing else changed.
     Toggled,
+    /// The field wants a picker opened over it.
+    Picking,
     /// The form should be accepted.
     Submitted,
 }
@@ -59,6 +71,40 @@ pub struct Field {
 }
 
 impl Field {
+    /// Refreshes the suggestions under a tag field as it is typed.
+    ///
+    /// Live rather than only on `Tab`, because a vocabulary you cannot see is
+    /// a vocabulary nobody uses: the whole value of completing tags is being
+    /// reminded that you already have `auth` before you invent `authentication`.
+    fn suggest(&mut self) {
+        if self.kind != FieldKind::Tags {
+            self.completions.clear();
+            return;
+        }
+
+        let partial = self.value.rsplit(',').next().unwrap_or("").trim().to_lowercase();
+        let chosen: Vec<String> = self
+            .value
+            .split(',')
+            .map(|tag| tag.trim().to_lowercase())
+            .filter(|tag| !tag.is_empty())
+            .collect();
+
+        self.completions = self
+            .options
+            .iter()
+            .filter(|tag| {
+                let lower = tag.to_lowercase();
+                // Something already on the line is not a suggestion — except
+                // the one being typed, which is a prefix of itself.
+                lower.starts_with(&partial) && (lower == partial || !chosen.contains(&lower))
+            })
+            .filter(|tag| tag.to_lowercase() != partial)
+            .take(8)
+            .cloned()
+            .collect();
+    }
+
     pub fn text(label: &'static str, hint: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             label,
@@ -86,6 +132,26 @@ impl Field {
 
     pub fn action(label: &'static str, hint: impl Into<String>) -> Self {
         Self { kind: FieldKind::Action, ..Self::text(label, hint, "") }
+    }
+
+    /// A field whose options are chosen from a list rather than cycled.
+    pub fn pick(
+        label: &'static str,
+        hint: impl Into<String>,
+        options: Vec<String>,
+        current: &str,
+    ) -> Self {
+        Self { kind: FieldKind::Pick, ..Self::choice(label, hint, options, current) }
+    }
+
+    /// A comma-separated list, completing against `vocabulary`.
+    pub fn tags(
+        label: &'static str,
+        hint: impl Into<String>,
+        value: impl Into<String>,
+        vocabulary: Vec<String>,
+    ) -> Self {
+        Self { kind: FieldKind::Tags, options: vocabulary, ..Self::text(label, hint, value) }
     }
 
     pub fn choice(
@@ -122,7 +188,7 @@ impl Field {
         match self.kind {
             FieldKind::Toggle => if self.on { "yes" } else { "no" }.to_string(),
             FieldKind::Action => self.hint.clone(),
-            FieldKind::Choice => self.value.clone(),
+            FieldKind::Choice | FieldKind::Pick => self.value.clone(),
             _ if self.value.is_empty() => self.hint.clone(),
             _ => self.value.clone(),
         }
@@ -251,7 +317,11 @@ impl Form {
                 field.on = !field.on;
                 Activation::Toggled
             }
-            FieldKind::Text | FieldKind::Directory => {
+            // The caller opens the picker. The form cannot: it does not own an
+            // overlay, and a field that reached out to the app would make
+            // every form depend on the whole application.
+            FieldKind::Pick => Activation::Picking,
+            FieldKind::Text | FieldKind::Directory | FieldKind::Tags => {
                 self.editing = true;
                 Activation::Editing
             }
@@ -269,29 +339,42 @@ impl Form {
     pub fn push(&mut self, character: char) {
         if let Some(field) = self.fields.get_mut(self.focused) {
             field.value.push(character);
-            field.completions.clear();
+            field.suggest();
         }
     }
 
     pub fn pop(&mut self) {
         if let Some(field) = self.fields.get_mut(self.focused) {
             field.value.pop();
-            field.completions.clear();
+            field.suggest();
         }
     }
 
-    /// `Tab` on a directory field: extend as far as the candidates agree.
+    /// `Tab` on a directory or tag field: take the suggestion.
     pub fn complete(&mut self) {
         let Some(field) = self.fields.get_mut(self.focused) else { return };
-        if field.kind != FieldKind::Directory {
-            return;
-        }
 
-        let completion = paths::complete_directory(&field.value);
-        field.value = completion.extended;
-        // Only worth listing when there is a choice left to make.
-        field.completions =
-            if completion.matches.len() > 1 { completion.matches } else { Vec::new() };
+        match field.kind {
+            FieldKind::Directory => {
+                let completion = paths::complete_directory(&field.value);
+                field.value = completion.extended;
+                // Only worth listing when there is a choice left to make.
+                field.completions =
+                    if completion.matches.len() > 1 { completion.matches } else { Vec::new() };
+            }
+            // Tab takes the first suggestion whole and leaves you ready for
+            // the next tag. Directory completion extends only as far as the
+            // candidates agree, which is right for paths — a wrong prefix is
+            // recoverable — and wrong for a fixed vocabulary, where the whole
+            // point is that you are picking one of a known set.
+            FieldKind::Tags => {
+                let Some(first) = field.completions.first().cloned() else { return };
+                let head = field.value.rfind(',').map_or("", |at| &field.value[..=at]);
+                field.value = format!("{head}{}{first}, ", if head.is_empty() { "" } else { " " });
+                field.suggest();
+            }
+            _ => {}
+        }
     }
 }
 
@@ -310,6 +393,51 @@ mod tests {
 
         assert_eq!(form.value("Message"), "what the agent did", "the placeholder is for the eye");
         assert_eq!(form.entered("Message"), "", "and never for the commit");
+    }
+
+    /// A vocabulary you cannot see is a vocabulary nobody uses: the value of
+    /// completing tags is being reminded you already have `auth` before you
+    /// invent `authentication`.
+    #[test]
+    fn tags_suggest_themselves_as_you_type() {
+        let vocabulary = ["auth", "authz", "tests"].map(String::from).to_vec();
+        let mut form = super::Form::new(vec![super::Field::tags("Tags", "hint", "", vocabulary)]);
+
+        form.push('a');
+        assert_eq!(form.fields[0].completions, ["auth", "authz"]);
+
+        form.push('u');
+        form.push('t');
+        form.push('h');
+        assert_eq!(form.fields[0].completions, ["authz"], "an exact match is not a suggestion");
+    }
+
+    /// Tab takes the whole tag and leaves you ready for the next one. Extending
+    /// only as far as the candidates agree is right for paths, where a wrong
+    /// prefix is recoverable, and wrong for a fixed vocabulary.
+    #[test]
+    fn tab_takes_a_whole_tag_and_starts_the_next() {
+        let vocabulary = ["auth", "tests"].map(String::from).to_vec();
+        let mut form = super::Form::new(vec![super::Field::tags("Tags", "hint", "", vocabulary)]);
+
+        form.push('t');
+        form.complete();
+        assert_eq!(form.entered("Tags"), "tests,");
+
+        form.push('a');
+        form.complete();
+        assert_eq!(form.entered("Tags"), "tests, auth,");
+    }
+
+    /// Suggesting a tag that is already on the line is noise.
+    #[test]
+    fn a_tag_already_chosen_is_not_offered_again() {
+        let vocabulary = ["auth", "authz"].map(String::from).to_vec();
+        let mut form =
+            super::Form::new(vec![super::Field::tags("Tags", "hint", "auth, ", vocabulary)]);
+
+        form.push('a');
+        assert_eq!(form.fields[0].completions, ["authz"]);
     }
 
     #[test]
