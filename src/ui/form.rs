@@ -15,21 +15,24 @@ use ratatui::{
 /// Every option on the row, with the current one filled in.
 ///
 /// A cycling field makes you press a key to find out what else it could be.
-/// Three options fit on a line, so they are all just there — and the one you
-/// are on is filled in its own meaning colour rather than a generic highlight,
-/// because "this is open" is more use than "this one is selected", which the
-/// fill already says.
+/// Three options fit on a line, so they are all just there.
+///
+/// **The fill is `accent`, not the value's own colour.** It was the meaning
+/// colour first — green for `open`, grey for `low` — which is more informative
+/// and, on the quiet end of every scale, unreadable: picking `low` lit it in
+/// the same grey as the options you had not picked. A control has one job
+/// before it has any other, which is to show what you have chosen, and
+/// `accent` is the hue that already means exactly that everywhere else in
+/// Houston. The meanings are still coloured where they are *read*, on the card
+/// and in the pane's stat bar.
 fn segments<'a>(options: &[String], current: &str, theme: Theme) -> Vec<Span<'a>> {
     let mut spans = Vec::with_capacity(options.len() * 2);
 
     for option in options {
-        let chosen = option == current;
-        let colour = crate::ui::tasks::word_colour(option, theme).unwrap_or(theme.accent);
-
         spans.push(Span::styled(
             format!(" {option} "),
-            if chosen {
-                Style::default().fg(theme.surface).bg(colour).add_modifier(Modifier::BOLD)
+            if option == current {
+                Style::default().fg(theme.surface).bg(theme.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.dim)
             },

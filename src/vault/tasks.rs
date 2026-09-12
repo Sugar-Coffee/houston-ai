@@ -69,16 +69,23 @@ impl Priority {
         }
     }
 
+    /// The next one up. `p` raises a priority; wrapping past the top starts
+    /// again at the bottom.
     pub const fn next(self) -> Self {
         match self {
-            Self::High => Self::Normal,
-            Self::Normal => Self::Low,
-            Self::Low => Self::High,
+            Self::Low => Self::Normal,
+            Self::Normal => Self::High,
+            Self::High => Self::Low,
         }
     }
 
+    /// Least urgent first, which is the order a row of them is read in.
+    ///
+    /// Not the same order as [`Ord`], which sorts the *list* and therefore
+    /// puts high at the top. Left-to-right and top-to-bottom disagree here on
+    /// purpose: a row is a scale, and a scale runs upwards.
     pub const fn all() -> [Self; 3] {
-        [Self::High, Self::Normal, Self::Low]
+        [Self::Low, Self::Normal, Self::High]
     }
 }
 

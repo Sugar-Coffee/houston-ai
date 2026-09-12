@@ -3115,7 +3115,11 @@ mod tests {
             on_key(&mut app, press(KeyCode::Char('p')));
         }
 
-        assert_eq!(seen, [Priority::Normal, Priority::Low, Priority::High, Priority::Normal]);
+        assert_eq!(
+            seen,
+            [Priority::Normal, Priority::High, Priority::Low, Priority::Normal],
+            "p raises the priority, and wraps from the top back to the bottom"
+        );
 
         discard(&app);
     }
@@ -3432,9 +3436,14 @@ mod tests {
         on_key(&mut app, press(KeyCode::Left));
         assert_eq!(app.form.as_ref().unwrap().value(crate::app::fields::STATUS), "open");
 
-        // Down to priority, and back past the start to prove it wraps.
+        // Down to priority. The row reads low, normal, high, so left from
+        // normal is a step *down* — and off the end it wraps to the top.
         on_key(&mut app, press(KeyCode::Down));
         on_key(&mut app, press(KeyCode::Left));
+        assert_eq!(app.form.as_ref().unwrap().value(crate::app::fields::PRIORITY), "low");
+
+        on_key(&mut app, press(KeyCode::Right));
+        on_key(&mut app, press(KeyCode::Right));
         assert_eq!(app.form.as_ref().unwrap().value(crate::app::fields::PRIORITY), "high");
 
         // A row with nothing to step through is left alone.

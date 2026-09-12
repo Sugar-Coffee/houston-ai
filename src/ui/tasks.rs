@@ -179,24 +179,6 @@ const fn priority_colour(task: &Task, theme: Theme) -> Color {
     }
 }
 
-/// The colour a task word carries, for anything that shows one out of context.
-///
-/// The segmented rows in the task dialogs use this, so `open` is the same
-/// green there as on a card and `high` the same orange. A generic highlight
-/// would have said "this one is selected", which the position already says;
-/// the meaning is the part worth a colour.
-#[must_use]
-pub fn word_colour(word: &str, theme: Theme) -> Option<Color> {
-    match word {
-        "open" => Some(theme.running),
-        "high" => Some(theme.attention),
-        "normal" => Some(theme.text),
-        // Finished and least urgent are both things you are not looking at.
-        "done" | "low" => Some(theme.dim),
-        _ => None,
-    }
-}
-
 const fn status_colour(status: Status, theme: Theme) -> Color {
     match status {
         Status::Open => theme.running,

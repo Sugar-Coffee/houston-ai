@@ -85,8 +85,14 @@ pub fn picker(frame: &mut Frame, area: Rect, picker: &Picker, sessions: &Session
 ///
 /// Sized to its content so it reads as a dialog rather than a second screen —
 /// you are answering a handful of questions, and what is behind stays visible.
-/// Both dialogs are this wide. See [`options`] for why they have to match.
-const FORM_WIDTH: u16 = 64;
+/// How wide the dialogs are, and the range that is held to.
+///
+/// Proportional rather than fixed, for the reason the task list is: 64 columns
+/// is comfortable on a laptop and a narrow strip down the middle of an
+/// ultrawide, and the tags row is the one that runs out of room first.
+fn form_width(area: Rect) -> u16 {
+    (area.width * 62 / 100).clamp(64, 96).min(area.width)
+}
 
 pub fn form(frame: &mut Frame, area: Rect, form: &Form, theme: Theme) {
     let completions =
@@ -95,7 +101,7 @@ pub fn form(frame: &mut Frame, area: Rect, form: &Form, theme: Theme) {
         u16::try_from(form.fields.iter().filter(|field| field.visible).count()).unwrap_or(4);
 
     let height = (visible + completions.min(7) + 2).min(area.height);
-    let width = FORM_WIDTH.min(area.width);
+    let width = form_width(area);
 
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
@@ -326,7 +332,7 @@ pub fn options(frame: &mut Frame, area: Rect, picker: &crate::app::OptionPicker,
     // As wide as the form it opens over, so it covers rather than crashes into
     // it. A narrower box leaves the form's labels poking out down one side,
     // which reads as two dialogs fighting rather than one step after another.
-    let width = FORM_WIDTH.min(area.width);
+    let width = form_width(area);
     let rows = u16::try_from(matches.len().clamp(1, 12)).unwrap_or(1);
     let height = (rows + 4).min(area.height);
 
