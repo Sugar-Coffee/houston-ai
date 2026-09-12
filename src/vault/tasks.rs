@@ -159,8 +159,7 @@ impl Task {
     /// The description: the body with its title heading removed, since the
     /// title is already on screen.
     pub fn description(&self) -> &str {
-        let rest =
-            heading_line(&self.body).map_or(self.body.as_str(), |line| &self.body[line.len()..]);
+        let rest = &self.body[heading_end(&self.body).unwrap_or(0)..];
         rest.trim_start_matches(['\n', '\r'])
     }
 
@@ -260,12 +259,32 @@ fn tags(front: &str) -> Vec<String> {
         .collect()
 }
 
-fn heading_line(body: &str) -> Option<&str> {
-    body.split_inclusive('\n').find(|line| line.trim_start().starts_with("# "))
+/// Byte offset just past the first `# ` heading line.
+///
+/// An offset rather than the line itself, because all three callers want to
+/// slice around it: the title takes what is inside it, the description takes
+/// what follows, and [`with_description`] keeps everything before it. The
+/// previous version returned the line and callers used its *length* as the
+/// offset, which is only the same number when the heading is the first line of
+/// the body — two blank lines above it and the description lost a character.
+fn heading_span(body: &str) -> Option<(usize, usize)> {
+    let mut offset = 0;
+    for line in body.split_inclusive('\n') {
+        if line.trim_start().starts_with("# ") {
+            return Some((offset, offset + line.len()));
+        }
+        offset += line.len();
+    }
+    None
+}
+
+fn heading_end(body: &str) -> Option<usize> {
+    heading_span(body).map(|(_, end)| end)
 }
 
 fn heading(body: &str) -> Option<String> {
-    Some(heading_line(body)?.trim().trim_start_matches('#').trim().to_string())
+    let (start, end) = heading_span(body)?;
+    Some(body[start..end].trim().trim_start_matches('#').trim().to_string())
 }
 
 /// `0003-fix-the-thing.md` reads as "Fix the thing". The number is filing, not
@@ -324,6 +343,53 @@ pub fn with_field(source: &str, key: &str, value: Option<&str>) -> String {
     }
 
     format!("---\n{}\n---\n{body}", lines.join("\n"))
+}
+
+/// Replaces the description, leaving the frontmatter and the title alone.
+///
+/// The same promise [`with_field`] makes, from the other side: everything up
+/// to and including the `# ` heading comes out byte-for-byte as it went in.
+/// That is what lets the description be edited in a pane that never shows the
+/// metadata — you cannot break what you cannot reach, and neither can the
+/// editor.
+pub fn with_description(source: &str, description: &str) -> String {
+    let (front, body) = split(source);
+    let head = &body[..heading_end(body).unwrap_or(0)];
+
+    let mut out = String::new();
+    if let Some(front) = front {
+        out.push_str("---\n");
+        out.push_str(front);
+        out.push_str("---\n");
+    }
+    out.push_str(head);
+    if !head.is_empty() && !head.ends_with('\n') {
+        out.push('\n');
+    }
+
+    let description = description.trim_end();
+    if !description.is_empty() {
+        // A blank line under the heading, because the description is markdown
+        // and a paragraph butted against a heading is a different document.
+        if !head.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(description);
+        out.push('\n');
+    }
+    out
+}
+
+/// Writes a new description into the task on disk.
+///
+/// Splices against what is in the file *now* rather than against what was
+/// there when the editor opened, so a priority somebody changed meanwhile — or
+/// an agent adding a tag — survives being saved over.
+pub fn set_description(path: &Path, description: &str) -> Result<()> {
+    let source = std::fs::read_to_string(path)
+        .with_context(|| format!("could not read {}", path.display()))?;
+    std::fs::write(path, with_description(&source, description))
+        .with_context(|| format!("could not write {}", path.display()))
 }
 
 /// Every task in the vault, ordered for reading.
@@ -573,6 +639,71 @@ mod tests {
     fn a_note_with_no_frontmatter_gains_a_block_and_keeps_its_text() {
         let after = with_field("# Ring the bank\n", "priority", Some("high"));
         assert_eq!(after, "---\npriority: high\n---\n# Ring the bank\n");
+    }
+
+    /// The pane edits the description and nothing else, so the metadata has to
+    /// come out of a save exactly as it went in.
+    #[test]
+    fn rewriting_the_description_leaves_the_frontmatter_and_title_untouched() {
+        let source = "---\nstatus: open\n# a comment\nobsidian-only-key: 42\n---\n\n#  Alpha  \n\nOld body.\n";
+
+        let after = with_description(source, "New body.\n\nWith two paragraphs.");
+
+        assert_eq!(
+            after,
+            "---\nstatus: open\n# a comment\nobsidian-only-key: 42\n---\n\n#  Alpha  \n\nNew body.\n\nWith two paragraphs.\n",
+            "the blank line above the heading was in the file, so it stays in the file"
+        );
+        let task = Task::parse(Path::new("/v/Tasks/0001-a.md"), &after);
+        assert_eq!(task.title, "Alpha", "and the title still parses out of it");
+        assert_eq!(task.status, Status::Open);
+    }
+
+    /// Round-tripping without typing anything must not rewrite the file into a
+    /// different shape, or opening and closing the editor would show as an edit.
+    #[test]
+    fn saving_a_description_unchanged_is_the_same_document() {
+        for source in [
+            "---\nstatus: open\n---\n\n# Alpha\n\nBody.\n",
+            "# Alpha\n\nBody.\n",
+            "---\nstatus: open\n---\n\n# Alpha\n",
+            "just a sentence\n",
+        ] {
+            let task = Task::parse(Path::new("/v/Tasks/0001-a.md"), source);
+            let after = with_description(source, task.description());
+            let again = Task::parse(Path::new("/v/Tasks/0001-a.md"), &after);
+
+            assert_eq!(again.title, task.title, "{source:?}");
+            assert_eq!(
+                with_description(&after, again.description()),
+                after,
+                "a second round changes nothing at all: {source:?}"
+            );
+        }
+    }
+
+    /// The offset bug the rewrite closed: the description used the heading's
+    /// *length* as its start, which is only right when the heading is the
+    /// first line of the body.
+    #[test]
+    fn a_heading_that_is_not_the_first_line_does_not_eat_the_description() {
+        let task = Task::parse(Path::new("/v/Tasks/0001-a.md"), "\n\n# Alpha\nBody.\n");
+        assert_eq!(task.title, "Alpha");
+        assert_eq!(task.description(), "Body.\n");
+    }
+
+    /// A task with no heading keeps its whole body as the description, so
+    /// there is nothing above it to preserve — and nothing to eat by accident.
+    #[test]
+    fn a_task_with_no_heading_still_edits_cleanly() {
+        let after = with_description("---\npriority: low\n---\nOld.\n", "New.");
+        assert_eq!(after, "---\npriority: low\n---\nNew.\n");
+    }
+
+    #[test]
+    fn clearing_a_description_leaves_the_task_rather_than_an_empty_file() {
+        let after = with_description("---\nstatus: open\n---\n\n# Alpha\n\nBody.\n", "   \n\n");
+        assert_eq!(after, "---\nstatus: open\n---\n\n# Alpha\n");
     }
 
     #[test]

@@ -14,7 +14,9 @@
 //! say the status and the tags in words instead of in glyphs.
 
 use crate::{
-    ui::{Theme, keycap, powerline::Glyphs},
+    app::App,
+    editor::Editor,
+    ui::{Theme, editor as editor_ui, keycap, powerline::Glyphs},
     vault::tasks::{Priority, Status, Task},
 };
 use ratatui::{
@@ -44,24 +46,63 @@ const CARD_HEIGHT: usize = 3;
 /// Where the details line starts, under the title rather than under the caret.
 const INDENT: &str = "   ";
 
-pub fn render(
-    frame: &mut Frame,
-    area: Rect,
-    tasks: &[Task],
-    selected: usize,
-    showing_done: bool,
-    glyphs: Glyphs,
-    theme: Theme,
-) {
-    let list_width = (area.width * LIST_SHARE / 100).clamp(LIST_MIN, LIST_MAX).min(area.width);
+/// Rows the pane spends before the description: air, the title, air, the stat
+/// bar, air.
+///
+/// A constant rather than something measured, because the event loop has to
+/// size the editor to the description area *before* the frame is drawn. A
+/// title long enough to wrap is truncated instead, which is the cheap side of
+/// that trade — `ui::layout` exists for the same reason.
+const HEADER_HEIGHT: u16 = 5;
+
+/// The list column's width for a given body.
+///
+/// Shared with [`description_area`] so the two cannot disagree about where the
+/// pane begins.
+fn list_width(area: Rect) -> u16 {
+    (area.width * LIST_SHARE / 100).clamp(LIST_MIN, LIST_MAX).min(area.width)
+}
+
+/// The pane, given the whole body.
+fn pane_of(area: Rect) -> Rect {
+    let list = list_width(area);
+    Rect { x: area.x + list, width: area.width.saturating_sub(list), ..area }
+}
+
+/// The text area inside the pane, one column in from its border on each side.
+fn text_of(pane: Rect) -> Rect {
+    let inner = Block::default().borders(Borders::ALL).inner(pane);
+    Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner }
+}
+
+/// The description's rectangle inside the pane, below the header.
+fn body_of(pane: Rect) -> Rect {
+    let text = text_of(pane);
+    Rect { y: text.y + HEADER_HEIGHT, height: text.height.saturating_sub(HEADER_HEIGHT), ..text }
+}
+
+/// Where the description is drawn, given the whole body, so the event loop can
+/// size the editor to the same rectangle the renderer will use.
+#[must_use]
+pub fn description_area(area: Rect) -> Rect {
+    body_of(pane_of(area))
+}
+
+pub fn render(frame: &mut Frame, area: Rect, app: &App, glyphs: Glyphs, theme: Theme) {
+    let list = list_width(area);
 
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(list_width), Constraint::Min(0)])
+        .constraints([Constraint::Length(list), Constraint::Min(0)])
         .split(area);
 
-    render_list(frame, columns[0], tasks, selected, showing_done, theme);
-    render_detail(frame, columns[1], tasks.get(selected), glyphs, theme);
+    // Only while a description is open. `app.editor` can hold a note the Vault
+    // view is showing, and drawing that here would put somebody else's file in
+    // the task pane.
+    let editing = app.task_edit.as_ref().and(app.editor.as_ref());
+
+    render_list(frame, columns[0], &app.tasks, app.task_selected, app.tasks_show_done, theme);
+    render_detail(frame, columns[1], app.selected_task(), editing, glyphs, theme);
 }
 
 fn render_list(
@@ -310,8 +351,15 @@ fn chips(task: &Task, theme: Theme) -> Vec<Chip> {
     chips
 }
 
-fn render_detail(frame: &mut Frame, area: Rect, task: Option<&Task>, glyphs: Glyphs, theme: Theme) {
-    let title = task.map_or_else(
+fn render_detail(
+    frame: &mut Frame,
+    area: Rect,
+    task: Option<&Task>,
+    editing: Option<&Editor>,
+    glyphs: Glyphs,
+    theme: Theme,
+) {
+    let name = task.map_or_else(
         || " no task ".to_string(),
         |task| {
             task.path
@@ -320,16 +368,35 @@ fn render_detail(frame: &mut Frame, area: Rect, task: Option<&Task>, glyphs: Gly
         },
     );
 
-    let block = Block::default()
+    // Editing recolours the pane's own border rather than opening a box inside
+    // it. The mode colour is the one you read without looking down, and a
+    // second border around the description would say "different window" about
+    // something that is part of this one.
+    let accent = editing.map_or(theme.dim, |editor| editor_ui::mode_colour(editor, theme));
+
+    let title = if editing.is_some_and(|editor| editor.buffer.modified) {
+        format!("{} \u{25cf} ", name.trim_end())
+    } else {
+        name
+    };
+
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.dim))
-        .title(Span::styled(title, Style::default().fg(theme.dim).add_modifier(Modifier::BOLD)));
+        .border_style(Style::default().fg(accent))
+        .title(Span::styled(title, Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+
+    if let Some(editor) = editing {
+        block = block.title_bottom(Span::styled(
+            format!(" {} \u{2014} esc to finish ", editor_ui::mode_label(editor)),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     // A column of air on the left, so the heading and the description are not
     // flush against the border. Done with the rect rather than by prefixing
     // every line, because the markdown renderer produces lines of its own.
-    let inner = block.inner(area);
-    let inner = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
+    let inner = text_of(area);
     frame.render_widget(block, area);
 
     let Some(task) = task else {
@@ -345,31 +412,48 @@ fn render_detail(frame: &mut Frame, area: Rect, task: Option<&Task>, glyphs: Gly
         return;
     };
 
-    let mut lines = vec![
+    // The header is exactly HEADER_HEIGHT rows, and the event loop relies on
+    // that to size the editor before this runs. Truncated rather than wrapped
+    // for the same reason.
+    let header = vec![
         Line::from(""),
         Line::from(Span::styled(
-            task.title.clone(),
+            truncate(&task.title, inner.width as usize),
             Style::default().fg(theme.heading).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         stat_bar(&chips(task, theme), glyphs, theme),
         Line::from(""),
     ];
+    frame.render_widget(
+        Paragraph::new(header),
+        Rect { height: HEADER_HEIGHT.min(inner.height), ..inner },
+    );
+
+    let body = body_of(area);
+    if body.height == 0 {
+        return;
+    }
+
+    if let Some(editor) = editing {
+        editor_ui::render_text(frame, body, editor, theme);
+        return;
+    }
 
     // Parsed here rather than cached, unlike a note: `markdown::parse` is
     // cached in the editor because the real vault has a 184 KB log in it, and
     // a task description is a paragraph.
     let description = task.description();
-    if description.trim().is_empty() {
-        lines.push(Line::from(Span::styled(
+    let lines = if description.trim().is_empty() {
+        vec![Line::from(Span::styled(
             "No description. Press e to write one.",
             Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
-        )));
+        ))]
     } else {
-        lines.extend(crate::vault::markdown::parse(description, theme).lines);
-    }
+        crate::vault::markdown::parse(description, theme).lines
+    };
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
 }
 
 fn truncate(text: &str, limit: usize) -> String {

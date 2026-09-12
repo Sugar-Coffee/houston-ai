@@ -19,7 +19,13 @@ const GUTTER: u16 = 6;
 /// where lines wrap.
 #[must_use]
 pub fn text_shape(area: Rect) -> (usize, usize) {
-    let inner = Block::default().borders(Borders::ALL).inner(area);
+    shape_of(Block::default().borders(Borders::ALL).inner(area))
+}
+
+/// The same, for a rect that is already the text area — the task pane draws
+/// the editor inside its own border rather than giving it one.
+#[must_use]
+pub const fn shape_of(inner: Rect) -> (usize, usize) {
     (inner.height as usize, inner.width.saturating_sub(GUTTER) as usize)
 }
 
@@ -48,7 +54,15 @@ pub fn render(frame: &mut Frame, area: Rect, editor: &Editor, theme: Theme) {
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    render_text(frame, inner, editor, theme);
+}
 
+/// The text, the gutter and the cursor, with no chrome of its own.
+///
+/// Split out so the Tasks pane can host the editor under its own header: the
+/// alternative was a bordered box inside a bordered box, and the description
+/// is part of the task rather than a separate window over it.
+pub fn render_text(frame: &mut Frame, inner: Rect, editor: &Editor, theme: Theme) {
     if inner.width <= GUTTER || inner.height == 0 {
         return;
     }
@@ -91,7 +105,7 @@ pub fn render(frame: &mut Frame, area: Rect, editor: &Editor, theme: Theme) {
 
 /// One colour per mode, consistent with the rest of the app: green means live
 /// input is going somewhere, orange means something wants a keystroke from you.
-const fn mode_colour(editor: &Editor, theme: Theme) -> ratatui::style::Color {
+pub const fn mode_colour(editor: &Editor, theme: Theme) -> ratatui::style::Color {
     match editor.mode {
         Mode::Insert => theme.running,
         Mode::Jump { .. } => theme.attention,
@@ -100,7 +114,7 @@ const fn mode_colour(editor: &Editor, theme: Theme) -> ratatui::style::Color {
     }
 }
 
-fn mode_label(editor: &Editor) -> String {
+pub fn mode_label(editor: &Editor) -> String {
     match &editor.mode {
         Mode::Search { query } => format!("SEARCH {query}▏"),
         Mode::Jump { typed } if !typed.is_empty() => format!("JUMP {typed}"),

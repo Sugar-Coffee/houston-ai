@@ -337,6 +337,15 @@ impl Buffer {
     /// [`Self::changed_on_disk`] to raise the question up front rather than
     /// letting this fail and telling you which key to press instead — that
     /// only helps somebody who already knew.
+    /// Records that what is in the buffer is now what is on disk.
+    ///
+    /// For a buffer that holds a *fragment* of a file — the Tasks pane edits a
+    /// description, not a note — where the write is somebody else's job and
+    /// [`Self::save`] has no path to use.
+    pub const fn mark_saved(&mut self) {
+        self.modified = false;
+    }
+
     pub fn save(&mut self, force: bool) -> Result<PathBuf> {
         let path = self.path.clone().context("this buffer has no file to save to")?;
 

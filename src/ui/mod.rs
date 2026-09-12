@@ -73,21 +73,11 @@ pub fn render(frame: &mut Frame, app: &App) {
             Some(open) => editor::render(frame, body, open, theme),
             None => vault::render(frame, body, app.browser.as_ref(), theme),
         },
-        // The editor opens over Tasks as well, because a task *is* a note and
-        // sending you to another tab to write two sentences in one is the kind
-        // of seam that makes a folder of markdown feel like a database.
-        Tab::Tasks => match &app.editor {
-            Some(open) => editor::render(frame, body, open, theme),
-            None => tasks::render(
-                frame,
-                body,
-                &app.tasks,
-                app.task_selected,
-                app.tasks_show_done,
-                glyphs,
-                theme,
-            ),
-        },
+        // The editor draws *inside* the task pane rather than over the tab.
+        // A task is a note, and being thrown into a full-screen file with the
+        // frontmatter at the top is both a different place and an invitation
+        // to break the metadata the view depends on.
+        Tab::Tasks => tasks::render(frame, body, app, glyphs, theme),
         Tab::Board => board::render(frame, body, &app.sessions, theme),
         Tab::Worktrees => worktrees::render(
             frame,
@@ -502,6 +492,46 @@ mod tests {
         app.tasks_show_done = true;
         app.load_tasks();
         assert!(draw(&app, 110, 20).contains("Done thing"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Editing happens *in* the pane. The metadata stays decorated above it,
+    /// which is both nicer to look at and the reason the frontmatter cannot be
+    /// typed into: it is not in the buffer, and it is not off screen either.
+    #[test]
+    fn editing_a_description_keeps_the_task_header_on_screen() {
+        let root = std::env::temp_dir().join("houston-ui-tasks-edit");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Tasks")).unwrap();
+        std::fs::write(
+            root.join("Tasks/0001-a.md"),
+            "---\npriority: high\nproject: acme-api\n---\n\n# Alpha\n\nBody.\n",
+        )
+        .unwrap();
+
+        let mut app = App::new();
+        app.browser =
+            Some(crate::vault::Browser::new(crate::vault::Vault::open(root.clone()).unwrap()));
+        app.select_tab(Tab::Tasks);
+
+        let task = app.selected_task().unwrap();
+        app.task_edit = Some(crate::app::TaskEdit {
+            path: task.path.clone(),
+            original: task.description().trim_end().to_string(),
+        });
+        let mut editor =
+            crate::editor::Editor::with_buffer(crate::editor::buffer::Buffer::from_str("Body."));
+        editor.enter_insert();
+        app.editor = Some(editor);
+
+        let frame = draw(&app, 110, 24);
+
+        assert!(frame.contains("Alpha"), "the title is still there");
+        assert!(frame.contains("high") && frame.contains("acme-api"), "and the stat bar");
+        assert!(frame.contains("INSERT"), "with the mode where the editor's own title would be");
+        assert!(!frame.contains("---"), "and the frontmatter is nowhere near the cursor");
+        assert!(frame.contains("Sessions"), "the tab strip survives — this is not a full screen");
 
         std::fs::remove_dir_all(&root).ok();
     }

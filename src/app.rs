@@ -155,6 +155,12 @@ pub struct App {
     /// Tasks, read from the vault when the view opens or the folder changes.
     pub tasks: Vec<crate::vault::tasks::Task>,
     pub task_selected: usize,
+    /// The task whose description is open in the pane, if one is.
+    ///
+    /// Separate from `editor`, which holds the buffer: this says *what the
+    /// buffer is a piece of*, and there is no path on the buffer itself
+    /// because it holds a fragment of the file rather than the file.
+    pub task_edit: Option<TaskEdit>,
     /// Whether finished tasks are in the list.
     ///
     /// Off by default: a task list you have used for a month is mostly done
@@ -233,6 +239,19 @@ pub enum Pending {
     RemoveVaultEntry(std::path::PathBuf),
     /// Delete the task file.
     RemoveTask(std::path::PathBuf),
+}
+
+/// A description being edited in the Tasks pane.
+#[derive(Debug, Clone)]
+pub struct TaskEdit {
+    pub path: std::path::PathBuf,
+    /// The description as it stood when the editor opened.
+    ///
+    /// Kept so a change made underneath — Obsidian, or an agent writing to the
+    /// same task — can be noticed at save time. The buffer cannot answer this
+    /// itself: it holds a fragment rather than the file, so it has no path and
+    /// `changed_on_disk` has nothing to compare.
+    pub original: String,
 }
 
 /// The theme picker's state.
@@ -922,6 +941,7 @@ impl App {
             worktree_selected: 0,
             tasks: Vec::new(),
             task_selected: 0,
+            task_edit: None,
             tasks_show_done: false,
             input_log: VecDeque::new(),
             show_inspector: false,
@@ -990,7 +1010,14 @@ impl App {
         }
         // The editor owns both its command and its text modes, so it takes the
         // keyboard whole rather than being split across two focuses.
-        if self.tab == Tab::Vault && self.editor.is_some() {
+        //
+        // **Both tabs that can host it.** This said `Tab::Vault` alone when
+        // Tasks gained an editor, so pressing `e` on a task drew a perfectly
+        // good editor that never received a keystroke — every key went on
+        // being a Tasks command, and typing a space marked the task done. A
+        // focus enum is one place to look precisely so this is a one-line fix;
+        // it is only one line if somebody remembers to come here.
+        if self.editor.is_some() && matches!(self.tab, Tab::Vault | Tab::Tasks) {
             return InputFocus::Editor;
         }
         if self.copying.is_some() {
@@ -1115,8 +1142,12 @@ impl App {
     /// Keys for whatever owns the keyboard, when that is not one of the views.
     fn focus_keybinds(&self) -> Option<Vec<(&'static str, &'static str)>> {
         if let Some(editor) = &self.editor
-            && self.tab == Tab::Vault
+            && matches!(self.tab, Tab::Vault | Tab::Tasks)
         {
+            // A description is saved on the way out, so escape means done
+            // rather than close — and there is no file to leave.
+            let leave = if self.task_edit.is_some() { "done" } else { "close" };
+
             return Some(match editor.mode {
                 crate::editor::Mode::Insert => vec![("esc", "normal mode")],
                 crate::editor::Mode::Jump { .. } => vec![("", "type a tag to jump")],
@@ -1131,7 +1162,7 @@ impl App {
                     ("/", "search"),
                     ("u", "undo"),
                     ("s", "save"),
-                    ("esc", "close"),
+                    ("esc", leave),
                 ],
             });
         }

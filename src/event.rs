@@ -11,7 +11,7 @@
 use crate::{
     app::{App, FormPurpose, InputFocus, Picker, Tab, fields},
     clipboard,
-    editor::Editor,
+    editor::{Editor, buffer::Buffer},
     form::Activation,
     hooks::{self, Notification},
     paths,
@@ -164,9 +164,20 @@ fn session_area(terminal: &Terminal<Backend>) -> Result<Rect> {
 /// tagging exactly the lines that are on screen — a jump mode that tags
 /// invisible lines is worse than no jump mode.
 fn sync_editor_viewport(terminal: &Terminal<Backend>, app: &mut App) -> Result<()> {
-    let Some(editor) = app.editor.as_mut() else { return Ok(()) };
     let [_, body, _] = ui::layout(terminal.size()?.into());
-    let (rows, width) = ui::editor::text_shape(body);
+
+    // A description is drawn inside the Tasks pane, under its header, so it
+    // gets a different rectangle from a note — and the two have to be measured
+    // by the same functions the renderer uses, or the cursor lands a few rows
+    // from where the text is.
+    let shape = if app.task_edit.is_some() {
+        ui::editor::shape_of(ui::tasks::description_area(body))
+    } else {
+        ui::editor::text_shape(body)
+    };
+
+    let Some(editor) = app.editor.as_mut() else { return Ok(()) };
+    let (rows, width) = shape;
     editor.set_viewport(rows, width);
     editor.follow_cursor();
     Ok(())
@@ -550,6 +561,12 @@ fn follow_link(app: &mut App) {
 
 /// Saves the open note, asking first if the file changed underneath us.
 fn save_note(app: &mut App) {
+    // A description carries its own staleness check, since its buffer has no
+    // path to compare against.
+    if app.task_edit.is_some() {
+        return save_editor(app, false);
+    }
+
     let changed = app.editor.as_ref().is_some_and(|editor| editor.buffer.changed_on_disk());
     if !changed {
         return save_editor(app, false);
@@ -569,7 +586,44 @@ fn save_note(app: &mut App) {
     );
 }
 
+/// Writes a description back, splicing it into the file around the metadata.
+fn save_description(app: &mut App, force: bool) {
+    let Some(edit) = app.task_edit.clone() else { return };
+    let Some(editor) = app.editor.as_mut() else { return };
+
+    // The description as it is on disk right now. Different from what we
+    // opened means somebody else has been in here — an agent, or Obsidian —
+    // and overwriting them silently is the one thing a save must not do.
+    let current = std::fs::read_to_string(&edit.path).map(|source| {
+        crate::vault::tasks::Task::parse(&edit.path, &source).description().trim_end().to_string()
+    });
+
+    if !force && current.as_deref().is_ok_and(|now| now != edit.original) {
+        return app.ask(
+            "Overwrite the description?".to_string(),
+            "It changed on disk since you opened it — Obsidian, or another agent.".to_string(),
+            crate::app::Pending::OverwriteNote,
+        );
+    }
+
+    let written = editor.buffer.text();
+    match crate::vault::tasks::set_description(&edit.path, &written) {
+        Ok(()) => {
+            editor.buffer.mark_saved();
+            // What is on disk now is what we just wrote, so that becomes the
+            // thing a later save compares against.
+            app.task_edit = Some(crate::app::TaskEdit { original: written, ..edit });
+            app.load_tasks();
+            app.notify("saved");
+        }
+        Err(error) => app.notify(error.to_string()),
+    }
+}
+
 fn save_editor(app: &mut App, force: bool) {
+    if app.task_edit.is_some() {
+        return save_description(app, force);
+    }
     let Some(editor) = app.editor.as_mut() else { return };
     match editor.buffer.save(force) {
         Ok(path) => {
@@ -581,7 +635,46 @@ fn save_editor(app: &mut App, force: bool) {
 }
 
 /// Closes the editor, confirming first if there are unsaved changes.
+/// Finishes a description edit, saving it.
+///
+/// Saved on the way out rather than asked about. This is a field in a pane,
+/// not a file you opened — you pressed `e`, typed, and pressed escape, and a
+/// question about discarding is a question about something you have already
+/// decided. `s` still works while you are in there.
+fn close_description(app: &mut App) {
+    if app.editor.as_ref().is_some_and(|editor| editor.buffer.modified) {
+        save_editor(app, false);
+
+        // A question was raised instead of a save. Stay open, or the answer
+        // would land on nothing and take the text with it.
+        if app.confirm.is_some() {
+            return;
+        }
+
+        // The save failed outright — the file deleted under us, or the disk
+        // full. Without this a description that cannot be written is a room
+        // with no door: escape saves, the save fails, escape saves again. A
+        // second press discards, the same bargain the note editor offers, and
+        // the notice says so.
+        if let Some(editor) = app.editor.as_mut()
+            && editor.buffer.modified
+            && !editor.arm_close()
+        {
+            return app.notify("could not save — esc again to discard");
+        }
+    }
+
+    app.editor = None;
+    app.task_edit = None;
+    app.load_tasks();
+    app.dirty = true;
+}
+
 fn close_editor(app: &mut App) {
+    if app.task_edit.is_some() {
+        return close_description(app);
+    }
+
     let confirmed = match app.editor.as_mut() {
         Some(editor) if editor.buffer.modified => editor.arm_close(),
         Some(_) => true,
@@ -595,12 +688,6 @@ fn close_editor(app: &mut App) {
 
     app.editor = None;
     app.dirty = true;
-
-    // A task you have just finished editing is a task whose title, priority or
-    // project may have changed. Rereading is cheaper than working out which.
-    if app.tab == Tab::Tasks {
-        app.load_tasks();
-    }
 }
 
 /// Forms: the new-session dialog and the Settings menu.
@@ -1534,18 +1621,30 @@ fn cycle_task_priority(app: &mut App) {
     amend_task(app, "priority", Some(next.key()));
 }
 
+/// Opens the selected task's *description* for editing, in the pane.
+///
+/// Not the file. Opening the file put the frontmatter on screen with a cursor
+/// in front of it, which is an invitation to break the four fields the view
+/// reads — and a full-screen editor for two sentences is a different place to
+/// be, when the thing you are editing is right there on the right.
+///
+/// Straight into insert mode, because you pressed a key that means "write".
+/// Normal mode first would be correct for a file you opened to read; this is
+/// not one.
 fn edit_task(app: &mut App) {
-    let Some(path) = app.selected_task().map(|task| task.path.clone()) else {
-        return app.notify("no task selected");
-    };
+    let Some(task) = app.selected_task() else { return app.notify("no task selected") };
+    // Trailing blank lines trimmed, because that is the shape `with_description`
+    // writes: seeding the buffer with an untrimmed copy puts the cursor on an
+    // empty line below the text and makes an unedited task look modified.
+    let (path, original) = (task.path.clone(), task.description().trim_end().to_string());
 
-    match crate::editor::Editor::open(&path) {
-        Ok(editor) => {
-            app.editor = Some(editor);
-            app.dirty = true;
-        }
-        Err(error) => app.notify(format!("could not open for editing: {error}")),
-    }
+    let mut editor = crate::editor::Editor::with_buffer(Buffer::from_str(&original));
+    editor.buffer.move_buffer_end();
+    editor.enter_insert();
+
+    app.editor = Some(editor);
+    app.task_edit = Some(crate::app::TaskEdit { path, original });
+    app.dirty = true;
 }
 
 fn delete_task(app: &mut App) {
@@ -2963,6 +3062,142 @@ mod tests {
         assert!(app.form.is_some(), "the form stays open so you can fix it");
         assert!(app.notice.is_some());
         assert!(app.tasks.is_empty());
+
+        discard(&app);
+    }
+
+    /// **The bug that made "edit" look broken.** `focus()` gated the editor on
+    /// `Tab::Vault`, so pressing `e` on a task drew a perfectly good editor
+    /// that never received a keystroke — every key went on being a Tasks
+    /// command, and the first space marked the task done instead of typing
+    /// one. Nothing that tests the editor, or the key handler, or the renderer
+    /// can see that: the fault was in which of them the keyboard reached.
+    #[test]
+    fn editing_a_task_gives_the_keyboard_to_the_editor() {
+        let mut app = app_with_tasks("focus", &[("0001-a.md", "# Alpha\n\nBody.\n")]);
+
+        on_key(&mut app, press(KeyCode::Char('e')));
+        assert_eq!(app.focus(), InputFocus::Editor, "the editor has the keyboard");
+
+        on_key(&mut app, press(KeyCode::Char(' ')));
+        on_key(&mut app, press(KeyCode::Char('!')));
+
+        assert_eq!(
+            app.editor.as_ref().unwrap().buffer.text(),
+            "Body. !",
+            "a space is a space, not the key that ticks a task off"
+        );
+        assert_eq!(
+            app.tasks[0].status,
+            crate::vault::tasks::Status::Open,
+            "and the task was not marked done behind it"
+        );
+
+        discard(&app);
+    }
+
+    /// The point of editing in the pane: the frontmatter is not on screen, so
+    /// there is nothing there to break.
+    #[test]
+    fn the_editor_holds_the_description_and_not_the_metadata() {
+        let mut app = app_with_tasks(
+            "fragment",
+            &[("0001-a.md", "---\npriority: high\n---\n\n# Alpha\n\nBody.\n")],
+        );
+
+        on_key(&mut app, press(KeyCode::Char('e')));
+
+        let text = app.editor.as_ref().unwrap().buffer.text();
+        assert_eq!(text, "Body.", "the description, trimmed, and nothing else");
+        assert!(!text.contains("---"), "no frontmatter to type into");
+        assert!(!text.contains("# Alpha"), "and no title either");
+
+        discard(&app);
+    }
+
+    /// You pressed a key that means "write". Landing in normal mode would make
+    /// the next thing you type a series of commands.
+    #[test]
+    fn editing_starts_in_insert_mode_with_the_cursor_at_the_end() {
+        let mut app = app_with_tasks("insert", &[("0001-a.md", "# Alpha\n\nBody.\n")]);
+
+        on_key(&mut app, press(KeyCode::Char('e')));
+
+        let editor = app.editor.as_ref().unwrap();
+        assert_eq!(editor.mode, crate::editor::Mode::Insert);
+        assert_eq!(editor.buffer.cursor.column, "Body.".len(), "ready to carry on writing");
+
+        discard(&app);
+    }
+
+    /// Escape finishes the edit and writes it, splicing around the metadata.
+    #[test]
+    fn finishing_an_edit_saves_the_description_and_leaves_the_metadata_alone() {
+        let source =
+            "---\nstatus: open\npriority: high\nkey-we-do-not-know: 42\n---\n\n# Alpha\n\nBody.\n";
+        let mut app = app_with_tasks("save", &[("0001-a.md", source)]);
+        let path = app.selected_task().unwrap().path.clone();
+
+        on_key(&mut app, press(KeyCode::Char('e')));
+        for character in " More.".chars() {
+            on_key(&mut app, press(KeyCode::Char(character)));
+        }
+        on_key(&mut app, press(KeyCode::Esc)); // insert -> normal
+        on_key(&mut app, press(KeyCode::Esc)); // normal -> done
+
+        assert!(app.editor.is_none(), "the pane goes back to showing the task");
+        assert!(app.task_edit.is_none());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            source.replace("Body.", "Body. More."),
+            "one paragraph changed and not one byte more"
+        );
+        assert_eq!(app.selected_task().unwrap().description(), "Body. More.\n");
+
+        discard(&app);
+    }
+
+    /// Somebody else writing to the task while you are typing in it. Silently
+    /// winning that race is the one thing a save must not do.
+    #[test]
+    fn a_description_that_changed_underneath_asks_before_overwriting() {
+        let mut app = app_with_tasks("stale", &[("0001-a.md", "# Alpha\n\nBody.\n")]);
+        let path = app.selected_task().unwrap().path.clone();
+
+        on_key(&mut app, press(KeyCode::Char('e')));
+        on_key(&mut app, press(KeyCode::Char('!')));
+
+        std::fs::write(&path, "# Alpha\n\nSomebody else got here first.\n").unwrap();
+        on_key(&mut app, press(KeyCode::Esc));
+        on_key(&mut app, press(KeyCode::Esc));
+
+        assert!(app.confirm.is_some(), "it asks");
+        assert!(app.editor.is_some(), "and stays open, so the answer has something to apply to");
+
+        on_key(&mut app, press(KeyCode::Char('y')));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Body.!"), "yes means yes");
+
+        discard(&app);
+    }
+
+    /// A description that cannot be written must not trap you in it. Escape
+    /// saves, the save fails, escape saves again — forever, without this.
+    #[test]
+    fn a_description_that_cannot_be_saved_can_still_be_left() {
+        let mut app = app_with_tasks("gone", &[("0001-a.md", "# Alpha\n\nBody.\n")]);
+        let path = app.selected_task().unwrap().path.clone();
+
+        on_key(&mut app, press(KeyCode::Char('e')));
+        on_key(&mut app, press(KeyCode::Char('!')));
+        std::fs::remove_file(&path).unwrap();
+
+        on_key(&mut app, press(KeyCode::Esc)); // insert -> normal
+        on_key(&mut app, press(KeyCode::Esc)); // tries to save, cannot
+        assert!(app.editor.is_some(), "still open, with the text still in it");
+        assert!(app.notice.as_deref().is_some_and(|notice| notice.contains("discard")));
+
+        on_key(&mut app, press(KeyCode::Esc));
+        assert!(app.editor.is_none(), "and a second press lets go");
 
         discard(&app);
     }
