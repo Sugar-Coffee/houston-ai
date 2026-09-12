@@ -20,7 +20,7 @@ Set TypingSpeed 45ms
 Hide
 Type `eval "$(sh tools/media/fixture.sh)"`
 Enter
-Type `export HOUSTON_STATE_DIR=$STATE PATH="$PWD/target/release:$PATH" && cd "$REPO" && clear`
+Type `export HOUSTON_STATE_DIR=$STATE SHELL=/bin/sh PATH="$PWD/target/release:$PATH" && cd "$REPO" && clear`
 Enter
 
 Type "houston"
@@ -44,6 +44,15 @@ Sleep 5s
 Type "What does src/auth/refresh.rs do? One sentence."
 Enter
 Sleep 35s
+
+# A second question, and not because one was not enough. Claude Code opens on
+# a splash carrying the account name and the email it is signed in with, and
+# `/clear` redraws it rather than removing it — the only thing that takes it
+# off screen is enough conversation to scroll it off. This is a public README;
+# check a frame after changing anything above this line.
+Type "Now list every file under src/ with a one-line description of each."
+Enter
+Sleep 40s
 Ctrl+\
 Sleep 1s
 
@@ -57,6 +66,13 @@ Sleep 5s
 Type "Which decision covers token refresh? Just the filename."
 Enter
 Sleep 35s
+
+# Same reason as above: enough conversation to scroll the startup banner off.
+# It carries the plan name and a warning about the recorder's own MCP servers,
+# neither of which is anything to do with Houston.
+Type "Now list the projects in this vault, one line each."
+Enter
+Sleep 40s
 Ctrl+\
 Sleep 1s
 
@@ -65,7 +81,7 @@ Type "1"
 Sleep 500ms
 Type "s"
 Sleep 2500ms
-Type "cargo build --quiet"
+Type "git --no-pager status --short && ls src/auth"
 Enter
 Sleep 2s
 Ctrl+\
@@ -82,5 +98,5 @@ Type "j"
 Sleep 1600ms
 Type "k"
 Sleep 1100ms
-Type "3"
+Type "4"
 Sleep 2400ms

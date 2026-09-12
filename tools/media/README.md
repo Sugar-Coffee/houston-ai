@@ -8,14 +8,25 @@ without anyone having to remember what was in the last one.
 
 ```sh
 brew install vhs          # pulls ttyd and ffmpeg
-sh tools/media/record.sh        # all six
+sh tools/media/record.sh        # all seven
 sh tools/media/record.sh board  # or just one
 ```
 
-Six tapes: `sessions`, `board`, `worktrees`, `vault`, `editor`, `themes`. One
-feature each, around twelve seconds each.
+Seven tapes: `sessions`, `vault`, `editor`, `tasks`, `board`, `worktrees`,
+`themes`. One feature each, around fifteen seconds each.
 
-Then uncomment the `<img>` tags in `README.md`.
+**A tape that navigates by arrow keys counts rows.** Adding a folder to the
+fixture moves everything below it, so the vault tape lands somewhere else and
+records a perfectly convincing gif of the wrong thing. Check a frame.
+
+## Somebody's name is not a feature
+
+Every tape exports `SHELL=/bin/sh` before starting Houston. A shell session
+takes the login shell, and a themed prompt puts `you@your-laptop:/long/path`
+across the top of the pane *and* into the session's name, because Houston
+reads the terminal title the child sets. Both of those went into a public
+README once. Plain `sh` sets no title and prints `$`, so the session falls
+back to being named after its directory.
 
 ## It has to be a terminal you are sitting in front of
 

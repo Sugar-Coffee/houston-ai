@@ -14,7 +14,7 @@ Set TypingSpeed 55ms
 Hide
 Type `eval "$(sh tools/media/fixture.sh)"`
 Enter
-Type `export HOUSTON_STATE_DIR=$STATE PATH="$PWD/target/release:$PATH" && cd "$REPO" && clear`
+Type `export HOUSTON_STATE_DIR=$STATE SHELL=/bin/sh PATH="$PWD/target/release:$PATH" && cd "$REPO" && clear`
 Enter
 Type "houston"
 Enter
@@ -23,9 +23,10 @@ Type "2"
 Sleep 2s
 Show
 
-# Walk into a project and open a decision.
+# Walk into a project and open a decision. Folders sort before files, so the
+# root reads Archive, Daily, Knowledge, Projects, Tasks, Workshop — three down
+# is Projects. Adding a folder to the fixture moves this; check the frame.
 Sleep 600ms
-Down
 Down
 Down
 Down

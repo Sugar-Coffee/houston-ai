@@ -340,7 +340,11 @@ pub mod fields {
     pub const CREATE: &str = "Create";
     pub const MOUSE: &str = "Capture the mouse";
     pub const POWERLINE: &str = "Powerline separators";
-    pub const INSTALL_FONT: &str = "Install a powerline font";
+    // Shorter than it reads: the label column is 22 wide and the old wording
+    // was 24, so it ran into its own hint — `fontyou already have one`. It
+    // sits directly under "Powerline separators", which is the context that
+    // makes two words enough.
+    pub const INSTALL_FONT: &str = "Powerline font";
     pub const MESSAGE: &str = "Commit message";
     pub const PUSH: &str = "Push to origin";
     pub const PULL_REQUEST: &str = "Open a pull request";

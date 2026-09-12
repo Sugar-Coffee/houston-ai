@@ -91,34 +91,31 @@ without pressing Return, so you can finish the sentence.
 
 ## A to-do list your agents can also read
 
-Tasks are markdown files in the vault, one per thing to do, and Houston has a
-view over them. Priorities, project tags, a description you edit in place.
+Tasks are markdown files in the vault, one per thing to do. Houston has a view
+over them, and the view is not the owner — hand-edit them, or don't.
 
 <p align="center"><img src="media/tasks.gif" alt="The tasks view" width="900"></p>
 
-The good bit is `c`. Press it on a task and Houston starts an agent **in that
-project's own directory**, already holding the task, the project write-up and
-the decisions behind it. You picked a line off a list; it turns up briefed.
+**The good bit is `c`.** Press it on a task and Houston starts an agent in that
+project's own directory, already holding the task, the project write-up and the
+decisions behind it. You picked a line off a list; it turns up briefed.
 
-`s` re-sorts by priority, newest or oldest — no date field needed, since the
-number on the filename already is one.
+`↵` opens the details — status, priority, project, tags. `e` edits the task
+where it sits: the border goes green and you are in the same editor as the
+vault, modes and all. The title is just the first markdown heading, so renaming
+is typing over it. `s` re-sorts by priority, newest or oldest, with no date
+field to keep true — the number on the filename already is one.
 
-`e` edits the task where it sits — the border goes green, the stat bar stays
-put, and you are in the editor, same modes and all. The title is just the first
-markdown heading, so renaming is typing over it and the list keeps up as you go.
-
-`↵` opens the details: status, priority, project, tags. Four statuses —
-`open`, `backlog`, `done`, `cancelled` — and the vault writes down what each
-one means, so an agent asked what to work on suggests from `open`, mentions
-`backlog` as parked, and does not quietly start something you deferred. The project row is a
-filtered list rather than something you cycle through thirty times, and tags
-complete against the ones already in your vault, so you get reminded you have
-`auth` before you invent `authentication`.
+Four statuses, and the vault writes down what each one means: `open` is fair
+game, `backlog` is a decision to wait, `done` and `cancelled` are both over.
+That is the bit that makes a task list worth pointing an agent at — ask one
+what to work on and it suggests from `open`, mentions the backlog as parked,
+and does not quietly start something you deferred on purpose.
 
 And because they are only files, an agent that notices a follow-up can open a
-task for it, and you will see it next time you look. Hand-edit them, or don't.
-Houston changes one frontmatter line at a time and leaves the rest of the file
-exactly as you wrote it.
+task for it, and you will see it next time you look. Houston changes one
+frontmatter line at a time and leaves the rest of the file exactly as you
+wrote it.
 
 ## Which one needs you
 

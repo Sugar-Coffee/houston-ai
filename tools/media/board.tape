@@ -14,7 +14,7 @@ Set TypingSpeed 45ms
 Hide
 Type `eval "$(sh tools/media/fixture.sh)"`
 Enter
-Type `export HOUSTON_STATE_DIR=$STATE PATH="$PWD/target/release:$PATH" && cd "$REPO" && clear`
+Type `export HOUSTON_STATE_DIR=$STATE SHELL=/bin/sh PATH="$PWD/target/release:$PATH" && cd "$REPO" && clear`
 Enter
 Type "houston"
 Enter
@@ -54,7 +54,7 @@ Enter
 Sleep 1200ms
 Ctrl+\
 Sleep 500ms
-Type "3"
+Type "4"
 Sleep 500ms
 Show
 

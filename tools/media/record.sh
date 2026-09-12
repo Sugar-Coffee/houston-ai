@@ -38,7 +38,7 @@ speed_for() {
 echo "Building the release binary..."
 cargo build --release
 
-for name in ${*:-vault editor sessions}; do
+for name in ${*:-sessions vault editor tasks board worktrees themes}; do
     tape="tools/media/${name}.tape"
     [ -f "$tape" ] || { echo "no such tape: $tape" >&2; exit 1; }
 
