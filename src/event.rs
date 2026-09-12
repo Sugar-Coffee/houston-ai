@@ -721,6 +721,14 @@ fn on_key_form(app: &mut App, key: KeyEvent) {
         KeyCode::Tab | KeyCode::BackTab if !modal => on_key_browsing(app, key),
         KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => form.move_focus(true),
         KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => form.move_focus(false),
+        // Left and right move along a row that shows all its options. Up and
+        // down move between rows, so the two axes mean what they look like.
+        KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l') => {
+            let forward = matches!(key.code, KeyCode::Right | KeyCode::Char('l'));
+            if form.step(forward) {
+                apply_form_field(app, modal);
+            }
+        }
         // The Theme row opens a picker rather than cycling a hidden value.
         // Nineteen themes cycled one keypress at a time is not a choice, it is
         // an endurance test.
@@ -3405,6 +3413,35 @@ mod tests {
         assert_eq!(task.priority, crate::vault::tasks::Priority::High);
         assert_eq!(task.project.as_deref(), Some("acme"));
         assert_eq!(task.tags, ["auth", "tests"], "a hash somebody typed is not part of the tag");
+
+        discard(&app);
+    }
+
+    /// Left and right walk a row that shows all its options, so changing a
+    /// priority is one keystroke and you can see what the other two are.
+    #[test]
+    fn arrows_walk_the_segmented_rows() {
+        let mut app = app_with_tasks("segments", &[("0001-a.md", "# Alpha\n")]);
+
+        on_key(&mut app, press(KeyCode::Enter));
+        assert_eq!(app.form.as_ref().unwrap().value(crate::app::fields::STATUS), "open");
+
+        on_key(&mut app, press(KeyCode::Right));
+        assert_eq!(app.form.as_ref().unwrap().value(crate::app::fields::STATUS), "done");
+
+        on_key(&mut app, press(KeyCode::Left));
+        assert_eq!(app.form.as_ref().unwrap().value(crate::app::fields::STATUS), "open");
+
+        // Down to priority, and back past the start to prove it wraps.
+        on_key(&mut app, press(KeyCode::Down));
+        on_key(&mut app, press(KeyCode::Left));
+        assert_eq!(app.form.as_ref().unwrap().value(crate::app::fields::PRIORITY), "high");
+
+        // A row with nothing to step through is left alone.
+        on_key(&mut app, press(KeyCode::Down));
+        on_key(&mut app, press(KeyCode::Down));
+        on_key(&mut app, press(KeyCode::Right));
+        assert!(app.form.is_some(), "and right on the tags row does nothing at all");
 
         discard(&app);
     }

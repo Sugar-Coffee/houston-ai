@@ -825,9 +825,9 @@ impl App {
         options.extend(projects);
 
         vec![
-            Field::choice(
+            Field::segments(
                 fields::PRIORITY,
-                "return cycles",
+                "",
                 crate::vault::tasks::Priority::all()
                     .iter()
                     .map(|priority| priority.key().to_string())
@@ -852,9 +852,9 @@ impl App {
     /// jumps. The metadata is four values from three fixed vocabularies, where
     /// free text is not freedom, it is the opportunity to type `hihg`.
     pub fn open_task_details_form(&mut self, task: &crate::vault::tasks::Task) {
-        let mut rows = vec![Field::choice(
+        let mut rows = vec![Field::segments(
             fields::STATUS,
-            "return cycles",
+            "",
             vec!["open".to_string(), "done".to_string()],
             task.status.key(),
         )];
@@ -1355,7 +1355,20 @@ impl App {
             return binds;
         }
 
-        let mut binds = vec![("j/k", "select"), ("\u{21b5}", "edit")];
+        let mut binds = vec![("j/k", "select")];
+
+        // What Return does depends on the row, and a bar that says "edit" over
+        // a row you cannot type into is worse than one that says nothing.
+        match form.focused().map(|field| field.kind) {
+            Some(crate::form::FieldKind::Segments) => {
+                binds.push(("\u{2190}\u{2192}", "change"));
+            }
+            Some(crate::form::FieldKind::Pick) => binds.push(("\u{21b5}", "choose")),
+            Some(crate::form::FieldKind::Toggle) => binds.push(("\u{21b5}", "toggle")),
+            Some(crate::form::FieldKind::Action) => binds.push(("\u{21b5}", "go")),
+            _ => binds.push(("\u{21b5}", "edit")),
+        }
+
         if self.form.is_some() {
             binds.push(("esc", "cancel"));
         } else {

@@ -546,6 +546,48 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// Asked for directly, and worth an assertion rather than an opinion: a
+    /// terminal renders bold as a real weight when the font has one, and the
+    /// only way to know Houston is asking for it is to look at the cell.
+    #[test]
+    fn a_task_title_is_bold_and_its_details_line_is_not() {
+        let root = std::env::temp_dir().join("houston-ui-tasks-bold");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Tasks")).unwrap();
+        std::fs::write(root.join("Tasks/0001-a.md"), "---\nproject: acme\n---\n# Alpha\n").unwrap();
+
+        let mut app = App::new();
+        app.browser =
+            Some(crate::vault::Browser::new(crate::vault::Vault::open(root.clone()).unwrap()));
+        app.select_tab(Tab::Tasks);
+
+        let mut terminal = Terminal::new(TestBackend::new(110, 20)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // Found rather than assumed: hard-coded row numbers land on a border
+        // the first time the header gains a row, and then the test is about
+        // the border.
+        let find = |needle: &str| {
+            (0..buffer.area.height).find_map(|y| {
+                let row: String = (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect();
+                row.find(needle).map(|x| (u16::try_from(x).unwrap(), y))
+            })
+        };
+
+        let bold_at = |(x, y): (u16, u16)| {
+            buffer[(x, y)].style().add_modifier.contains(ratatui::style::Modifier::BOLD)
+        };
+
+        assert!(bold_at(find("Alpha").expect("the title is on screen")), "the title carries BOLD");
+        assert!(
+            !bold_at(find("normal").expect("the details line is on screen")),
+            "and the line under it does not, or neither reads as bolder"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// The footer's caps follow the same setting as everything else.
     #[test]
     fn the_keybind_footer_flows_when_powerline_is_on() {

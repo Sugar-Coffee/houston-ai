@@ -17,6 +17,13 @@ pub enum FieldKind {
     /// A cycle rather than a popup: the lists here are short, and seeing the
     /// result immediately is the point — you pick a theme by looking at it.
     Choice,
+    /// A short list, all of it on screen, one of them lit.
+    ///
+    /// The difference from [`Self::Choice`] is that you can see the options
+    /// you are not on. Three of anything fits on a row, and showing them
+    /// answers "what else could this be" without pressing anything — which is
+    /// the question a cycling field makes you press a key to ask.
+    Segments,
     /// One of a list too long to cycle. Return opens a picker.
     ///
     /// The dividing line between this and [`Self::Choice`] is whether you can
@@ -134,6 +141,16 @@ impl Field {
         Self { kind: FieldKind::Action, ..Self::text(label, hint, "") }
     }
 
+    /// A short list shown in full, arrowed through in place.
+    pub fn segments(
+        label: &'static str,
+        hint: impl Into<String>,
+        options: Vec<String>,
+        current: &str,
+    ) -> Self {
+        Self { kind: FieldKind::Segments, ..Self::choice(label, hint, options, current) }
+    }
+
     /// A field whose options are chosen from a list rather than cycled.
     pub fn pick(
         label: &'static str,
@@ -183,12 +200,25 @@ impl Field {
         self.value = self.options[next].clone();
     }
 
+    fn cycle_back(&mut self) {
+        if self.options.is_empty() {
+            return;
+        }
+        let count = self.options.len();
+        let next = self
+            .options
+            .iter()
+            .position(|option| *option == self.value)
+            .map_or(0, |index| (index + count - 1) % count);
+        self.value = self.options[next].clone();
+    }
+
     /// What the field shows when it is not being edited.
     pub fn display(&self) -> String {
         match self.kind {
             FieldKind::Toggle => if self.on { "yes" } else { "no" }.to_string(),
             FieldKind::Action => self.hint.clone(),
-            FieldKind::Choice | FieldKind::Pick => self.value.clone(),
+            FieldKind::Choice | FieldKind::Pick | FieldKind::Segments => self.value.clone(),
             _ if self.value.is_empty() => self.hint.clone(),
             _ => self.value.clone(),
         }
@@ -303,13 +333,30 @@ impl Form {
         }
     }
 
+    /// Left and right on a field showing all its options.
+    ///
+    /// Returns whether anything moved, so the caller knows whether to apply
+    /// the change — on every other kind of field these keys mean nothing.
+    pub fn step(&mut self, forward: bool) -> bool {
+        let Some(field) = self.fields.get_mut(self.focused) else { return false };
+        if !matches!(field.kind, FieldKind::Segments | FieldKind::Choice) {
+            return false;
+        }
+        if forward {
+            field.cycle();
+        } else {
+            field.cycle_back();
+        }
+        true
+    }
+
     /// Return on a field: submits, flips a toggle, or begins editing.
     pub fn activate(&mut self) -> Activation {
         let Some(field) = self.fields.get_mut(self.focused) else { return Activation::Toggled };
 
         match field.kind {
             FieldKind::Action => Activation::Submitted,
-            FieldKind::Choice => {
+            FieldKind::Choice | FieldKind::Segments => {
                 field.cycle();
                 Activation::Toggled
             }

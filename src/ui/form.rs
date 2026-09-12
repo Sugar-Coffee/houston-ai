@@ -12,6 +12,82 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 
+/// Every option on the row, with the current one filled in.
+///
+/// A cycling field makes you press a key to find out what else it could be.
+/// Three options fit on a line, so they are all just there — and the one you
+/// are on is filled in its own meaning colour rather than a generic highlight,
+/// because "this is open" is more use than "this one is selected", which the
+/// fill already says.
+fn segments<'a>(options: &[String], current: &str, theme: Theme) -> Vec<Span<'a>> {
+    let mut spans = Vec::with_capacity(options.len() * 2);
+
+    for option in options {
+        let chosen = option == current;
+        let colour = crate::ui::tasks::word_colour(option, theme).unwrap_or(theme.accent);
+
+        spans.push(Span::styled(
+            format!(" {option} "),
+            if chosen {
+                Style::default().fg(theme.surface).bg(colour).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.dim)
+            },
+        ));
+        spans.push(Span::raw(" "));
+    }
+    spans
+}
+
+/// Tags as separate things rather than as one comma-separated string.
+///
+/// "auth, security, api" in a text field is a sentence you have to parse to
+/// see that it is three of something. Filled in, they are three of something
+/// at a glance — which matters most while you are adding a fourth.
+///
+/// All one colour on purpose. A palette per tag would be a new hue for every
+/// word somebody invents, and `ui::theme` has exactly as many hues as it has
+/// meanings.
+fn chips<'a>(value: &str, focused: bool, editing: bool, theme: Theme) -> Vec<Span<'a>> {
+    // A selected row is filled in `highlight`, so chips filled in `highlight`
+    // vanish into it exactly when you are looking at them. On the filled row
+    // they go the other way and sit *below* it instead.
+    let fill = if focused { theme.surface } else { theme.highlight };
+
+    let mut parts: Vec<&str> = value.split(',').collect();
+
+    // While typing, the fragment after the last comma is not a tag yet — it is
+    // what you are in the middle of. Filling it in as you type would have it
+    // flicker between chip and text on every keystroke.
+    let partial = if editing { parts.pop().unwrap_or("") } else { "" };
+
+    let mut spans: Vec<Span<'a>> = parts
+        .iter()
+        .map(|tag| tag.trim())
+        .filter(|tag| !tag.is_empty())
+        .flat_map(|tag| {
+            [
+                Span::styled(format!(" {tag} "), Style::default().fg(theme.text).bg(fill)),
+                Span::raw(" "),
+            ]
+        })
+        .collect();
+
+    if editing {
+        spans.push(Span::styled(
+            format!("{}\u{258f}", partial.trim_start()),
+            Style::default().fg(theme.code).add_modifier(Modifier::BOLD),
+        ));
+    } else if spans.is_empty() {
+        spans.push(Span::styled(
+            "none".to_string(),
+            Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
+        ));
+    }
+
+    spans
+}
+
 /// Width of the label column, so values line up into a readable column.
 const LABEL_WIDTH: usize = 22;
 
@@ -62,11 +138,27 @@ pub fn render(frame: &mut Frame, area: Rect, form: &Form, theme: Theme, title: &
             (field.display(), Style::default().fg(theme.text))
         };
 
-        let line = Line::from(vec![
+        let mut spans = vec![
             Span::styled(marker, Style::default().fg(theme.accent)),
             Span::styled(format!("{:<LABEL_WIDTH$}", field.label), label_style),
-            Span::styled(value, value_style),
-        ]);
+        ];
+
+        // Two kinds draw their value as more than a string, because for both
+        // of them the *shape* is the information: which of these three, and
+        // how many of these are there.
+        match field.kind {
+            FieldKind::Segments => spans.extend(segments(&field.options, &field.value, theme)),
+            FieldKind::Tags => spans.extend(chips(&field.value, focused, editing, theme)),
+            // Filled in the hue a project has everywhere else, so the dialog
+            // and the pane's stat bar are visibly showing the same fact.
+            FieldKind::Pick if !field.value.is_empty() => spans.push(Span::styled(
+                format!(" {} ", field.value),
+                Style::default().fg(theme.surface).bg(theme.link),
+            )),
+            _ => spans.push(Span::styled(value, value_style)),
+        }
+
+        let line = Line::from(spans);
         lines.push(if focused {
             keycap::fill(line, inner.width).style(keycap::selected_row(theme))
         } else {
