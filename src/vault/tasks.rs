@@ -672,6 +672,12 @@ pub fn code_location(vault_root: &Path, project: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// A scratch directory of this test's own.
+    ///
+    /// **The name has to be unique across this module.** Two tests reusing one
+    /// ran in parallel over the same folder and failed with each other's
+    /// files in the results — which looked like a sorting bug and was a
+    /// shared-state bug, the way it always is.
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("houston-tasks-{name}"));
         let _ = std::fs::remove_dir_all(&root);
@@ -770,7 +776,7 @@ mod tests {
     /// hand into a folder.
     #[test]
     fn newest_and_oldest_sort_by_when_the_task_was_filed() {
-        let root = scratch("order");
+        let root = scratch("filed");
         for name in ["0001-first.md", "0002-second.md", "0003-third.md"] {
             std::fs::write(root.join(FOLDER).join(name), format!("# {name}\n")).unwrap();
         }
