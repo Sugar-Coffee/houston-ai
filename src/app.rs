@@ -1553,6 +1553,14 @@ mod tests {
         assert!(sessions.contains(&"n"), "the sessions view offers a new agent");
         assert!(!sessions.contains(&"x"), "with no sessions there is nothing to close");
 
+        // A vault of our own. This asserted against whatever was on the
+        // machine, so it passed on a laptop with `~/.houston/vault` and failed
+        // the first time CI ran it — the vault keys are absent when there is
+        // no vault, which is correct behaviour and not what this is testing.
+        let root = std::env::temp_dir().join("houston-keybinds-vault");
+        std::fs::create_dir_all(&root).unwrap();
+        app.browser = Some(Browser::new(crate::vault::Vault::open(root.clone()).unwrap()));
+
         app.select_tab(Tab::Vault);
         let vault: Vec<_> = app.keybinds().iter().map(|(key, _)| *key).collect();
         assert!(!vault.contains(&"s"), "session keys must not leak into other views");
@@ -1563,6 +1571,8 @@ mod tests {
         // it is shown as the pair `n/N`, because a folder is the other thing
         // you might be making.
         assert!(vault.contains(&"n/N"), "the vault makes new notes and folders");
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

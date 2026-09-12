@@ -738,10 +738,18 @@ fn on_key_form(app: &mut App, key: KeyEvent) {
             let activation = form.activate();
             sync_form_visibility(app, modal);
 
-            if activation == Activation::Submitted {
-                accept_form(app);
-            } else {
-                apply_form_field(app, modal);
+            match activation {
+                Activation::Submitted => accept_form(app),
+                Activation::Toggled => apply_form_field(app, modal),
+                // **Nothing has changed yet.** Opening a text field for
+                // editing used to apply the settings anyway, which was
+                // harmless right up until one of them was wrong: press Return
+                // on a vault path that does not exist and `apply_form_field`
+                // re-read the bad path, failed, and rebuilt the form — closing
+                // the field you had just opened to correct the typo. The row
+                // that tells you to check the path in Settings was the one row
+                // Settings would not let you edit.
+                Activation::Editing => {}
             }
         }
         KeyCode::Esc if modal => app.close_form(),
@@ -2245,6 +2253,28 @@ mod tests {
         on_key(&mut app, press(KeyCode::Tab));
         assert_ne!(app.form.as_ref().unwrap().focused().unwrap().label, first);
         assert!(app.form.is_some(), "and does not switch view out from under you");
+    }
+
+    /// The row whose error message says "check the path in Settings" has to be
+    /// editable *while* it is wrong, which is the only time anybody needs it.
+    #[test]
+    fn a_vault_path_that_does_not_exist_can_still_be_corrected() {
+        let mut app = App::new();
+        app.config_path = std::env::temp_dir().join("houston-bad-vault-test.toml");
+        app.config.vault = Some(PathBuf::from("/definitely/not/here"));
+        app.load_vault();
+        app.rebuild_settings();
+        app.select_tab(Tab::Settings);
+
+        on_key(&mut app, press(KeyCode::Enter));
+
+        assert!(app.settings.is_editing(), "the field opens even though its value is wrong");
+        for character in "/tmp".chars() {
+            on_key(&mut app, press(KeyCode::Char(character)));
+        }
+        assert_eq!(app.tab, Tab::Settings, "and the keys are text while it is open");
+
+        std::fs::remove_file(&app.config_path).ok();
     }
 
     #[test]

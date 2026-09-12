@@ -552,6 +552,25 @@ mod palette_tests {
         }
     }
 
+    /// A heading is body-sized text in a terminal, so it gets the body floor.
+    ///
+    /// This was left out of the first pass on the assumption that a heading is
+    /// decoration and decoration can be quiet. It is not: it is the line you
+    /// scan a note by. Five palettes were under the floor when it was finally
+    /// measured, including the one somebody was actually reading in.
+    #[test]
+    fn a_heading_is_as_readable_as_the_text_under_it() {
+        for named in built_in() {
+            let ratio = contrast(named.theme.heading, named.theme.surface).unwrap();
+
+            assert!(
+                ratio >= 4.5,
+                "{} puts headings on surface at only {ratio:.1}:1 — a heading that bleeds",
+                named.name
+            );
+        }
+    }
+
     /// Dim is *meant* to recede, so it gets a lower floor — but it still has
     /// to be legible, because paths and branches live there.
     #[test]

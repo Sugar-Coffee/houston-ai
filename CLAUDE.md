@@ -200,6 +200,19 @@ spawned shell's screen fails for a reason CI will never have.
 
 ## Two habits worth keeping
 
+**A test that reads the machine it runs on is not a test.** Three tests
+asserted against whatever `$HOME` happened to hold — a vault that exists, a
+default that resolves — so they passed on the laptop and failed the first time
+CI ran them. Reproduce that without waiting for CI:
+
+```sh
+cargo test --no-run
+env HOME=$(mktemp -d) target/debug/deps/houston-<hash>
+```
+
+It is stricter than CI, which has a real home; treat the extra failures as
+noise and look only for the ones CI reported.
+
 **Evidence over assertion.** "This is slow" needs a benchmark; "nobody uses
 this" needs a count. Two features were cut and one was promoted on the strength
 of `grep` counts over a real vault — and the first version of those counts was
