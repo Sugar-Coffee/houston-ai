@@ -47,9 +47,7 @@ target() {
         Linux)
             case "$machine" in
                 x86_64) echo "x86_64-unknown-linux-gnu" ;;
-                aarch64|arm64)
-                    die "No Linux arm64 build yet. Build from source: cargo install --git https://github.com/$REPO"
-                    ;;
+                aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
                 *) die "Houston has no Linux build for $machine." ;;
             esac
             ;;

@@ -172,7 +172,7 @@ curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/latest/download/i
 ```
 
 Works out your platform, grabs the right build, checks the checksum, drops it
-in `~/.local/bin`. macOS (both chips) and Linux x86-64.
+in `~/.local/bin`. macOS on both chips, Linux on x86-64 and arm64.
 
 Then run it:
 
@@ -196,8 +196,8 @@ curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/latest/download/i
   | HOUSTON_INSTALL_DIR=/usr/local/bin sh
 
 # a specific version
-curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/download/v0.0.1/install.sh \
-  | HOUSTON_VERSION=v0.0.1 sh
+curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/download/v0.1.0/install.sh \
+  | HOUSTON_VERSION=v0.1.0 sh
 
 # from source
 cargo install --git https://github.com/Sugar-Coffee/houston-ai
@@ -316,11 +316,11 @@ Everything else: [`docs/keybindings.md`](docs/keybindings.md).
 
 ## Status
 
-Pre-release, and used every day by the person who wrote it. Rust,
+First release, and used every day by the person who wrote it. Rust,
 [ratatui](https://ratatui.rs), and
 [alacritty_terminal](https://github.com/alacritty/alacritty) doing the terminal
-emulation. `unsafe_code = "forbid"`, clippy pedantic clean, ~430 tests, CI on
-macOS and Linux.
+emulation. `unsafe_code = "forbid"`, clippy pedantic and nursery clean, ~500
+tests, CI on macOS and Linux.
 
 [Chloe](https://github.com/KevinEdry/chloe) worked out that agent status should
 come from hooks, and Houston does it the same way.

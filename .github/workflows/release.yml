@@ -34,6 +34,11 @@ jobs:
           # something that refuses to start on a two-year-old distro.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+          # Same reasoning on the glibc version, on GitHub's arm64 image —
+          # free on public repositories, which is the only reason this target
+          # exists rather than being cross-compiled.
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
 
     steps:
       - uses: actions/checkout@v4
