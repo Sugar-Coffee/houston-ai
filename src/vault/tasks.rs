@@ -153,6 +153,38 @@ impl Status {
     }
 }
 
+/// What the list is sorted by, after status.
+///
+/// Status is always the primary key, whichever of these is chosen: turning on
+/// the finished ones should not interleave them with the live ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    /// Loudest first. What to do next.
+    Priority,
+    /// Most recently added first. What is new.
+    Newest,
+    /// Longest-standing first. What is rotting.
+    Oldest,
+}
+
+impl Order {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Priority => "priority",
+            Self::Newest => "newest",
+            Self::Oldest => "oldest",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Priority => Self::Newest,
+            Self::Newest => Self::Oldest,
+            Self::Oldest => Self::Priority,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Task {
     pub path: PathBuf,
@@ -166,6 +198,16 @@ pub struct Task {
     pub tags: Vec<String>,
     /// Everything after the frontmatter, heading and all.
     pub body: String,
+    /// The filing number from the filename, if it has one.
+    ///
+    /// **This is the creation date, and it costs nothing.** Numbers are handed
+    /// out in order by [`create`], so `0007` was written after `0006` — which
+    /// is the only thing "sort by when it was added" actually needs. A
+    /// `created:` field would be a second fact to keep true, absent from every
+    /// task an agent writes by hand, and wrong the moment somebody copies a
+    /// file. A task with no number sorts as the newest thing there is, because
+    /// something just wrote it.
+    pub number: Option<u32>,
 }
 
 impl Task {
@@ -191,6 +233,7 @@ impl Task {
                 .filter(|value| !value.is_empty()),
             tags: front.map(tags).unwrap_or_default(),
             body: body.to_string(),
+            number: number_of(path),
         }
     }
 
@@ -452,7 +495,7 @@ pub fn title_from_body(path: &Path, body: &str) -> String {
 /// A missing `Tasks/` folder is an empty list, not an error: a vault somebody
 /// pointed Houston at will not have one, and that is a thing to explain in the
 /// view rather than a failure.
-pub fn load(vault_root: &Path) -> Vec<Task> {
+pub fn load(vault_root: &Path, order: Order) -> Vec<Task> {
     let folder = vault_root.join(FOLDER);
     let Ok(entries) = std::fs::read_dir(&folder) else { return Vec::new() };
 
@@ -466,13 +509,29 @@ pub fn load(vault_root: &Path) -> Vec<Task> {
         })
         .collect();
 
-    // Status first, then loudest, then by filename so the order is stable
+    // Status first, always. The chosen order is the tie-break within it, so
+    // showing the finished ones adds a section rather than shuffling them
+    // through the live ones.
+    //
+    // The path is the final tie-break in every case, so the order is stable
     // between refreshes — a list that reshuffles under the cursor is unusable
-    // however good the sort is. `Status`'s own ordering is the sort order.
+    // however good the sort is.
     tasks.sort_by(|a, b| {
-        a.status.cmp(&b.status).then(a.priority.cmp(&b.priority)).then(a.path.cmp(&b.path))
+        let within = match order {
+            Order::Priority => a.priority.cmp(&b.priority),
+            Order::Newest => b.number.unwrap_or(u32::MAX).cmp(&a.number.unwrap_or(u32::MAX)),
+            Order::Oldest => a.number.unwrap_or(u32::MAX).cmp(&b.number.unwrap_or(u32::MAX)),
+        };
+        a.status.cmp(&b.status).then(within).then(a.path.cmp(&b.path))
     });
     tasks
+}
+
+/// The `0007` in `0007-slug.md`.
+fn number_of(path: &Path) -> Option<u32> {
+    let name = path.file_name()?.to_str()?;
+    let (number, _) = name.split_once('-')?;
+    number.parse().ok()
 }
 
 fn is_task_file(path: &Path) -> bool {
@@ -567,7 +626,7 @@ pub fn edit(path: &Path, key: &str, value: Option<&str>) -> Result<()> {
 /// disagree with the files is by being wrong.
 pub fn tags_in_use(vault_root: &Path) -> Vec<String> {
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for task in load(vault_root) {
+    for task in load(vault_root, Order::Priority) {
         for tag in task.tags {
             *counts.entry(tag).or_default() += 1;
         }
@@ -698,8 +757,67 @@ mod tests {
             .unwrap();
         }
 
-        let order: Vec<String> = load(&root).into_iter().map(|task| task.title).collect();
+        let order: Vec<String> =
+            load(&root, Order::Priority).into_iter().map(|task| task.title).collect();
         assert_eq!(order, ["open", "backlog", "done", "cancelled"]);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The filing number is the creation date, which is why there is no
+    /// `created:` field: it is already there, it is already right, and it is
+    /// there on every task ever written including the ones an agent typed by
+    /// hand into a folder.
+    #[test]
+    fn newest_and_oldest_sort_by_when_the_task_was_filed() {
+        let root = scratch("order");
+        for name in ["0001-first.md", "0002-second.md", "0003-third.md"] {
+            std::fs::write(root.join(FOLDER).join(name), format!("# {name}\n")).unwrap();
+        }
+
+        let titles = |order| -> Vec<String> {
+            load(&root, order).into_iter().map(|task| task.title).collect()
+        };
+
+        assert_eq!(titles(Order::Oldest), ["0001-first.md", "0002-second.md", "0003-third.md"]);
+        assert_eq!(titles(Order::Newest), ["0003-third.md", "0002-second.md", "0001-first.md"]);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A task somebody wrote by hand has no number. It is not undated, it is
+    /// brand new — something just put it there.
+    #[test]
+    fn a_task_with_no_number_sorts_as_the_newest_thing_there_is() {
+        let root = scratch("unnumbered");
+        std::fs::write(root.join(FOLDER).join("0001-old.md"), "# Old\n").unwrap();
+        std::fs::write(root.join(FOLDER).join("just-written.md"), "# New\n").unwrap();
+
+        let titles: Vec<String> =
+            load(&root, Order::Newest).into_iter().map(|task| task.title).collect();
+        assert_eq!(titles, ["New", "Old"]);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Whatever the sort, finished tasks stay at the bottom. Otherwise turning
+    /// them on shuffles them through the things you can actually do.
+    #[test]
+    fn the_sort_never_lifts_a_finished_task_above_a_live_one() {
+        let root = scratch("sortstatus");
+        std::fs::write(
+            root.join(FOLDER).join("0001-done.md"),
+            "---\nstatus: done\npriority: high\n---\n# Finished\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(FOLDER).join("0002-open.md"), "---\npriority: low\n---\n# Live\n")
+            .unwrap();
+
+        for order in [Order::Priority, Order::Newest, Order::Oldest] {
+            let titles: Vec<String> =
+                load(&root, order).into_iter().map(|task| task.title).collect();
+            assert_eq!(titles, ["Live", "Finished"], "sorted by {}", order.label());
+        }
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -881,7 +999,8 @@ mod tests {
         write("0003-high.md", "---\npriority: high\n---\n# High\n");
         write("README.md", "# Tasks\n\nnot a task\n");
 
-        let titles: Vec<String> = load(&root).into_iter().map(|task| task.title).collect();
+        let titles: Vec<String> =
+            load(&root, Order::Priority).into_iter().map(|task| task.title).collect();
         assert_eq!(titles, ["High", "Low", "Done"], "README.md is documentation, not work");
 
         std::fs::remove_dir_all(&root).ok();
@@ -893,7 +1012,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
 
-        assert!(load(&root).is_empty());
+        assert!(load(&root, Order::Priority).is_empty());
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -909,7 +1028,7 @@ mod tests {
 
         let next = create(&root, "New", Priority::Normal, None, &[]).unwrap();
         assert!(next.file_name().unwrap().to_string_lossy().starts_with("0005-"));
-        assert_eq!(load(&root).len(), 3, "and nothing was overwritten");
+        assert_eq!(load(&root, Order::Priority).len(), 3, "and nothing was overwritten");
 
         std::fs::remove_dir_all(&root).ok();
     }

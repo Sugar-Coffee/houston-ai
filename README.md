@@ -100,6 +100,9 @@ The good bit is `c`. Press it on a task and Houston starts an agent **in that
 project's own directory**, already holding the task, the project write-up and
 the decisions behind it. You picked a line off a list; it turns up briefed.
 
+`s` re-sorts by priority, newest or oldest — no date field needed, since the
+number on the filename already is one.
+
 `e` edits the task where it sits — the border goes green, the stat bar stays
 put, and you are in the editor, same modes and all. The title is just the first
 markdown heading, so renaming is typing over it and the list keeps up as you go.

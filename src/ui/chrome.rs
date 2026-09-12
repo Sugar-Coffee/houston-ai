@@ -178,7 +178,10 @@ pub fn keybind_bar(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
                 glyphs: crate::ui::powerline::Glyphs::for_setting(app.config.powerline_enabled()),
                 background: theme.raised,
             };
-            let mut line = keycap::row(&binds, caps, theme);
+            // One column for the leading space, one so the last cap is not
+            // flush against the right edge either.
+            let budget = (area.width as usize).saturating_sub(2);
+            let mut line = keycap::within(&binds, budget, caps, theme);
             // A leading space so the first cap is not flush against the edge.
             line.spans.insert(0, Span::raw(" "));
             line

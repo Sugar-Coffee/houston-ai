@@ -171,6 +171,12 @@ pub struct App {
     /// you have agreed to and have not done, which is the opposite of
     /// finished.
     pub tasks_show_finished: bool,
+    /// What the list is sorted by, after status.
+    ///
+    /// Not persisted. A sort is a question you are asking this afternoon —
+    /// "what is new", "what has been sitting here" — rather than a preference,
+    /// and a saved one would answer yesterday's question every morning.
+    pub task_order: crate::vault::tasks::Order,
     /// The last few input events, newest last.
     ///
     /// Always recorded, shown only when asked for. Whether the terminal is
@@ -536,7 +542,7 @@ impl App {
             return;
         };
 
-        self.tasks = crate::vault::tasks::load(&root)
+        self.tasks = crate::vault::tasks::load(&root, self.task_order)
             .into_iter()
             .filter(|task| self.tasks_show_finished || !task.status.is_finished())
             .collect();
@@ -1053,6 +1059,7 @@ impl App {
             task_selected: 0,
             task_edit: None,
             tasks_show_finished: false,
+            task_order: crate::vault::tasks::Order::Priority,
             input_log: VecDeque::new(),
             show_inspector: false,
             // Never the real file under test. `remember_sessions` is called
@@ -1431,12 +1438,10 @@ impl App {
                         ("c", "agent"),
                         ("n", "new"),
                         ("x", "delete"),
+                        ("s", self.task_order.next().label()),
                     ]);
                 }
-                binds.push((
-                    "a",
-                    if self.tasks_show_finished { "hide finished" } else { "show finished" },
-                ));
+                binds.push(("a", if self.tasks_show_finished { "hide done" } else { "show done" }));
             }
 
             Tab::Vault if self.browser.is_some() => {

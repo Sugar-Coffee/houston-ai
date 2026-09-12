@@ -1672,6 +1672,11 @@ fn on_key_tasks(app: &mut App, key: KeyEvent) {
             app.tasks_show_finished = !app.tasks_show_finished;
             app.load_tasks();
         }
+        KeyCode::Char('s') => {
+            app.task_order = app.task_order.next();
+            app.load_tasks();
+            app.notify(format!("sorted by {}", app.task_order.label()));
+        }
         KeyCode::Char(' ') => toggle_task_done(app),
         KeyCode::Char('p') => cycle_task_priority(app),
         KeyCode::Char('c') => start_agent_on_task(app),

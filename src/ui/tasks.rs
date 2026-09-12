@@ -133,8 +133,15 @@ fn render_list(frame: &mut Frame, area: Rect, app: &App, renaming: Option<&str>,
             heading,
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         ))
+        // A sort and a filter are modes, and a mode you cannot see is a mode
+        // you will be surprised by. Both live on the bottom edge, out of the
+        // way of the count but never hidden.
         .title_bottom(Span::styled(
-            if showing_done { " including finished " } else { "" },
+            format!(
+                " by {}{} ",
+                app.task_order.label(),
+                if showing_done { " · including finished" } else { "" }
+            ),
             Style::default().fg(theme.dim),
         ));
 

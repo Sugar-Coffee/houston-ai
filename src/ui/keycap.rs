@@ -85,20 +85,41 @@ pub fn pair<'a>(key: &str, label: &str, caps: Caps, theme: Theme) -> Vec<Span<'a
 /// sometimes follows the keys — "all other keys go to the session".
 #[must_use]
 pub fn row<'a>(binds: &[(&str, &str)], caps: Caps, theme: Theme) -> Line<'a> {
-    let mut spans = Vec::with_capacity(binds.len() * 3);
+    within(binds, usize::MAX, caps, theme)
+}
+
+/// The same, but stopping before the first bind that would not fit.
+///
+/// **A half-drawn bind is worse than a missing one.** The Tasks view ran out
+/// of room at 130 columns and the bar ended `a  hide fi`, which is not a
+/// keybind, it is a puzzle — and the one it cut in half was the one somebody
+/// then asked me whether it did what it says. Whole binds or nothing, and the
+/// list is ordered so that what goes first is what you were least likely to
+/// need reminding of.
+pub fn within<'a>(binds: &[(&str, &str)], width: usize, caps: Caps, theme: Theme) -> Line<'a> {
+    let mut spans: Vec<Span<'a>> = Vec::with_capacity(binds.len() * 3);
+    let mut used = 0;
 
     for (index, (key, label)) in binds.iter().enumerate() {
+        let mut next: Vec<Span<'a>> = Vec::with_capacity(4);
         if index > 0 {
-            spans.push(Span::raw("   "));
+            next.push(Span::raw("   "));
         }
         if key.is_empty() {
-            spans.push(Span::styled(
+            next.push(Span::styled(
                 (*label).to_string(),
                 Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
             ));
         } else {
-            spans.extend(pair(key, label, caps, theme));
+            next.extend(pair(key, label, caps, theme));
         }
+
+        let cost: usize = next.iter().map(Span::width).sum();
+        if used + cost > width {
+            break;
+        }
+        used += cost;
+        spans.extend(next);
     }
 
     Line::from(spans)
@@ -131,6 +152,24 @@ pub fn selected_row(theme: Theme) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A half-drawn bind is worse than a missing one: the Tasks bar ended
+    /// `a  hide fi` at 130 columns, which is a puzzle rather than a keybind.
+    #[test]
+    fn a_bind_that_does_not_fit_is_dropped_whole() {
+        let theme = Theme::default();
+        let caps = Caps::plain(theme);
+        let binds = [("tab", "view"), ("j/k", "select"), ("a", "show done")];
+
+        let full = row(&binds, caps, theme).width();
+        let trimmed = within(&binds, full - 3, caps, theme);
+
+        assert!(trimmed.width() <= full - 3, "it fits the budget");
+        let text: String = trimmed.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(text.contains("view"), "the first bind survives");
+        assert!(!text.contains("show"), "and the last one is gone rather than cut");
+        assert!(!text.contains("sho"), "no fragment of it either");
+    }
 
     #[test]
     fn a_cap_is_padded_so_the_background_reads_as_a_key() {
