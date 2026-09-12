@@ -11,7 +11,16 @@
 # Working notes: vision, ADRs, research, build log. Kept locally and used by
 # whoever is developing, but not published — this is a standalone tool, not a
 # narrative of how it got made.
-/docs/
+#
+# `/docs/*` rather than `/docs/`: git will not look inside an excluded
+# directory, so a negation under one never fires. The contents are ignored and
+# one of them is let back out.
+/docs/*
+
+# The keybindings are for whoever is *using* Houston rather than building it.
+# The README links to them, and a link to a file nobody outside this machine
+# can see is worse than no link.
+!/docs/keybindings.md
 
 # macOS
 .DS_Store

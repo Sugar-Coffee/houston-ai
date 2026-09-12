@@ -14,9 +14,6 @@ curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/latest/download/i
 houston
 ```
 
-<sub>**Repo is private for now, so that URL 404s.** [Build from source](#install)
-meanwhile. Delete this line when it goes public.</sub>
-
 </div>
 
 ---
@@ -210,14 +207,6 @@ is a hundred lines of POSIX sh, short on purpose.
 
 </details>
 
-> **While the repo is private** neither of those can reach GitHub, so build it
-> yourself:
->
-> ```sh
-> git clone https://github.com/Sugar-Coffee/houston-ai
-> cd houston-ai && cargo build --release && ./target/release/houston
-> ```
-
 ## Setting up a vault worth having
 
 Houston builds one for you at `~/.houston/vault/` on first run. Not an empty
@@ -321,6 +310,13 @@ First release, and used every day by the person who wrote it. Rust,
 [alacritty_terminal](https://github.com/alacritty/alacritty) doing the terminal
 emulation. `unsafe_code = "forbid"`, clippy pedantic and nursery clean, ~500
 tests, CI on macOS and Linux.
+
+Something broken or missing? [Open an
+issue](https://github.com/Sugar-Coffee/houston-ai/issues) — a terminal, a
+screenshot and what you expected is plenty. Patches welcome; `cargo test`,
+`cargo clippy --all-targets` and `cargo fmt --check` all have to be clean,
+which [`CLAUDE.md`](CLAUDE.md) explains at some length along with the traps
+that have already been paid for once.
 
 [Chloe](https://github.com/KevinEdry/chloe) worked out that agent status should
 come from hooks, and Houston does it the same way.
