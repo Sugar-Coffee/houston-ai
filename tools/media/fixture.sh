@@ -232,6 +232,33 @@ project: acme-api
 Reverted, but the dependency stayed behind.
 EOF
 
+cat > "$VAULT/Tasks/0006-multi-region.md" <<'EOF'
+---
+status: backlog
+priority: normal
+project: acme-api
+tags: [infra]
+---
+
+# Multi-region read replicas
+
+Agreed, but not until the soak test runs on its own. Nobody should start this
+before that lands.
+EOF
+
+cat > "$VAULT/Tasks/0007-graphql.md" <<'EOF'
+---
+status: cancelled
+priority: low
+project: acme-api
+---
+
+# Expose a GraphQL endpoint
+
+Two customers asked, both of them already using the REST one happily. Kept so
+the question does not come back in March.
+EOF
+
 cat > "$VAULT/Projects/billing/index.md" <<'EOF'
 # billing
 

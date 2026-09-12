@@ -163,12 +163,14 @@ pub struct App {
     /// buffer is a piece of*, and there is no path on the buffer itself
     /// because it holds a fragment of the file rather than the file.
     pub task_edit: Option<TaskEdit>,
-    /// Whether finished tasks are in the list.
+    /// Whether finished tasks — done and cancelled — are in the list.
     ///
-    /// Off by default: a task list you have used for a month is mostly done
-    /// tasks, and "what should I be doing" is the question the view exists to
-    /// answer.
-    pub tasks_show_done: bool,
+    /// Off by default: a task list you have used for a month is mostly
+    /// finished tasks, and "what should I be doing" is the question the view
+    /// exists to answer. `backlog` is *not* filtered out by this: it is work
+    /// you have agreed to and have not done, which is the opposite of
+    /// finished.
+    pub tasks_show_finished: bool,
     /// The last few input events, newest last.
     ///
     /// Always recorded, shown only when asked for. Whether the terminal is
@@ -536,7 +538,7 @@ impl App {
 
         self.tasks = crate::vault::tasks::load(&root)
             .into_iter()
-            .filter(|task| self.tasks_show_done || task.status == crate::vault::tasks::Status::Open)
+            .filter(|task| self.tasks_show_finished || !task.status.is_finished())
             .collect();
 
         self.task_selected = here
@@ -855,7 +857,10 @@ impl App {
         let mut rows = vec![Field::segments(
             fields::STATUS,
             "",
-            vec!["open".to_string(), "done".to_string()],
+            crate::vault::tasks::Status::all()
+                .iter()
+                .map(|status| status.key().to_string())
+                .collect(),
             task.status.key(),
         )];
         rows.extend(self.task_fields(task.priority, task.project.as_deref(), &task.tags));
@@ -1047,7 +1052,7 @@ impl App {
             tasks: Vec::new(),
             task_selected: 0,
             task_edit: None,
-            tasks_show_done: false,
+            tasks_show_finished: false,
             input_log: VecDeque::new(),
             show_inspector: false,
             // Never the real file under test. `remember_sessions` is called
@@ -1428,7 +1433,10 @@ impl App {
                         ("x", "delete"),
                     ]);
                 }
-                binds.push(("a", if self.tasks_show_done { "hide done" } else { "show done" }));
+                binds.push((
+                    "a",
+                    if self.tasks_show_finished { "hide finished" } else { "show finished" },
+                ));
             }
 
             Tab::Vault if self.browser.is_some() => {

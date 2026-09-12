@@ -82,6 +82,17 @@ what happened last time. Start here, then go where the work is.
 Do not skip the third. Proposing something that was rejected two months ago
 wastes an afternoon, and the reason it was rejected is written down.
 
+## When asked what to work on
+
+Read `Tasks/`. Suggest from `open` — those are ready to pick up — highest
+priority first, and say which project each belongs to.
+
+Mention `backlog` items as parked rather than as candidates. That status is a
+decision to wait, usually because something has to happen first, and quietly
+starting one is not initiative. Ask.
+
+Ignore `done` and `cancelled` unless somebody asks what happened.
+
 ## Finding the code
 
 Every folder in `Projects/` has an `index.md`, and its first job is to say
@@ -115,7 +126,9 @@ worth a paragraph.
   known about it
 - `Tasks/` — one file per thing to do. Frontmatter carries status, priority,
   project and tags, and Houston has a view over it. Open one for a follow-up
-  you noticed rather than mentioning it in passing
+  you noticed rather than mentioning it in passing. `Tasks/README.md` says
+  what the four statuses mean; the short version is that `open` is fair game
+  and `backlog` is a decision to wait
 - `Plans/` — work thought through but not started. An approved plan usually
   becomes tasks
 - `Daily/` — one note per day. What happened, what is next
@@ -261,14 +274,36 @@ The frontmatter Houston understands:
 
 ```
 ---
-status: open        # or done
-priority: high      # high, normal, low
+status: open        # backlog, open, done, cancelled
+priority: normal    # low, normal, high
 project: acme-api   # a folder name under Projects/
 tags: [auth, tests]
 ---
 ```
 
-Everything after it is the description. The first `#` heading is the title.
+Everything after it is the description. The first `#` heading is the title, so
+renaming a task is editing that line.
+
+## What the statuses mean
+
+This is the part worth agreeing on, because it is what lets somebody — or
+something — work out what to pick up without having to ask.
+
+| status | means |
+|---|---|
+| `open` | ready to pick up. Fair game |
+| `backlog` | agreed, but deliberately not started yet |
+| `done` | finished |
+| `cancelled` | decided against. Kept, because the decision is information |
+
+**`backlog` is not a weaker `open`.** It means somebody has already thought
+about this and decided *not yet* — usually because something else has to
+happen first. Starting one without saying so is the kind of helpfulness nobody
+asked for.
+
+**`cancelled` is not delete.** A task that says why it is not happening stops
+the same idea coming back in three months, which is the argument the
+`decisions/` folders make about everything else.
 
 **Nothing here is required.** A file with no frontmatter is an open task at
 normal priority. A priority Houston does not recognise is normal. A status it

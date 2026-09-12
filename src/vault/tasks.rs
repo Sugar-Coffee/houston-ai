@@ -89,20 +89,38 @@ impl Priority {
     }
 }
 
+/// Where a task is in its life.
+///
+/// Four, and the ordering is the sort order: what you can do now, then what
+/// you have agreed to do later, then the two kinds of finished.
+///
+/// **The vocabulary is for the agents as much as for you.** An agent asked
+/// "what should I be working on" can answer it from this — `open` is fair
+/// game, `backlog` is agreed but deliberately not started yet, and starting
+/// something out of the backlog without saying so is exactly the kind of
+/// helpfulness nobody asked for. `Tasks/README.md` spells that out where an
+/// agent will read it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Status {
+    /// Ready to pick up.
     Open,
+    /// Agreed, but not ready to start.
+    Backlog,
+    /// Finished.
     Done,
+    /// Decided against. Kept, because the decision is information.
+    Cancelled,
 }
 
 impl Status {
-    /// Only an explicit "done" closes a task. Everything else — a typo, a
-    /// status somebody invented like `blocked` — stays open and visible,
-    /// because a task that quietly vanishes is worse than one in the wrong
-    /// column.
+    /// Anything unrecognised is *open*. A typo, or a status somebody invented
+    /// like `blocked`, leaves the task visible — one in the wrong column is a
+    /// great deal better than one that quietly vanished.
     pub fn read(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
+            "backlog" | "later" | "someday" | "icebox" => Self::Backlog,
             "done" | "complete" | "completed" | "closed" | "true" => Self::Done,
+            "cancelled" | "canceled" | "dropped" | "wontfix" | "abandoned" => Self::Cancelled,
             _ => Self::Open,
         }
     }
@@ -110,15 +128,28 @@ impl Status {
     pub const fn key(self) -> &'static str {
         match self {
             Self::Open => "open",
+            Self::Backlog => "backlog",
             Self::Done => "done",
+            Self::Cancelled => "cancelled",
         }
     }
 
+    /// Whether the task is off the list rather than on it.
+    ///
+    /// The filter's question. Cancelled belongs here with done: both are
+    /// decided, and neither is waiting for you.
+    pub const fn is_finished(self) -> bool {
+        matches!(self, Self::Done | Self::Cancelled)
+    }
+
+    /// What `space` does: tick it off, or put it back.
     pub const fn toggled(self) -> Self {
-        match self {
-            Self::Open => Self::Done,
-            Self::Done => Self::Open,
-        }
+        if self.is_finished() { Self::Open } else { Self::Done }
+    }
+
+    /// In the order the segmented row reads them: a life, left to right.
+    pub const fn all() -> [Self; 4] {
+        [Self::Backlog, Self::Open, Self::Done, Self::Cancelled]
     }
 }
 
@@ -435,9 +466,9 @@ pub fn load(vault_root: &Path) -> Vec<Task> {
         })
         .collect();
 
-    // Open before done, then loudest first, then by filename so the order is
-    // stable between refreshes — a list that reshuffles under the cursor is
-    // unusable however good the sort is.
+    // Status first, then loudest, then by filename so the order is stable
+    // between refreshes — a list that reshuffles under the cursor is unusable
+    // however good the sort is. `Status`'s own ordering is the sort order.
     tasks.sort_by(|a, b| {
         a.status.cmp(&b.status).then(a.priority.cmp(&b.priority)).then(a.path.cmp(&b.path))
     });
@@ -617,6 +648,69 @@ mod tests {
     fn an_unrecognised_status_leaves_the_task_open() {
         assert_eq!(parse("---\nstatus: blocked\n---\n# A").status, Status::Open);
         assert_eq!(parse("---\nstatus: DONE\n---\n# A").status, Status::Done);
+    }
+
+    /// The vocabulary agents are told about in `Tasks/README.md`, and the
+    /// spellings people write instead of it.
+    #[test]
+    fn every_status_reads_back_including_the_ones_people_spell_differently() {
+        for (written, expected) in [
+            ("open", Status::Open),
+            ("backlog", Status::Backlog),
+            ("someday", Status::Backlog),
+            ("done", Status::Done),
+            ("closed", Status::Done),
+            ("cancelled", Status::Cancelled),
+            ("canceled", Status::Cancelled),
+            ("wontfix", Status::Cancelled),
+            ("blocked", Status::Open),
+        ] {
+            let source = format!("---\nstatus: {written}\n---\n# A\n");
+            assert_eq!(parse(&source).status, expected, "status: {written}");
+        }
+    }
+
+    /// `backlog` is work you have agreed to and not done, which is the
+    /// opposite of finished — so the filter that hides finished tasks must not
+    /// take it with them.
+    #[test]
+    fn backlog_is_not_finished_and_cancelled_is() {
+        assert!(!Status::Backlog.is_finished(), "parked is not the same as over");
+        assert!(!Status::Open.is_finished());
+        assert!(Status::Done.is_finished());
+        assert!(Status::Cancelled.is_finished(), "decided against is still decided");
+    }
+
+    /// Open first, because it is the only one you can act on right now.
+    #[test]
+    fn the_list_puts_what_you_can_do_now_above_what_you_cannot() {
+        let root = scratch("statuses");
+        for (name, status) in [
+            ("0001-a.md", "cancelled"),
+            ("0002-b.md", "backlog"),
+            ("0003-c.md", "done"),
+            ("0004-d.md", "open"),
+        ] {
+            std::fs::write(
+                root.join(FOLDER).join(name),
+                format!("---\nstatus: {status}\n---\n# {status}\n"),
+            )
+            .unwrap();
+        }
+
+        let order: Vec<String> = load(&root).into_iter().map(|task| task.title).collect();
+        assert_eq!(order, ["open", "backlog", "done", "cancelled"]);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Space ticks a task off from anywhere, and puts a finished one back.
+    #[test]
+    fn ticking_off_works_from_every_status() {
+        assert_eq!(Status::Open.toggled(), Status::Done);
+        assert_eq!(Status::Backlog.toggled(), Status::Done);
+        assert_eq!(Status::Done.toggled(), Status::Open);
+        assert_eq!(Status::Cancelled.toggled(), Status::Open);
     }
 
     #[test]

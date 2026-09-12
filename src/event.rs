@@ -1669,7 +1669,7 @@ fn on_key_tasks(app: &mut App, key: KeyEvent) {
         KeyCode::Char('n') => app.open_new_task_form(),
         KeyCode::Char('r') => app.load_tasks(),
         KeyCode::Char('a') => {
-            app.tasks_show_done = !app.tasks_show_done;
+            app.tasks_show_finished = !app.tasks_show_finished;
             app.load_tasks();
         }
         KeyCode::Char(' ') => toggle_task_done(app),
@@ -1705,9 +1705,9 @@ fn toggle_task_done(app: &mut App) {
 
     amend_task(app, "status", Some(next.key()));
 
-    // Ticking something off while done tasks are hidden makes it disappear,
-    // which reads as "deleted" unless you are told otherwise.
-    if next == crate::vault::tasks::Status::Done && !app.tasks_show_done {
+    // Ticking something off while finished tasks are hidden makes it
+    // disappear, which reads as "deleted" unless you are told otherwise.
+    if next.is_finished() && !app.tasks_show_finished {
         app.notify(format!("done: {title} — a to see it"));
     }
 }
@@ -3072,7 +3072,7 @@ mod tests {
                 ("0003-c.md", "---\npriority: high\n---\n# Gamma\n"),
             ],
         );
-        app.tasks_show_done = true;
+        app.tasks_show_finished = true;
         app.load_tasks();
 
         on_key(&mut app, press(KeyCode::Char('j')));
@@ -3410,7 +3410,7 @@ mod tests {
         let source = std::fs::read_to_string(&path).unwrap();
         assert!(source.contains("keep-me: 42"), "a key the dialog never showed still survives it");
 
-        app.tasks_show_done = true;
+        app.tasks_show_finished = true;
         app.load_tasks();
         let task = app.selected_task().unwrap();
         assert_eq!(task.status, crate::vault::tasks::Status::Done);

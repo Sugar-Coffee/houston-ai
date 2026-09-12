@@ -493,7 +493,7 @@ mod tests {
 
         assert!(draw(&app, 110, 20).contains("press a"), "there is something behind the filter");
 
-        app.tasks_show_done = true;
+        app.tasks_show_finished = true;
         app.load_tasks();
         assert!(draw(&app, 110, 20).contains("Done thing"));
 

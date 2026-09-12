@@ -115,7 +115,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, glyphs: Glyphs, theme: T
 }
 
 fn render_list(frame: &mut Frame, area: Rect, app: &App, renaming: Option<&str>, theme: Theme) {
-    let (tasks, selected, showing_done) = (&app.tasks, app.task_selected, app.tasks_show_done);
+    let (tasks, selected, showing_done) = (&app.tasks, app.task_selected, app.tasks_show_finished);
 
     let open = tasks.iter().filter(|task| task.status == Status::Open).count();
     let heading = match open {
@@ -134,7 +134,7 @@ fn render_list(frame: &mut Frame, area: Rect, app: &App, renaming: Option<&str>,
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
-            if showing_done { " including done " } else { "" },
+            if showing_done { " including finished " } else { "" },
             Style::default().fg(theme.dim),
         ));
 
@@ -173,22 +173,33 @@ fn render_list(frame: &mut Frame, area: Rect, app: &App, renaming: Option<&str>,
 /// task is the same claim about a different object — see `ui::theme`.
 const fn priority_colour(task: &Task, theme: Theme) -> Color {
     match (task.status, task.priority) {
-        (Status::Done, _) | (_, Priority::Low) => theme.dim,
+        (Status::Done | Status::Cancelled, _) | (_, Priority::Low) => theme.dim,
         (_, Priority::High) => theme.attention,
         (_, Priority::Normal) => theme.text,
     }
 }
 
+/// Three weights, not four colours.
+///
+/// Live, waiting, and over. `backlog` takes ordinary text because it is real
+/// work you have agreed to, just not now — dimming it alongside the finished
+/// ones would file it with the things nobody is going to look at again. The
+/// word is right there for the rest of the distinction, which is what words
+/// are for.
 const fn status_colour(status: Status, theme: Theme) -> Color {
     match status {
         Status::Open => theme.running,
-        Status::Done => theme.dim,
+        Status::Backlog => theme.text,
+        Status::Done | Status::Cancelled => theme.dim,
     }
 }
 
 /// One task as two lines: what it is, then everything about it.
 fn card<'a>(task: &Task, title: &str, chosen: bool, width: usize, theme: Theme) -> [Line<'a>; 2] {
-    let title_style = if task.status == Status::Done {
+    // Struck through once it is decided, either way. A cancelled task is not
+    // a failure worth a colour; it is simply no longer on the list, which is
+    // the same thing a finished one is.
+    let title_style = if task.status.is_finished() {
         Style::default().fg(theme.dim).add_modifier(Modifier::CROSSED_OUT)
     } else {
         Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
@@ -256,7 +267,7 @@ fn empty_state<'a>(showing_done: bool, theme: Theme) -> Vec<Line<'a>> {
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "  Nothing open — press a to include done ones.",
+            "  Nothing live — press a to include finished ones.",
             Style::default().fg(theme.dim),
         )));
     }
