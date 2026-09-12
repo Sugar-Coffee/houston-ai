@@ -586,7 +586,7 @@ fn save_note(app: &mut App) {
     );
 }
 
-/// Writes a description back, splicing it into the file around the metadata.
+/// Writes the body back, splicing it into the file around the metadata.
 fn save_description(app: &mut App, force: bool) {
     let Some(edit) = app.task_edit.clone() else { return };
     let Some(editor) = app.editor.as_mut() else { return };
@@ -594,20 +594,19 @@ fn save_description(app: &mut App, force: bool) {
     // The description as it is on disk right now. Different from what we
     // opened means somebody else has been in here — an agent, or Obsidian —
     // and overwriting them silently is the one thing a save must not do.
-    let current = std::fs::read_to_string(&edit.path).map(|source| {
-        crate::vault::tasks::Task::parse(&edit.path, &source).description().trim_end().to_string()
-    });
+    let current = std::fs::read_to_string(&edit.path)
+        .map(|source| crate::vault::tasks::Task::parse(&edit.path, &source).body().to_string());
 
     if !force && current.as_deref().is_ok_and(|now| now != edit.original) {
         return app.ask(
-            "Overwrite the description?".to_string(),
+            "Overwrite it?".to_string(),
             "It changed on disk since you opened it — Obsidian, or another agent.".to_string(),
             crate::app::Pending::OverwriteNote,
         );
     }
 
     let written = editor.buffer.text();
-    match crate::vault::tasks::set_description(&edit.path, &written) {
+    match crate::vault::tasks::set_body(&edit.path, &written) {
         Ok(()) => {
             editor.buffer.mark_saved();
             // What is on disk now is what we just wrote, so that becomes the
@@ -1621,7 +1620,7 @@ fn cycle_task_priority(app: &mut App) {
     amend_task(app, "priority", Some(next.key()));
 }
 
-/// Opens the selected task's *description* for editing, in the pane.
+/// Opens the selected task's *body* for editing, in the pane.
 ///
 /// Not the file. Opening the file put the frontmatter on screen with a cursor
 /// in front of it, which is an invitation to break the four fields the view
@@ -1633,10 +1632,14 @@ fn cycle_task_priority(app: &mut App) {
 /// not one.
 fn edit_task(app: &mut App) {
     let Some(task) = app.selected_task() else { return app.notify("no task selected") };
-    // Trailing blank lines trimmed, because that is the shape `with_description`
-    // writes: seeding the buffer with an untrimmed copy puts the cursor on an
-    // empty line below the text and makes an unedited task look modified.
-    let (path, original) = (task.path.clone(), task.description().trim_end().to_string());
+    // The body, heading and all. The heading is the title, so editing it is
+    // how a task gets renamed — there is no second field for that and no key
+    // that exists only to rename.
+    //
+    // Trimmed, because that is the shape `with_body` writes: seeding the
+    // buffer with an untrimmed copy puts the cursor on an empty line below the
+    // text and makes an unedited task look modified.
+    let (path, original) = (task.path.clone(), task.body().to_string());
 
     let mut editor = crate::editor::Editor::with_buffer(Buffer::from_str(&original));
     editor.buffer.move_buffer_end();
@@ -3084,7 +3087,7 @@ mod tests {
 
         assert_eq!(
             app.editor.as_ref().unwrap().buffer.text(),
-            "Body. !",
+            "# Alpha\n\nBody. !",
             "a space is a space, not the key that ticks a task off"
         );
         assert_eq!(
@@ -3097,9 +3100,10 @@ mod tests {
     }
 
     /// The point of editing in the pane: the frontmatter is not on screen, so
-    /// there is nothing there to break.
+    /// there is nothing there to break. The heading *is* on screen, because
+    /// the heading is the title and editing it is how a task is renamed.
     #[test]
-    fn the_editor_holds_the_description_and_not_the_metadata() {
+    fn the_editor_holds_the_body_and_not_the_metadata() {
         let mut app = app_with_tasks(
             "fragment",
             &[("0001-a.md", "---\npriority: high\n---\n\n# Alpha\n\nBody.\n")],
@@ -3108,9 +3112,46 @@ mod tests {
         on_key(&mut app, press(KeyCode::Char('e')));
 
         let text = app.editor.as_ref().unwrap().buffer.text();
-        assert_eq!(text, "Body.", "the description, trimmed, and nothing else");
-        assert!(!text.contains("---"), "no frontmatter to type into");
-        assert!(!text.contains("# Alpha"), "and no title either");
+        assert_eq!(text, "# Alpha\n\nBody.", "the body, trimmed");
+        assert!(!text.contains("---"), "and no frontmatter to type into");
+
+        discard(&app);
+    }
+
+    /// The whole reason the heading is in the buffer. No rename key, no second
+    /// field: you type over the title, and the list agrees before you save.
+    #[test]
+    fn typing_over_the_heading_renames_the_task() {
+        let mut app = app_with_tasks("rename", &[("0001-a.md", "# Alpha\n\nBody.\n")]);
+        let path = app.selected_task().unwrap().path.clone();
+
+        on_key(&mut app, press(KeyCode::Char('e')));
+        let editor = app.editor.as_mut().unwrap();
+        editor.buffer.move_buffer_start();
+        editor.buffer.move_line_end();
+        for character in " the second".chars() {
+            on_key(&mut app, press(KeyCode::Char(character)));
+        }
+
+        assert_eq!(
+            crate::vault::tasks::title_from_body(
+                &path,
+                &app.editor.as_ref().unwrap().buffer.text()
+            ),
+            "Alpha the second",
+            "the list reads the title out of the buffer while it is being typed"
+        );
+
+        on_key(&mut app, press(KeyCode::Esc));
+        on_key(&mut app, press(KeyCode::Esc));
+
+        assert_eq!(app.selected_task().unwrap().title, "Alpha the second");
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            "0001-a.md",
+            "the filename does not follow: an agent may hold this path, and a \
+             wikilink certainly might"
+        );
 
         discard(&app);
     }
@@ -3126,6 +3167,7 @@ mod tests {
         let editor = app.editor.as_ref().unwrap();
         assert_eq!(editor.mode, crate::editor::Mode::Insert);
         assert_eq!(editor.buffer.cursor.column, "Body.".len(), "ready to carry on writing");
+        assert_eq!(editor.buffer.cursor.line, 2, "at the end of the body, not the end of a title");
 
         discard(&app);
     }

@@ -158,6 +158,12 @@ impl Task {
 
     /// The description: the body with its title heading removed, since the
     /// title is already on screen.
+    /// Everything below the frontmatter, heading included. What the pane
+    /// edits, and the only half of the file the editor can reach.
+    pub fn body(&self) -> &str {
+        self.body.trim()
+    }
+
     pub fn description(&self) -> &str {
         let rest = &self.body[heading_end(&self.body).unwrap_or(0)..];
         rest.trim_start_matches(['\n', '\r'])
@@ -345,51 +351,62 @@ pub fn with_field(source: &str, key: &str, value: Option<&str>) -> String {
     format!("---\n{}\n---\n{body}", lines.join("\n"))
 }
 
-/// Replaces the description, leaving the frontmatter and the title alone.
+/// Replaces everything below the frontmatter, which is what the pane edits.
 ///
-/// The same promise [`with_field`] makes, from the other side: everything up
-/// to and including the `# ` heading comes out byte-for-byte as it went in.
-/// That is what lets the description be edited in a pane that never shows the
-/// metadata — you cannot break what you cannot reach, and neither can the
-/// editor.
-pub fn with_description(source: &str, description: &str) -> String {
-    let (front, body) = split(source);
-    let head = &body[..heading_end(body).unwrap_or(0)];
+/// The heading goes in the editable half deliberately. A task's title *is* its
+/// first heading — that is how [`Task::parse`] finds it — so making the
+/// heading editable makes renaming free, with no second field and no key that
+/// only exists for renaming. Delete the heading and the title falls back to
+/// the filename, which is the same rule as every other malformed task here.
+///
+/// The frontmatter comes out byte-for-byte as it went in: the same promise
+/// [`with_field`] makes, from the other side. It is the half you cannot reach
+/// from the editor, and it is the half the view depends on.
+pub fn with_body(source: &str, body: &str) -> String {
+    let (front, _) = split(source);
+    let body = body.trim();
 
     let mut out = String::new();
     if let Some(front) = front {
         out.push_str("---\n");
         out.push_str(front);
         out.push_str("---\n");
-    }
-    out.push_str(head);
-    if !head.is_empty() && !head.ends_with('\n') {
-        out.push('\n');
-    }
-
-    let description = description.trim_end();
-    if !description.is_empty() {
-        // A blank line under the heading, because the description is markdown
-        // and a paragraph butted against a heading is a different document.
-        if !head.is_empty() {
+        // A blank line under the block, which is what every file this writes
+        // already looks like. Without it a save reflows the whole vault the
+        // first time it touches a note.
+        if !body.is_empty() {
             out.push('\n');
         }
-        out.push_str(description);
+    }
+    if !body.is_empty() {
+        out.push_str(body);
         out.push('\n');
     }
     out
 }
 
-/// Writes a new description into the task on disk.
+/// Writes a new body into the task on disk.
 ///
 /// Splices against what is in the file *now* rather than against what was
 /// there when the editor opened, so a priority somebody changed meanwhile — or
 /// an agent adding a tag — survives being saved over.
-pub fn set_description(path: &Path, description: &str) -> Result<()> {
+pub fn set_body(path: &Path, body: &str) -> Result<()> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("could not read {}", path.display()))?;
-    std::fs::write(path, with_description(&source, description))
+    std::fs::write(path, with_body(&source, body))
         .with_context(|| format!("could not write {}", path.display()))
+}
+
+/// The title a body would give a task, for showing a rename as it is typed.
+///
+/// The frontmatter `title:` fallback is missing on purpose: the editor does
+/// not hold the frontmatter, so there is nothing to read it from. A task that
+/// takes its title from there shows the filename while being edited and the
+/// right thing the moment it is saved, which is a second of wrong in a case
+/// that barely exists.
+#[must_use]
+pub fn title_from_body(path: &Path, body: &str) -> String {
+    heading(body).unwrap_or_else(|| title_from_filename(path))
 }
 
 /// Every task in the vault, ordered for reading.
@@ -641,28 +658,28 @@ mod tests {
         assert_eq!(after, "---\npriority: high\n---\n# Ring the bank\n");
     }
 
-    /// The pane edits the description and nothing else, so the metadata has to
-    /// come out of a save exactly as it went in.
+    /// The frontmatter is the half the editor cannot reach, and it has to come
+    /// out of a save exactly as it went in.
     #[test]
-    fn rewriting_the_description_leaves_the_frontmatter_and_title_untouched() {
-        let source = "---\nstatus: open\n# a comment\nobsidian-only-key: 42\n---\n\n#  Alpha  \n\nOld body.\n";
+    fn rewriting_the_body_leaves_the_frontmatter_untouched() {
+        let source =
+            "---\nstatus: open\n# a comment\nobsidian-only-key: 42\n---\n\n# Alpha\n\nOld body.\n";
 
-        let after = with_description(source, "New body.\n\nWith two paragraphs.");
+        let after = with_body(source, "# Renamed\n\nNew body.");
 
         assert_eq!(
             after,
-            "---\nstatus: open\n# a comment\nobsidian-only-key: 42\n---\n\n#  Alpha  \n\nNew body.\n\nWith two paragraphs.\n",
-            "the blank line above the heading was in the file, so it stays in the file"
+            "---\nstatus: open\n# a comment\nobsidian-only-key: 42\n---\n\n# Renamed\n\nNew body.\n"
         );
         let task = Task::parse(Path::new("/v/Tasks/0001-a.md"), &after);
-        assert_eq!(task.title, "Alpha", "and the title still parses out of it");
-        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.title, "Renamed", "the heading is the title, so this is a rename");
+        assert_eq!(task.status, Status::Open, "and the metadata came through it");
     }
 
     /// Round-tripping without typing anything must not rewrite the file into a
     /// different shape, or opening and closing the editor would show as an edit.
     #[test]
-    fn saving_a_description_unchanged_is_the_same_document() {
+    fn saving_a_body_unchanged_is_the_same_document() {
         for source in [
             "---\nstatus: open\n---\n\n# Alpha\n\nBody.\n",
             "# Alpha\n\nBody.\n",
@@ -670,40 +687,41 @@ mod tests {
             "just a sentence\n",
         ] {
             let task = Task::parse(Path::new("/v/Tasks/0001-a.md"), source);
-            let after = with_description(source, task.description());
-            let again = Task::parse(Path::new("/v/Tasks/0001-a.md"), &after);
+            let after = with_body(source, task.body());
 
-            assert_eq!(again.title, task.title, "{source:?}");
-            assert_eq!(
-                with_description(&after, again.description()),
-                after,
-                "a second round changes nothing at all: {source:?}"
-            );
+            assert_eq!(after, source, "an untouched task is byte-identical: {source:?}");
         }
     }
 
-    /// The offset bug the rewrite closed: the description used the heading's
-    /// *length* as its start, which is only right when the heading is the
-    /// first line of the body.
+    /// Deleting the heading is allowed — it is markdown, and the parser has no
+    /// error state. The title falls back to the filename, same as every other
+    /// task with nothing to take a title from.
     #[test]
-    fn a_heading_that_is_not_the_first_line_does_not_eat_the_description() {
-        let task = Task::parse(Path::new("/v/Tasks/0001-a.md"), "\n\n# Alpha\nBody.\n");
-        assert_eq!(task.title, "Alpha");
-        assert_eq!(task.description(), "Body.\n");
-    }
+    fn deleting_the_heading_falls_back_to_the_filename_rather_than_breaking() {
+        let after = with_body("---\nstatus: open\n---\n\n# Alpha\n\nBody.\n", "Body.");
+        assert_eq!(after, "---\nstatus: open\n---\n\nBody.\n");
 
-    /// A task with no heading keeps its whole body as the description, so
-    /// there is nothing above it to preserve — and nothing to eat by accident.
-    #[test]
-    fn a_task_with_no_heading_still_edits_cleanly() {
-        let after = with_description("---\npriority: low\n---\nOld.\n", "New.");
-        assert_eq!(after, "---\npriority: low\n---\nNew.\n");
+        let task = Task::parse(Path::new("/v/Tasks/0007-ring-the-bank.md"), &after);
+        assert_eq!(task.title, "Ring the bank");
     }
 
     #[test]
-    fn clearing_a_description_leaves_the_task_rather_than_an_empty_file() {
-        let after = with_description("---\nstatus: open\n---\n\n# Alpha\n\nBody.\n", "   \n\n");
-        assert_eq!(after, "---\nstatus: open\n---\n\n# Alpha\n");
+    fn clearing_the_body_leaves_the_task_rather_than_an_empty_file() {
+        let after = with_body("---\nstatus: open\n---\n\n# Alpha\n\nBody.\n", "   \n\n");
+        assert_eq!(after, "---\nstatus: open\n---\n");
+        assert_eq!(
+            Task::parse(Path::new("/v/Tasks/0001-a.md"), &after).status,
+            Status::Open,
+            "an emptied task is still a task"
+        );
+    }
+
+    /// What the sidebar shows while a rename is being typed.
+    #[test]
+    fn a_title_can_be_read_from_a_body_before_it_is_saved() {
+        let path = Path::new("/v/Tasks/0007-ring-the-bank.md");
+        assert_eq!(title_from_body(path, "# Halfway through a ren"), "Halfway through a ren");
+        assert_eq!(title_from_body(path, "no heading yet"), "Ring the bank");
     }
 
     #[test]

@@ -32,21 +32,26 @@ Sleep 800ms
 
 # Tick one off.
 Space
-Sleep 1100ms
+Sleep 900ms
 
-# And write a new one.
-Type "n"
+# The description is edited in the pane, and the heading is the title —
+# so renaming is typing over it, and the list keeps up.
+Up
 Sleep 400ms
-Enter
-Type "Cache the JWKS response"
-Sleep 200ms
-Enter
-Sleep 500ms
+Type "e"
+Sleep 700ms
+Escape
+Sleep 300ms
+Type "gg"
+Type "A"
+Sleep 300ms
+Type " on use"
+Sleep 1000ms
+Escape
+Sleep 300ms
+Escape
+Sleep 900ms
+
+# One more, so the rename is visibly not a one-off.
 Down
-Enter
-Sleep 600ms
-Down
-Down
-Down
-Enter
-Sleep 1800ms
+Sleep 1200ms

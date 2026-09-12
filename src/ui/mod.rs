@@ -499,8 +499,9 @@ mod tests {
     /// Editing happens *in* the pane. The metadata stays decorated above it,
     /// which is both nicer to look at and the reason the frontmatter cannot be
     /// typed into: it is not in the buffer, and it is not off screen either.
+    /// The heading *is* in the buffer, because the heading is the title.
     #[test]
-    fn editing_a_description_keeps_the_task_header_on_screen() {
+    fn editing_a_body_keeps_the_stat_bar_and_renames_live() {
         let root = std::env::temp_dir().join("houston-ui-tasks-edit");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("Tasks")).unwrap();
@@ -518,17 +519,22 @@ mod tests {
         let task = app.selected_task().unwrap();
         app.task_edit = Some(crate::app::TaskEdit {
             path: task.path.clone(),
-            original: task.description().trim_end().to_string(),
+            original: task.body().to_string(),
         });
-        let mut editor =
-            crate::editor::Editor::with_buffer(crate::editor::buffer::Buffer::from_str("Body."));
+        let mut editor = crate::editor::Editor::with_buffer(
+            crate::editor::buffer::Buffer::from_str("# Renamed\n\nBody."),
+        );
         editor.enter_insert();
         app.editor = Some(editor);
 
         let frame = draw(&app, 110, 24);
 
-        assert!(frame.contains("Alpha"), "the title is still there");
-        assert!(frame.contains("high") && frame.contains("acme-api"), "and the stat bar");
+        assert!(frame.contains("high") && frame.contains("acme-api"), "the stat bar stays put");
+        assert!(frame.contains("# Renamed"), "the heading is in the buffer, being typed");
+        assert!(
+            frame.matches("Renamed").count() >= 2,
+            "and the list agrees before it is saved, or the two read as different things"
+        );
         assert!(frame.contains("INSERT"), "with the mode where the editor's own title would be");
         assert!(!frame.contains("---"), "and the frontmatter is nowhere near the cursor");
         assert!(frame.contains("Sessions"), "the tab strip survives — this is not a full screen");

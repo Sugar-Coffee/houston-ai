@@ -46,14 +46,16 @@ const CARD_HEIGHT: usize = 3;
 /// Where the details line starts, under the title rather than under the caret.
 const INDENT: &str = "   ";
 
-/// Rows the pane spends before the description: air, the title, air, the stat
-/// bar, air.
+/// Rows the pane spends before the body: air, the stat bar, air.
 ///
-/// A constant rather than something measured, because the event loop has to
-/// size the editor to the description area *before* the frame is drawn. A
-/// title long enough to wrap is truncated instead, which is the cheap side of
-/// that trade — `ui::layout` exists for the same reason.
-const HEADER_HEIGHT: u16 = 5;
+/// The title is not up here any more. It is the body's first heading, which
+/// means it is inside the part you can edit — so renaming a task is typing
+/// over its heading, and the pane shows it exactly where markdown would.
+///
+/// A constant rather than something measured, because the event loop sizes the
+/// editor to the body area *before* the frame is drawn. `ui::layout` exists
+/// for the same reason.
+const HEADER_HEIGHT: u16 = 3;
 
 /// The list column's width for a given body.
 ///
@@ -75,13 +77,13 @@ fn text_of(pane: Rect) -> Rect {
     Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner }
 }
 
-/// The description's rectangle inside the pane, below the header.
+/// The body's rectangle inside the pane, below the stat bar.
 fn body_of(pane: Rect) -> Rect {
     let text = text_of(pane);
     Rect { y: text.y + HEADER_HEIGHT, height: text.height.saturating_sub(HEADER_HEIGHT), ..text }
 }
 
-/// Where the description is drawn, given the whole body, so the event loop can
+/// Where the body is drawn, given the whole layout body, so the event loop can
 /// size the editor to the same rectangle the renderer will use.
 #[must_use]
 pub fn description_area(area: Rect) -> Rect {
@@ -101,18 +103,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, glyphs: Glyphs, theme: T
     // the task pane.
     let editing = app.task_edit.as_ref().and(app.editor.as_ref());
 
-    render_list(frame, columns[0], &app.tasks, app.task_selected, app.tasks_show_done, theme);
+    // A rename shows in the list as it is typed. The heading being edited is
+    // the title, and watching one change while the other does not would say
+    // they are two different things.
+    let renaming = editing.zip(app.selected_task()).map(|(editor, task)| {
+        crate::vault::tasks::title_from_body(&task.path, &editor.buffer.text())
+    });
+
+    render_list(frame, columns[0], app, renaming.as_deref(), theme);
     render_detail(frame, columns[1], app.selected_task(), editing, glyphs, theme);
 }
 
-fn render_list(
-    frame: &mut Frame,
-    area: Rect,
-    tasks: &[Task],
-    selected: usize,
-    showing_done: bool,
-    theme: Theme,
-) {
+fn render_list(frame: &mut Frame, area: Rect, app: &App, renaming: Option<&str>, theme: Theme) {
+    let (tasks, selected, showing_done) = (&app.tasks, app.task_selected, app.tasks_show_done);
+
     let open = tasks.iter().filter(|task| task.status == Status::Open).count();
     let heading = match open {
         0 if tasks.is_empty() => " tasks ".to_string(),
@@ -150,7 +154,8 @@ fn render_list(
     let mut lines = Vec::with_capacity(visible * CARD_HEIGHT);
     for (index, task) in tasks.iter().enumerate().skip(start).take(visible) {
         let chosen = index == selected;
-        for line in card(task, chosen, inner.width as usize, theme) {
+        let title = if chosen { renaming.unwrap_or(&task.title) } else { &task.title };
+        for line in card(task, title, chosen, inner.width as usize, theme) {
             lines.push(if chosen {
                 keycap::fill(line, inner.width).style(keycap::selected_row(theme))
             } else {
@@ -182,7 +187,7 @@ const fn status_colour(status: Status, theme: Theme) -> Color {
 }
 
 /// One task as two lines: what it is, then everything about it.
-fn card<'a>(task: &Task, chosen: bool, width: usize, theme: Theme) -> [Line<'a>; 2] {
+fn card<'a>(task: &Task, title: &str, chosen: bool, width: usize, theme: Theme) -> [Line<'a>; 2] {
     let title_style = if task.status == Status::Done {
         Style::default().fg(theme.dim).add_modifier(Modifier::CROSSED_OUT)
     } else {
@@ -191,9 +196,9 @@ fn card<'a>(task: &Task, chosen: bool, width: usize, theme: Theme) -> [Line<'a>;
 
     // The title gets the line to itself, minus the caret. It is the only part
     // of a task you read while scanning, so it is the last thing to be cut.
-    let title = Line::from(vec![
+    let heading = Line::from(vec![
         Span::styled(if chosen { " \u{25b8} " } else { INDENT }, Style::default().fg(theme.accent)),
-        Span::styled(truncate(&task.title, width.saturating_sub(4)), title_style),
+        Span::styled(truncate(title, width.saturating_sub(4)), title_style),
     ]);
 
     let mut details = vec![
@@ -230,7 +235,7 @@ fn card<'a>(task: &Task, chosen: bool, width: usize, theme: Theme) -> [Line<'a>;
         details.push(Span::styled(text, Style::default().fg(theme.dim)));
     }
 
-    [title, Line::from(details)]
+    [heading, Line::from(details)]
 }
 
 fn empty_state<'a>(showing_done: bool, theme: Theme) -> Vec<Line<'a>> {
@@ -412,19 +417,9 @@ fn render_detail(
         return;
     };
 
-    // The header is exactly HEADER_HEIGHT rows, and the event loop relies on
-    // that to size the editor before this runs. Truncated rather than wrapped
-    // for the same reason.
-    let header = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            truncate(&task.title, inner.width as usize),
-            Style::default().fg(theme.heading).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        stat_bar(&chips(task, theme), glyphs, theme),
-        Line::from(""),
-    ];
+    // Exactly HEADER_HEIGHT rows, and the event loop relies on that to size
+    // the editor before this runs.
+    let header = vec![Line::from(""), stat_bar(&chips(task, theme), glyphs, theme), Line::from("")];
     frame.render_widget(
         Paragraph::new(header),
         Rect { height: HEADER_HEIGHT.min(inner.height), ..inner },
@@ -442,16 +437,16 @@ fn render_detail(
 
     // Parsed here rather than cached, unlike a note: `markdown::parse` is
     // cached in the editor because the real vault has a 184 KB log in it, and
-    // a task description is a paragraph.
-    let description = task.description();
-    let lines = if description.trim().is_empty() {
-        vec![Line::from(Span::styled(
+    // a task body is a paragraph.
+    let mut lines = crate::vault::markdown::parse(task.body(), theme).lines;
+
+    if task.description().trim().is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
             "No description. Press e to write one.",
             Style::default().fg(theme.dim).add_modifier(Modifier::ITALIC),
-        ))]
-    } else {
-        crate::vault::markdown::parse(description, theme).lines
-    };
+        )));
+    }
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
 }

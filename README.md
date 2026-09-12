@@ -100,6 +100,10 @@ The good bit is `c`. Press it on a task and Houston starts an agent **in that
 project's own directory**, already holding the task, the project write-up and
 the decisions behind it. You picked a line off a list; it turns up briefed.
 
+`e` edits the task where it sits — the border goes green, the stat bar stays
+put, and you are in the editor. The title is just the first markdown heading,
+so renaming is typing over it and the list keeps up as you go.
+
 And because they are only files, an agent that notices a follow-up can open a
 task for it, and you will see it next time you look. Hand-edit them, or don't.
 Houston changes one frontmatter line at a time and leaves the rest of the file
