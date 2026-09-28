@@ -166,11 +166,6 @@ impl Session {
         }
     }
 
-    /// Re-reads the branch. Cheap, but not free — call on a timer, not a frame.
-    pub fn refresh_branch(&mut self) {
-        self.branch = crate::worktree::branch_of(self.directory());
-    }
-
     /// Enters copy mode: a cursor you drive with the keyboard, over the
     /// session's own scrollback.
     ///
@@ -913,26 +908,44 @@ impl Sessions {
         }
     }
 
-    /// Re-reads every session's branch. Driven on a slow timer by the event
-    /// loop, because a branch changes when you switch it, not when you blink.
-    pub fn refresh_branches(&mut self) {
-        for session in &mut self.items {
-            // Directory first: the branch is read from whatever directory the
-            // session is in, so looking it up before moving would report the
-            // branch of where you used to be.
-            session.refresh_directory();
-            session.refresh_branch();
+    /// What a background refresh needs to know, captured on the main thread.
+    ///
+    /// Cheap: a copy of three fields per session. Everything expensive that
+    /// follows happens on a worker.
+    pub fn probes(&self) -> Probes {
+        Probes {
+            sessions: self
+                .items
+                .iter()
+                .map(|session| Probe {
+                    id: session.id,
+                    pid: session.pty.child_pid(),
+                    directory: session.directory().to_path_buf(),
+                })
+                .collect(),
+            selected: self.selected().map(|session| session.id),
         }
     }
 
-    /// Re-counts changes for the selected session only.
+    /// Applies what the worker found. Cheap, and the only half that mutates.
     ///
-    /// One session rather than all of them, so the cost is a constant two git
-    /// subprocesses per tick however many agents are running. The others are
-    /// kept current by their hooks; see [`Session::changes`].
-    pub fn refresh_selected_changes(&mut self) {
-        if let Some(session) = self.selected_mut() {
-            session.refresh_changes();
+    /// Sessions closed while the refresh was in flight are simply not found,
+    /// which is why this matches on id rather than on position.
+    pub fn apply(&mut self, found: Refreshed) {
+        for (id, directory, branch) in found.sessions {
+            let Some(session) = self.items.iter_mut().find(|session| session.id == id) else {
+                continue;
+            };
+            if let Some(directory) = directory {
+                session.live_cwd = Some(directory);
+            }
+            session.branch = branch;
+        }
+
+        if let Some((id, changes)) = found.changes
+            && let Some(session) = self.items.iter_mut().find(|session| session.id == id)
+        {
+            session.changes = changes;
         }
     }
 
@@ -970,6 +983,77 @@ impl Default for Sessions {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// One session's worth of what a refresh needs.
+#[derive(Debug, Clone)]
+pub struct Probe {
+    pub id: SessionId,
+    pub pid: u32,
+    pub directory: std::path::PathBuf,
+}
+
+/// Everything a refresh is asked to look up.
+#[derive(Debug, Clone)]
+pub struct Probes {
+    pub sessions: Vec<Probe>,
+    pub selected: Option<SessionId>,
+}
+
+/// What it found.
+#[derive(Debug, Clone, Default)]
+pub struct Refreshed {
+    /// Per session: where it has got to, and the branch there.
+    pub sessions: Vec<(SessionId, Option<std::path::PathBuf>, Option<String>)>,
+    /// The selected session's diff summary, if there was a selected session.
+    pub changes: Option<(SessionId, Option<crate::diff::Changes>)>,
+}
+
+/// The slow half of a refresh, for a worker thread.
+///
+/// **This must not run on the event loop.** It is `lsof` and `git` once per
+/// session plus a `git status` for the selected one, and every part of that
+/// is somebody else's disk. On a repository with seventy thousand untracked
+/// files it took thirteen seconds — on the thread that reads the keyboard,
+/// every three seconds, which is not a slow app but a stopped one. The
+/// untracked scan is bounded now (see `diff::untracked_entries`) and this is
+/// off the loop, because either fix alone leaves the other half of the
+/// problem standing: a bounded scan can still be slow, and a fast scan can
+/// still meet a slow disk.
+#[must_use]
+pub fn probe(probes: &Probes) -> Refreshed {
+    let mut found = Refreshed::default();
+
+    for session in &probes.sessions {
+        // Directory first: the branch is read from wherever the session is
+        // now, so looking it up before moving would report the branch of
+        // where it used to be.
+        let directory = crate::cwd::of(session.pid);
+        let here = directory.as_deref().unwrap_or(&session.directory);
+        found.sessions.push((session.id, directory.clone(), crate::worktree::branch_of(here)));
+    }
+
+    // One session rather than all of them, so the cost is a constant two git
+    // subprocesses however many agents are running. The others are kept
+    // current by their hooks; see [`Session::changes`].
+    found.changes = probes.selected.map(|id| {
+        let directory = found
+            .sessions
+            .iter()
+            .find(|(found, _, _)| *found == id)
+            .and_then(|(_, directory, _)| directory.clone())
+            .or_else(|| {
+                probes
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == id)
+                    .map(|session| session.directory.clone())
+            });
+
+        (id, directory.and_then(|directory| crate::diff::changes_in(&directory)))
+    });
+
+    found
 }
 
 /// Builds what a remembered session should be launched as.
@@ -1049,6 +1133,61 @@ fn agent_launch(cwd: &Path) -> (Kind, LaunchSpec) {
 
 fn directory_label(path: &Path) -> String {
     path.file_name().map_or_else(|| "shell".to_string(), |name| name.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+
+    /// The refresh runs on a worker, so by the time it comes back the session
+    /// it was about may have been closed. Matching on position rather than on
+    /// id would write one session's branch onto another's card.
+    #[test]
+    fn a_session_closed_mid_refresh_does_not_land_on_its_neighbour() {
+        let mut sessions = Sessions::new();
+        let size = Size::new(24, 80);
+        let directory = std::env::temp_dir();
+        sessions.spawn_shell(&directory, size).unwrap();
+        sessions.spawn_shell(&directory, size).unwrap();
+
+        let probes = sessions.probes();
+        assert_eq!(probes.sessions.len(), 2);
+        let gone = probes.sessions[0].id;
+        let kept = probes.sessions[1].id;
+
+        // The first one goes away while the worker is still out.
+        sessions.select(0);
+        sessions.close_selected();
+
+        sessions.apply(Refreshed {
+            sessions: vec![
+                (gone, Some(PathBuf::from("/tmp/vanished")), Some("gone".to_string())),
+                (kept, Some(PathBuf::from("/tmp/still-here")), Some("kept".to_string())),
+            ],
+            changes: None,
+        });
+
+        let survivor = sessions.selected().expect("one session left");
+        assert_eq!(survivor.id, kept);
+        assert_eq!(survivor.branch.as_deref(), Some("kept"), "and it got its own branch");
+
+        sessions.shutdown();
+    }
+
+    /// The probe is the cheap half and has to stay that way: it is taken on
+    /// the event loop, once every three seconds.
+    #[test]
+    fn taking_a_probe_touches_no_disk_and_names_the_selected_session() {
+        let mut sessions = Sessions::new();
+        sessions.spawn_shell(&std::env::temp_dir(), Size::new(24, 80)).unwrap();
+
+        let probes = sessions.probes();
+
+        assert_eq!(probes.selected, Some(probes.sessions[0].id));
+        assert!(probes.sessions[0].pid > 0, "a live child to ask about");
+
+        sessions.shutdown();
+    }
 }
 
 #[cfg(test)]

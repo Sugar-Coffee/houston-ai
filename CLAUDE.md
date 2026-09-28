@@ -198,6 +198,35 @@ env PATH="$CLEAN" target/debug/deps/houston-<hash>
 `provider::login_shell` picks a different shell, so every test that reads a
 spawned shell's screen fails for a reason CI will never have.
 
+## Nothing slow on the event loop
+
+The loop that reads the keyboard also ran `lsof` and `git` once per session
+every three seconds, and a `git status` for the selected one. That was fine
+until it met a repository with an unignored `.pnpm-store/`: `--untracked-files
+=all` listed 72,794 files, Houston opened every one of them to count lines,
+and a single keypress took **nineteen seconds** to be noticed. The app did not
+look slow, it looked dead.
+
+Two rules came out of it, and both are needed — either alone leaves the other
+half standing.
+
+**Bound anything that walks a user's disk.** `git status` without
+`--untracked-files=all` collapses an untracked directory to one entry, which
+is the honest answer for a card with room for a number. Past that, cap the
+count and skip the big ones: `diff::UNTRACKED_LIMIT` and `COUNTED_BYTES`.
+
+**And put it on a worker anyway.** A bounded scan can still be slow, and a
+fast scan can still meet a slow disk. `session::probe` is the blocking half
+and `Sessions::apply` is the cheap one; the loop owns neither. Match results
+by id when they come back — the session may have been closed while the worker
+was out, and matching by position writes one session's branch onto another's
+card.
+
+**Measure it in the repository that hurt, both ways.** Drive the binary
+through a pty, send a key, time the first byte back. Before: 19,000 ms. After:
+15 ms. `git stash` and run it again — a fix you have only measured after is a
+fix you are hoping about.
+
 ## Two habits worth keeping
 
 **A test that reads the machine it runs on is not a test.** Three tests

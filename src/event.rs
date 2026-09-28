@@ -59,6 +59,14 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
     let mut branches = tokio::time::interval(BRANCH_REFRESH);
     branches.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // Where each session has got to, and what it has changed. Off the loop on
+    // a worker, and one at a time: the work is `lsof` and `git` against
+    // somebody else's disk, and a tick that fired while the last one was
+    // still going would queue threads against a slow repository rather than
+    // wait for it.
+    let (refreshed, mut refreshes) = tokio::sync::mpsc::unbounded_channel();
+    let mut refreshing = false;
+
     // Agent lifecycle events arrive over a Unix socket. If the listener cannot
     // start, Houston still works — the board just cannot show agent state — so
     // this is reported rather than fatal.
@@ -94,9 +102,21 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
 
             Some(notification) = hook_events.recv() => on_hook(&mut app, &notification),
 
+            Some(found) = refreshes.recv() => {
+                refreshing = false;
+                app.sessions.apply(found);
+                app.dirty = true;
+            }
+
             _ = branches.tick() => {
-                app.sessions.refresh_branches();
-                app.sessions.refresh_selected_changes();
+                if !refreshing {
+                    refreshing = true;
+                    let probes = app.sessions.probes();
+                    let sender = refreshed.clone();
+                    std::thread::spawn(move || {
+                        let _ = sender.send(crate::session::probe(&probes));
+                    });
+                }
 
                 // Obsidian is probably open on the same folder, and agents are
                 // asked to write here. Cheap: a few dozen directory stats.

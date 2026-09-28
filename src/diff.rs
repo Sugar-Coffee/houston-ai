@@ -81,32 +81,67 @@ pub fn parse_numstat(output: &str) -> Changes {
     changes
 }
 
+/// How many untracked entries are worth opening.
+///
+/// The number on a card is a rough size. Past a few dozen files it has
+/// stopped changing the picture and is only costing time, and the time is
+/// paid every three seconds for as long as that session is selected.
+const UNTRACKED_LIMIT: usize = 64;
+
+/// And how large one of them is worth reading to count its lines.
+const COUNTED_BYTES: u64 = 1 << 20;
+
 /// Files the agent created, which no `git diff` will ever mention.
 ///
 /// Worth the extra command. Writing new files is most of what a coding agent
 /// does, and a card reading `+0 −0` while it had just written six of them
 /// would teach you to distrust the number.
+///
+/// **Bounded, because this is on a timer.** See [`untracked_entries`] for how
+/// the list is kept short; this caps what is done with it. A directory is
+/// counted as the one entry git reported and never opened, a file over a
+/// megabyte is counted but not read, and past [`UNTRACKED_LIMIT`] entries
+/// nothing more is opened at all.
 fn untracked_changes(directory: &Path) -> Changes {
     let mut changes = Changes::default();
 
-    for name in untracked_files(directory) {
+    for name in untracked_entries(directory) {
         changes.files += 1;
+        if changes.files > UNTRACKED_LIMIT || name.ends_with('/') {
+            continue;
+        }
+
+        let path = directory.join(&name);
+        if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > COUNTED_BYTES) {
+            continue;
+        }
         // Binary files still count as a file; their line count does not.
-        if let Ok(contents) = std::fs::read_to_string(directory.join(&name)) {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
             changes.insertions += contents.lines().count();
         }
     }
     changes
 }
 
-/// Untracked, non-ignored files, named relative to `directory`.
+/// Untracked, non-ignored entries, named relative to `directory`.
+///
+/// **Git's default listing, not `--untracked-files=all`.** The difference is
+/// whether an untracked *directory* comes back as one entry or as every file
+/// inside it, and it is the difference between a summary and a catastrophe: a
+/// repository here with an unignored `.pnpm-store/` reported 6 entries by
+/// default and 72,794 with `-uall`. Houston then opened all 72,794 — a
+/// gigabyte of reads — every three seconds, on the thread that handles
+/// keystrokes. The app was not slow, it was gone.
+///
+/// A collapsed directory is one entry with no line count, which is the honest
+/// answer for a card that has room for a number and not for a file tree.
 ///
 /// Relative on purpose. Git echoes whatever path it is given straight into
 /// the `+++ b/…` header, and an absolute one under a temp directory is wider
 /// than the pane — the header for a new file then clips to nothing useful
 /// while every tracked file next to it reads fine.
-fn untracked_files(directory: &Path) -> Vec<String> {
-    let output = run(directory, &["status", "--porcelain", "--untracked-files=all"]);
+fn untracked_entries(directory: &Path) -> Vec<String> {
+    let output = run(directory, &["status", "--porcelain"]);
 
     output
         .unwrap_or_default()
@@ -136,13 +171,34 @@ pub fn full(directory: &Path) -> Result<String> {
 
     let mut diff = run(directory, &["diff", "HEAD"]).context("could not read the diff")?;
 
-    for name in untracked_files(directory) {
+    // One subprocess per untracked file, so the same cap applies here and for
+    // a sharper reason: unbounded, pressing `v` on a repository with a large
+    // unignored directory in it would spawn seventy thousand copies of git.
+    // A directory is skipped rather than expanded — `--no-index` on one
+    // recurses, which is the explosion again by another route.
+    let entries = untracked_entries(directory);
+    let shown = entries.iter().filter(|name| !name.ends_with('/')).take(UNTRACKED_LIMIT);
+
+    for name in shown {
         // `--no-index` against /dev/null is how git itself renders a new file.
         // It exits non-zero because the two sides differ, which is the point.
-        if let Some(added) = run(directory, &["diff", "--no-index", "--", "/dev/null", &name]) {
+        if let Some(added) = run(directory, &["diff", "--no-index", "--", "/dev/null", name]) {
             diff.push_str(&added);
         }
     }
+
+    // Said rather than silently dropped: a review that quietly stops short is
+    // worse than one that admits where it stopped.
+    let left_out = entries.iter().filter(|name| name.ends_with('/')).count()
+        + entries
+            .iter()
+            .filter(|name| !name.ends_with('/'))
+            .count()
+            .saturating_sub(UNTRACKED_LIMIT);
+    if left_out > 0 {
+        diff.push_str(&format!("\n--- {left_out} more untracked entries not shown ---\n"));
+    }
+
     Ok(diff)
 }
 
@@ -315,6 +371,83 @@ mod tests {
             changes.insertions, 4,
             "writing new files is most of what an agent does, so +0 would be a lie"
         );
+
+        std::fs::remove_dir_all(&repository).ok();
+    }
+
+    /// **The freeze.** A repository with an unignored `.pnpm-store/` in it
+    /// reported 6 untracked entries by default and 72,794 with `-uall`.
+    /// Houston opened every one of them — a gigabyte — every three seconds,
+    /// on the thread that reads the keyboard.
+    #[test]
+    fn an_untracked_directory_is_one_entry_rather_than_everything_inside_it() {
+        let repository = scratch_repository("untracked-dir");
+        let store = repository.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        for index in 0..500 {
+            std::fs::write(store.join(format!("{index}.txt")), "a\nb\nc\n").unwrap();
+        }
+
+        let changes = changes_in(&repository).expect("a repository reports changes");
+
+        assert_eq!(changes.files, 1, "the directory is one entry, not five hundred");
+        assert_eq!(changes.insertions, 0, "and nothing inside it was opened to be counted");
+
+        std::fs::remove_dir_all(&repository).ok();
+    }
+
+    /// The count is a rough size. Reading a gigabyte to refine it is not a
+    /// trade anybody would make knowingly.
+    #[test]
+    fn a_large_untracked_file_is_counted_but_not_read() {
+        let repository = scratch_repository("untracked-big");
+        let line = "x".repeat(1024) + "\n";
+        std::fs::write(repository.join("huge.log"), line.repeat(2048)).unwrap();
+        std::fs::write(repository.join("small.txt"), "one\ntwo\n").unwrap();
+
+        let changes = changes_in(&repository).expect("a repository reports changes");
+
+        assert_eq!(changes.files, 2, "both are changes");
+        assert_eq!(changes.insertions, 2, "only the small one contributed lines");
+
+        std::fs::remove_dir_all(&repository).ok();
+    }
+
+    /// Past the cap the count stops moving, and the loop stops opening files.
+    #[test]
+    fn a_great_many_loose_untracked_files_stop_being_opened() {
+        let repository = scratch_repository("untracked-many");
+        for index in 0..(UNTRACKED_LIMIT + 40) {
+            std::fs::write(repository.join(format!("note-{index}.md")), "a\nb\n").unwrap();
+        }
+
+        let changes = changes_in(&repository).expect("a repository reports changes");
+
+        assert_eq!(changes.files, UNTRACKED_LIMIT + 40, "every one of them is still counted");
+        assert_eq!(
+            changes.insertions,
+            UNTRACKED_LIMIT * 2,
+            "but only the first {UNTRACKED_LIMIT} were opened"
+        );
+
+        std::fs::remove_dir_all(&repository).ok();
+    }
+
+    /// `git diff --no-index` on a directory recurses, which is the same
+    /// explosion by another route — and one subprocess per file besides.
+    #[test]
+    fn the_review_says_what_it_left_out_rather_than_stopping_quietly() {
+        let repository = scratch_repository("review-cap");
+        let store = repository.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        for index in 0..200 {
+            std::fs::write(store.join(format!("{index}.txt")), "a\n").unwrap();
+        }
+
+        let diff = full(&repository).expect("a repository has a diff");
+
+        assert!(!diff.contains("store/0.txt"), "the directory was not expanded");
+        assert!(diff.contains("1 more untracked entries not shown"), "and it says so");
 
         std::fs::remove_dir_all(&repository).ok();
     }
