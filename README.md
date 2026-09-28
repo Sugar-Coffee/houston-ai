@@ -193,8 +193,8 @@ curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/latest/download/i
   | HOUSTON_INSTALL_DIR=/usr/local/bin sh
 
 # a specific version
-curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/download/v0.1.0/install.sh \
-  | HOUSTON_VERSION=v0.1.0 sh
+curl -fsSL https://github.com/Sugar-Coffee/houston-ai/releases/download/v0.1.1/install.sh \
+  | HOUSTON_VERSION=v0.1.1 sh
 
 # from source
 cargo install --git https://github.com/Sugar-Coffee/houston-ai
