@@ -196,7 +196,8 @@ pub fn full(directory: &Path) -> Result<String> {
             .count()
             .saturating_sub(UNTRACKED_LIMIT);
     if left_out > 0 {
-        diff.push_str(&format!("\n--- {left_out} more untracked entries not shown ---\n"));
+        use std::fmt::Write as _;
+        let _ = write!(diff, "\n--- {left_out} more untracked entries not shown ---\n");
     }
 
     Ok(diff)

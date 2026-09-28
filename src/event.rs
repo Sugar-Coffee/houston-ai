@@ -64,7 +64,7 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
     // somebody else's disk, and a tick that fired while the last one was
     // still going would queue threads against a slow repository rather than
     // wait for it.
-    let (refreshed, mut refreshes) = tokio::sync::mpsc::unbounded_channel();
+    let (found_a_refresh, mut refreshes) = tokio::sync::mpsc::unbounded_channel();
     let mut refreshing = false;
 
     // Agent lifecycle events arrive over a Unix socket. If the listener cannot
@@ -112,7 +112,7 @@ pub async fn run(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
                 if !refreshing {
                     refreshing = true;
                     let probes = app.sessions.probes();
-                    let sender = refreshed.clone();
+                    let sender = found_a_refresh.clone();
                     std::thread::spawn(move || {
                         let _ = sender.send(crate::session::probe(&probes));
                     });
